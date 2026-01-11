@@ -1,7 +1,9 @@
 #include <limine.h>
 #include <stddef.h>
 #include <stdint.h>
+
 #include "pmm.h"
+#include "vmm.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -27,6 +29,19 @@ static volatile struct limine_terminal_request terminal_request = {
 __attribute__((used, section(".requests")))
 static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST,
+    .revision = 0
+};
+
+// MOVED FROM PMM/VMM: The HHDM Request
+__attribute__((used, section(".requests")))
+volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST,
+    .revision = 0
+};
+
+__attribute__((used, section(".requests")))
+volatile struct limine_kernel_address_request kernel_address_request = {
+    .id = LIMINE_KERNEL_ADDRESS_REQUEST,
     .revision = 0
 };
 
@@ -89,7 +104,6 @@ extern "C" void kmain(void) {
     // 1. Ask for a page
     uint64_t page_1 = PMM::alloc_page();
     serial_print("Page 1 allocated at: ");
-    // print_uint(term, term_resp, page_1); // Print to screen (optional)
     serial_print_uint(page_1);           // Print to serial
     serial_print("\n");
 
@@ -105,6 +119,14 @@ extern "C" void kmain(void) {
     } else {
         serial_print("ERROR: Allocator returned weird addresses.\n");
     }
+    VMM::init(memmap_request.response);    // TEST: Try to map a fake address
+    // We will map Physical 0x1000 to Virtual 0xDEADBEEF000
+    serial_print("Mapping test page...\n");
+    
+    // Flags: Present (1) | Writable (2) = 3
+    VMM::map_page(0x1000, 0xDEADBEEF000, 3);
+    
+    serial_print("Page mapped successfully (No Crash).\n");
 
     // Halt the CPU
     while (1) {

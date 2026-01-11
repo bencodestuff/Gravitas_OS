@@ -3,12 +3,7 @@
 // Allow this file to use the serial printer from main.cpp
 extern "C" void serial_print(const char* str);
 
-// --- HHDM REQUEST (The "Virtual Memory Key") ---
-__attribute__((used, section(".requests")))
-static volatile struct limine_hhdm_request hhdm_request = {
-    .id = LIMINE_HHDM_REQUEST,
-    .revision = 0
-};
+extern volatile struct limine_hhdm_request hhdm_request;
 
 // Debug printer
 static void pmm_print_hex(uint64_t value) {
