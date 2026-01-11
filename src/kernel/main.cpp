@@ -1,13 +1,13 @@
 #include <limine.h>
 #include <stddef.h>
 #include <stdint.h>
-
+#include "pmm.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
-void serial_print(const char* str) {
+extern "C" void serial_print(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) {
         outb(0x3f8, str[i]); // 0x3f8 is the address of COM1
     }
@@ -78,6 +78,33 @@ extern "C" void kmain(void) {
     serial_print_uint(usable_ram / 1024 / 1024);
     serial_print(" MB)\n");
     serial_print("=== END OF REPORT ===\n");
+
+    serial_print("Initializing PMM...\n");
+    PMM::init(memmap); // pass the memmap struct we got from Limine
+    serial_print("PMM Initialized.\n");
+
+// --- TEST ALLOCATION ---
+    serial_print("\nTesting Allocation...\n");
+    
+    // 1. Ask for a page
+    uint64_t page_1 = PMM::alloc_page();
+    serial_print("Page 1 allocated at: ");
+    // print_uint(term, term_resp, page_1); // Print to screen (optional)
+    serial_print_uint(page_1);           // Print to serial
+    serial_print("\n");
+
+    // 2. Ask for another page
+    uint64_t page_2 = PMM::alloc_page();
+    serial_print("Page 2 allocated at: ");
+    serial_print_uint(page_2);
+    serial_print("\n");
+
+    // 3. Verify they are different
+    if (page_2 > page_1) {
+        serial_print("SUCCESS: Allocator is handing out sequential RAM!\n");
+    } else {
+        serial_print("ERROR: Allocator returned weird addresses.\n");
+    }
 
     // Halt the CPU
     while (1) {
