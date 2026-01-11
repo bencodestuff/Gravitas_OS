@@ -4,6 +4,7 @@
 
 #include "pmm.h"
 #include "vmm.h"
+#include "gdt.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -123,6 +124,8 @@ extern "C" void kmain(void) {
     // We will map Physical 0x1000 to Virtual 0xDEADBEEF000
     serial_print("Mapping test page...\n");
     
+    GDT::init();
+    serial_print("GDT Initialized.\n");
     // Flags: Present (1) | Writable (2) = 3
     VMM::map_page(0x1000, 0xDEADBEEF000, 3);
     
