@@ -1,0 +1,18 @@
+# Build Artifacts
+bin/
+obj/
+*.iso
+*.elf
+*.o
+*.d
+.ninja_log
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS generated
+limine/
+limine-cd-efi.bin
+limine.sys
