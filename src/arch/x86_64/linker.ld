@@ -1,5 +1,4 @@
-/* src/arch/x86_64/linker.ld */
-ENTRY(kmain) /* We will verify this entry point name in your cpp file later */
+ENTRY(kmain)
 
 PHDRS
 {
@@ -10,31 +9,45 @@ PHDRS
 
 SECTIONS
 {
-    /* We want the kernel in the upper 2GB of virtual memory */
+    /* We want to be placed in the High Half (Upper memory) */
     . = 0xffffffff80000000;
 
+    /* CODE SECTION */
     .text : {
         *(.text .text.*)
     } :text
 
-    . += CONSTANT(MAXPAGESIZE);
+    /* Move to next page boundary */
+    . = ALIGN(0x1000);
 
+    /* READ-ONLY DATA SECTION */
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
 
-    . += CONSTANT(MAXPAGESIZE);
+    /* Move to next page boundary */
+    . = ALIGN(0x1000);
 
+    /* READ-WRITE DATA SECTION */
     .data : {
         *(.data .data.*)
+        
+        /* Keep requests inside .data but distinct */
+        . = ALIGN(0x1000); 
+        KEEP(*(.requests_start_marker))
+        KEEP(*(.requests))
+        KEEP(*(.requests_end_marker))
     } :data
 
+    /* Move to next page boundary */
+    . = ALIGN(0x1000);
+
+    /* BSS (Zero-initialized data) */
     .bss : {
-        *(COMMON)
         *(.bss .bss.*)
+        *(COMMON)
     } :data
 
-    /* Discard useless sections that bloat the kernel */
     /DISCARD/ : {
         *(.eh_frame)
         *(.note .note.*)

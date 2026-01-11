@@ -6,7 +6,7 @@ obj/
 *.o
 *.d
 .ninja_log
-
+build.ninja
 # Editors
 .vscode/
 .idea/

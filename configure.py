@@ -66,7 +66,6 @@ def main():
     
     cpp_sources = find_sources("src", [".cpp"])
     asm_sources = find_sources("src", [".S"])
-    # Filter out aarch64 for now
     cpp_sources = [f for f in cpp_sources if "aarch64" not in f]
     asm_sources = [f for f in asm_sources if "aarch64" not in f]
 
@@ -92,9 +91,12 @@ def main():
         ninja.write(f"  command = ./build_iso.sh\n")
         ninja.write(f"  description = ISO gravitas.iso\n\n")
         
+        # --- THE FIX IS HERE ---
+        # Note the spaces inside the quotes for 'command', 'description', and 'pool'
         ninja.write(f"rule run\n")
         ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio\n")
-        ninja.write(f"  description = RUN gravitas.iso\n\n")
+        ninja.write(f"  description = RUN gravitas.iso\n")
+        ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
         ninja.write(f"rule clean\n")
         ninja.write(f"  command = rm -rf bin obj iso_root gravitas.iso\n")
