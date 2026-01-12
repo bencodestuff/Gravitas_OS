@@ -190,7 +190,7 @@ void background_worker() {
         kprint(" [BG] ");
 
         // Waste some time so we don't spam
-        Timer::sleep(500);
+        Sched::sleep(500);
         // We must manually yield for now (Cooperative Multithreading)
         // because we haven't hooked the Timer Interrupt to force it yet.
         Sched::yield(); 

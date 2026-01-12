@@ -1,20 +1,43 @@
 #include "sched.h"
 #include "heap.h"
+#include "timer.h"
 
 extern "C" void kprint(const char* str);
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp);
 
+
+
 namespace Sched {
+    enum TaskState {
+        READY,
+        SLEEPING
+    };
 
     struct Task {
-        uint64_t rsp; // The single most important value: The Stack Pointer
+        uint64_t rsp;
         Task* next;
         int id;
+        // NEW FIELDS
+        TaskState state;
+        uint64_t wake_timestamp; // When should I wake up?
     };
 
     Task* current_task = nullptr;
     Task* ready_queue = nullptr; // A simple linked list (Round Robin)
     int task_counter = 0;
+
+    void sleep(uint64_t ms) {
+        // 1. Calculate target time
+        // Assuming 50Hz (20ms per tick)
+        uint64_t ticks_needed = ms / 20;
+        current_task->wake_timestamp = Timer::get_ticks() + ticks_needed;
+
+        // 2. Mark as SLEEPING
+        current_task->state = SLEEPING;
+
+        // 3. Give up the CPU immediately
+        yield();
+    }
 
     void init() {
         // 1. Create a "Shell" task for the currently running code
@@ -34,6 +57,8 @@ namespace Sched {
         // 1. Allocate a new Task struct
         Task* new_task = new Task;
         new_task->id = ++task_counter;
+        new_task->state = READY;
+        new_task->wake_timestamp = 0;
 
         // 2. Allocate a Stack for this thread (4KB)
         uint64_t* stack_bottom = new uint64_t[512]; // 512 * 8 bytes = 4KB
@@ -61,13 +86,30 @@ namespace Sched {
     }
 
     void yield() {
-        // Simple Round Robin Scheduler
         Task* old_task = current_task;
         Task* next_task = current_task->next;
+        
+        // --- LOOP UNTIL WE FIND A READY TASK ---
+        // If everyone is sleeping, we just spin (idle loop)
+        while (true) {
+            // 1. Check if a sleeping task is done sleeping
+            if (next_task->state == SLEEPING) {
+                if (Timer::get_ticks() >= next_task->wake_timestamp) {
+                    next_task->state = READY; // Wakey wakey!
+                }
+            }
 
+            // 2. Is this task ready to run?
+            if (next_task->state == READY) {
+                break; // Found one!
+            }
+
+            // 3. Move to next
+            next_task = next_task->next;
+        }
+
+        // Switch to the found task
         current_task = next_task;
-
-        // MAGIC: Switch stacks
         switch_context(&old_task->rsp, next_task->rsp);
     }
 }
