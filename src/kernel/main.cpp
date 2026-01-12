@@ -9,12 +9,10 @@
 #include "pic.h"
 #include "io.h"
 #include "font.h"
+#include "heap.h"
 
-
-// REPLACE your old kprint with this:
 // Forward declare screen_print so `kprint` can call it.
 void screen_print(const char* str);
-
 
 extern "C" void kprint(const char* str) {
     // 1. Print to Host Terminal (Serial)
@@ -56,6 +54,39 @@ volatile struct limine_kernel_address_request kernel_address_request = {
     .id = LIMINE_KERNEL_ADDRESS_REQUEST,
     .revision = 0
 };
+
+// ... includes ...
+
+// Arbitrary start address for our heap (somewhere far away from the kernel)
+// 0x1000 0000 0000 fits nicely in 64-bit space.
+#define HEAP_START_ADDR 0x100000000000
+#define HEAP_INITIAL_PAGES 256 // 256 * 4KB = 1 MB of Heap to start
+
+void heap_init_pages() {
+    kprint("[Heap] Mapping pages...\n");
+    
+    // We need to verify we have enough RAM for this, but for now let's assume we do.
+    // We are going to ask the PMM for pages and map them to our Heap Address.
+    
+    uint64_t virt_addr = HEAP_START_ADDR;
+    
+    for (int i = 0; i < HEAP_INITIAL_PAGES; i++) {
+        // 1. Allocate a physical page
+        uint64_t phys_addr = (uint64_t)PMM::alloc_page();
+        if (phys_addr == 0) {
+            kprint("[Heap] OUT OF RAM!\n");
+            return;
+        }
+
+        // 2. Map it to the virtual address
+        // Flags: Present | Writable (No User access yet)
+        // Note: We use the defaults, caching is fine here.
+        VMM::map_page(phys_addr, virt_addr, 0x03); 
+        
+        virt_addr += 4096;
+    }
+    kprint("[Heap] Pages mapped.\n");
+}
 
 // --- Helper: Print Numbers to Serial ---
 extern "C" void kprint_uint(uint64_t value) {
@@ -218,6 +249,19 @@ extern "C" void kmain(void) {
     VMM::map_page(0x1000, 0xDEADBEEF000, 3);
     
     kprint("Page mapped successfully (No Crash).\n");
+
+    heap_init_pages();
+    Heap::init((void*)HEAP_START_ADDR, HEAP_INITIAL_PAGES * 4096);
+
+    // TEST: Dynamic Allocation
+    int* test_ptr = new int;
+    *test_ptr = 999;
+    kprint("Heap Test: ");
+    if (*test_ptr == 999) {
+        kprint("SUCCESS! 'new' operator works.\n");
+    } else {
+        kprint("FAILED.\n");
+    }
 
     IDT::init();
     kprint("IDT Initialized.\n");
