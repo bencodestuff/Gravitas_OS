@@ -3,6 +3,9 @@
 #include "../../kernel/io.h"
 #include "../../kernel/keyboard.h"
 
+#include "../../kernel/timer.h"
+#include "../../kernel/sched.h"
+
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
 
@@ -96,11 +99,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     uint64_t num = regs->interrupt_number;
     // --- IRQ 0: Timer (Interrupt 32) ---
     if (num == 32) {
-        ticks++;
-        // Print a dot roughly every second (Timer runs at ~18Hz)
-        if (ticks % 18 == 0) {
-            kprint("Tick...\n"); 
-        }
+        Timer::tick(); // Update the counter
         PIC::send_eoi(0);
         return;
     }

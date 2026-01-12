@@ -11,6 +11,8 @@
 #include "font.h"
 #include "heap.h"
 #include "shell.h"
+#include "sched.h"
+#include "timer.h"
 
 // Forward declare screen_print so `kprint` can call it.
 void screen_print(const char* str);
@@ -182,6 +184,19 @@ void screen_print(const char* str) {
     }
 }
 
+// A simple function for our second thread
+void background_worker() {
+    while (true) {
+        kprint(" [BG] ");
+
+        // Waste some time so we don't spam
+        Timer::sleep(500);
+        // We must manually yield for now (Cooperative Multithreading)
+        // because we haven't hooked the Timer Interrupt to force it yet.
+        Sched::yield(); 
+    }
+}
+
 // --- KERNEL MAIN ---
 extern "C" void kmain(void) {
     kprint("\n\n=== GRAVITAS OS KERNEL BOOTED ===\n");
@@ -268,17 +283,21 @@ extern "C" void kmain(void) {
     kprint("IDT Initialized.\n");
 
     PIC::remap();
+    PIC::unmask(0); // Enable Timer (IRQ 0)
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
     
-Shell::init();
+    Shell::init();
 
+    Timer::init();
+    Sched::init();
+    Sched::create_task(background_worker);
     // The Infinite Kernel Loop
     while (1) {
         // 1. Process Shell Input
         Shell::update();
-
+        Sched::yield(); // Give other tasks a chance to run
         // 2. Halt CPU until next interrupt (saves power)
         // If we don't halt, the CPU spins at 100% heat checking the buffer.
-        asm("hlt");
+        //asm("hlt");
     }
 }

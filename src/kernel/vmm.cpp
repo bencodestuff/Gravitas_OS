@@ -127,7 +127,7 @@ namespace VMM {
             // If this region is the Framebuffer, DISABLE CACHING!
             if (entry->type == LIMINE_MEMMAP_FRAMEBUFFER) {
                 flags |= PTE_NO_CACHE;
-                kprint("  [VMM] Framebuffer found and uncached.\n");
+                kprint("[VMM] Framebuffer found and uncached.\n");
             }
 
             // Map the region
