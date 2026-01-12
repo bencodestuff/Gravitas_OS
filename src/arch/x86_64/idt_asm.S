@@ -115,6 +115,22 @@ isr_stub_table:
     .quad isr_29
     .quad isr_30
     .quad isr_31
+    .quad isr_32
+    .quad isr_33
+    .quad isr_34
+    .quad isr_35
+    .quad isr_36
+    .quad isr_37
+    .quad isr_38
+    .quad isr_39
+    .quad isr_40
+    .quad isr_41
+    .quad isr_42
+    .quad isr_43
+    .quad isr_44
+    .quad isr_45
+    .quad isr_46
+    .quad isr_47
 
 // --- Define the actual ISR labels ---
 // Most exceptions (0-31)
@@ -151,3 +167,20 @@ ISR_NOERRCODE 28
 ISR_NOERRCODE 29
 ISR_ERRCODE   30 // Security Exception
 ISR_NOERRCODE 31
+// --- Hardware Interrupts (IRQ 0-15 mapped to 32-47) ---
+ISR_NOERRCODE 32 // Timer
+ISR_NOERRCODE 33 // Keyboard
+ISR_NOERRCODE 34
+ISR_NOERRCODE 35
+ISR_NOERRCODE 36
+ISR_NOERRCODE 37
+ISR_NOERRCODE 38
+ISR_NOERRCODE 39
+ISR_NOERRCODE 40
+ISR_NOERRCODE 41
+ISR_NOERRCODE 42
+ISR_NOERRCODE 43
+ISR_NOERRCODE 44
+ISR_NOERRCODE 45
+ISR_NOERRCODE 46
+ISR_NOERRCODE 47

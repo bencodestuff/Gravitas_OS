@@ -6,10 +6,9 @@
 #include "vmm.h"
 #include "gdt.h"
 #include "idt.h"
+#include "pic.h"
+#include "io.h"
 
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
 
 extern "C" void serial_print(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) {
@@ -134,12 +133,13 @@ extern "C" void kmain(void) {
 
     IDT::init();
     serial_print("IDT Initialized.\n");
-    // Halt the CPU
 
-    serial_print("Testing Divide by Zero...\n");
-    volatile int a = 10;
-    volatile int b = 0;
-    volatile int c = a / b; // CRASH!
+    PIC::remap();
+    PIC::unmask(1); // Enable Keyboard (IRQ 1)
+    
+    serial_print("Keyboard Enabled. Press keys in the QEMU window!\n");
+
+    // Halt the CPU
     while (1) {
         asm("hlt");
     }
