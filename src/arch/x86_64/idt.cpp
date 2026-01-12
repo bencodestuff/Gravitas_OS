@@ -107,17 +107,26 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     uint64_t num = regs->interrupt_number;
 
     if (num == 0x80) {
-        uint64_t id = regs->rax;
-        uint64_t arg = regs->rdi;
-        
-        if (id == 0) {
-             kprint("\n[SYSCALL] User Process says: ");
-             char c = (char)arg;
+        uint64_t syscall_id = regs->rax;
+        uint64_t arg1 = regs->rdi;
+
+        if (syscall_id == 0) { // WRITE (Log)
+             kprint("[User] ");
+             char c = (char)arg1;
              char str[2] = {c, 0};
              kprint(str);
              kprint("\n");
         }
-        return; // Don't crash!
+        else if (syscall_id == 1) { // READ (Keyboard)
+             // 1. Try to get a key from the buffer
+             char c = Keyboard::get_queued_key();
+             
+             // 2. Put the result in RAX
+             // This is how return values are passed back to User Mode
+             regs->rax = (uint64_t)c;
+        }
+        
+        return;
     }
 
     if (num == 14) {

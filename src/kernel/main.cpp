@@ -13,8 +13,12 @@
 #include "sched.h"
 #include "timer.h"
 #include "../drivers/framebuffer.h"
+#include "../fs/elf.h"
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+// Assembly helper
+extern "C" void enter_user_mode(uint64_t rip, uint64_t rsp);
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(3);
@@ -38,7 +42,8 @@ volatile struct limine_kernel_address_request kernel_address_request = {
     .revision = 0
 };
 
-
+// Declared in initrd.cpp
+extern volatile struct limine_module_request module_request;
 
 // Arbitrary start address for our heap (somewhere far away from the kernel)
 // 0x1000 0000 0000 fits nicely in 64-bit space.
@@ -87,6 +92,53 @@ extern "C" void kprint_uint(uint64_t value) {
     kprint(&buffer[pos]);
 }
 
+// User space address definitions
+#define USER_CODE_ADDR 0x400000
+#define USER_STACK_ADDR 0x500000
+
+void load_and_run_user_program() {
+    // 1. Check for Module
+    if (module_request.response == nullptr || module_request.response->module_count == 0) {
+        kprint("No modules loaded. Cannot run user program.\n");
+        return;
+    }
+
+    struct limine_file* file = module_request.response->modules[0];
+    kprint("[Kernel] Loading ELF module...\n");
+
+    // 2. Load the ELF (Allocates RAM and copies code)
+    uint64_t entry_point = ELF::load_elf((uint8_t*)file->address);
+
+    if (entry_point == 0) {
+        kprint("[Kernel] ELF Load Failed.\n");
+        return;
+    }
+
+    kprint("[Kernel] ELF Loaded. Jumping to User Mode...\n");
+
+    // 3. Setup Stack
+    // We reuse the same stack location as our manual test: 0x500000
+    // But we need to make sure it's mapped! 
+    // (The ELF loader mapped code, but usually not the stack).
+    uint64_t stack_phys = (uint64_t)PMM::alloc_page();
+    VMM::map_page(stack_phys, USER_STACK_ADDR, 0x07);
+    
+    // 4. Flush TLB (Important after all that mapping)
+    uint64_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    asm volatile("mov %0, %%cr3" :: "r"(cr3) : "memory");
+
+    // 5. Jump!
+    // We jump to 'entry_point' (from the ELF header), not a hardcoded address.
+    
+    // Set Safety Net
+    uint64_t kernel_stack;
+    asm volatile("mov %%rsp, %0" : "=r"(kernel_stack));
+    GDT::tss.rsp0 = kernel_stack;
+
+    enter_user_mode(entry_point, USER_STACK_ADDR + 4096);
+}
+
 // A simple function for our second thread
 void background_worker() {
     while (true) {
@@ -102,13 +154,7 @@ void background_worker() {
 
 // ... includes ...
 
-// Assembly helper
-extern "C" void enter_user_mode(uint64_t rip, uint64_t rsp);
 
-// A place for our user code to live
-// Arbitrary address: 0x400000 (standard-ish for executables)
-#define USER_CODE_ADDR 0x400000
-#define USER_STACK_ADDR 0x500000
 
 void jump_to_user_mode_test() {
     kprint("[User] Preparing Ring 3 Jump...\n");
@@ -265,7 +311,7 @@ extern "C" void kmain(void) {
     Sched::init();
 
     PIC::remap();
- 
+    kprint("[PIC] Remapped.\n");
     
     Shell::init();
 
@@ -273,8 +319,8 @@ extern "C" void kmain(void) {
     Sched::create_task(background_worker);
     PIC::unmask(0); // Enable Timer (IRQ 0)
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
-    // The Infinite Kernel Loop
-    jump_to_user_mode_test();
+
+    load_and_run_user_program();
 
     while (1) {
         // 1. Process Shell Input
