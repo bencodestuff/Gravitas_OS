@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "gdt.h"
+#include "idt.h"
 
 static inline void outb(uint16_t port, uint8_t val) {
     asm volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -47,7 +48,7 @@ volatile struct limine_kernel_address_request kernel_address_request = {
 };
 
 // --- Helper: Print Numbers to Serial ---
-void serial_print_uint(uint64_t value) {
+extern "C" void serial_print_uint(uint64_t value) {
     if (value == 0) {
         serial_print("0");
         return;
@@ -131,7 +132,14 @@ extern "C" void kmain(void) {
     
     serial_print("Page mapped successfully (No Crash).\n");
 
+    IDT::init();
+    serial_print("IDT Initialized.\n");
     // Halt the CPU
+
+    serial_print("Testing Divide by Zero...\n");
+    volatile int a = 10;
+    volatile int b = 0;
+    volatile int c = a / b; // CRASH!
     while (1) {
         asm("hlt");
     }

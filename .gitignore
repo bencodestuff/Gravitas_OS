@@ -1,6 +1,7 @@
 # Build Artifacts
 bin/
 obj/
+iso_root/
 *.iso
 *.elf
 *.o
