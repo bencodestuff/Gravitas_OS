@@ -49,6 +49,47 @@ namespace Shell {
         else if (streq(cmdbuf, "crash")) {
              volatile int a = 10; volatile int b = 0; volatile int c = a/b;
         }
+        else if (cmdbuf[0] == 'p' && cmdbuf[1] == 'e' && cmdbuf[2] == 'e' && cmdbuf[3] == 'k') {
+            // Command format: "peek <hex_address>"
+            // 1. Find the space
+            int space_idx = 4;
+            while (cmdbuf[space_idx] == ' ') space_idx++; // Skip spaces
+            
+            if (cmdbuf[space_idx] == '\0') {
+                kprint("Usage: peek <address>\n");
+            } else {
+                // 2. Parse the address
+                uint64_t addr = hex2int(&cmdbuf[space_idx]);
+                
+                // 3. Print the address header
+                kprint("Memory at 0x");
+                // (We really need a proper kprint_hex helper soon!)
+                // For now, let's assume you trust hex2int worked
+                kprint(&cmdbuf[space_idx]); 
+                kprint(":\n");
+
+                // 4. Dump 16 bytes
+                uint8_t* ptr = (uint8_t*)addr;
+                
+                // SAFETY: If we peek at bad memory, we crash.
+                // In a real OS, we'd check the page tables first!
+                // For now, be careful where you peek.
+                
+                for (int i = 0; i < 16; i++) {
+                    uint8_t byte = ptr[i];
+                    
+                    // Print Hex Byte manually (e.g., "AF ")
+                    const char* hex_chars = "0123456789ABCDEF";
+                    char byte_str[4];
+                    byte_str[0] = hex_chars[(byte >> 4) & 0xF]; // High nibble
+                    byte_str[1] = hex_chars[byte & 0xF];        // Low nibble
+                    byte_str[2] = ' ';
+                    byte_str[3] = '\0';
+                    kprint(byte_str);
+                }
+                kprint("\n");
+            }
+        }
         else {
             kprint("Unknown command: ");
             kprint(cmdbuf);
