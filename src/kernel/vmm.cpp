@@ -2,7 +2,7 @@
 #include "pmm.h"
 #include <limine.h>
 
-extern "C" void serial_print(const char* str);
+extern "C" void kprint(const char* str);
 
 // --- EXTERNAL REQUESTS ---
 // We link to the ones defined in main.cpp
@@ -14,6 +14,7 @@ namespace VMM {
     constexpr uint64_t PTE_PRESENT = 1;
     constexpr uint64_t PTE_WRITABLE = 2;
     constexpr uint64_t PTE_USER = 4;
+    constexpr uint64_t PTE_NO_CACHE = 0x10;
     // NX (No Execute) bit is bit 63, but we'll stick to basic flags for Level 2.
 
     static uint64_t* kernel_pml4 = nullptr;
@@ -38,7 +39,7 @@ namespace VMM {
             }
         }
         buffer[pos++]='\n'; buffer[pos]='\0';
-        serial_print(buffer);
+        kprint(buffer);
     }
 
     static uint64_t* get_next_level(uint64_t* current_level, uint64_t index, bool allocate) {
@@ -78,10 +79,10 @@ namespace VMM {
 
     // --- MAIN INIT ---
     void init(struct limine_memmap_response* map) {
-        serial_print("[VMM] Initializing...\n");
+        kprint("[VMM] Initializing...\n");
 
         if (hhdm_request.response == nullptr || kernel_address_request.response == nullptr) {
-             serial_print("CRITICAL: Requests missing!\n");
+             kprint("CRITICAL: Requests missing!\n");
              for(;;) asm("hlt");
         }
         hhdm_offset = hhdm_request.response->offset;
@@ -90,14 +91,14 @@ namespace VMM {
         uint64_t pml4_phys = PMM::alloc_page();
         kernel_pml4 = (uint64_t*)(pml4_phys + hhdm_offset);
         memset(kernel_pml4, 0, 4096);
-        serial_print("[VMM] PML4 created.\n");
+        kprint("[VMM] PML4 created.\n");
 
         // 2. Map the Kernel Itself
         // We look for regions marked as KERNEL_AND_MODULES
         uint64_t kernel_phys_base = kernel_address_request.response->physical_base;
         uint64_t kernel_virt_base = kernel_address_request.response->virtual_base;
         
-        serial_print("[VMM] Mapping Kernel Segments...\n");
+        kprint("[VMM] Mapping Kernel Segments...\n");
         for (uint64_t i = 0; i < map->entry_count; i++) {
             struct limine_memmap_entry* entry = map->entries[i];
 
@@ -115,30 +116,35 @@ namespace VMM {
         }
 
         // 3. Map All Physical Memory (HHDM)
-        // Optimization: Instead of mapping 0 -> Highest (which includes huge empty holes),
-        // we only map the regions that Limine told us actually exist.
-        serial_print("[VMM] Mapping Physical Memory (HHDM)...\n");
+        kprint("[VMM] Mapping Physical Memory (HHDM)...\n");
 
         for (uint64_t i = 0; i < map->entry_count; i++) {
             struct limine_memmap_entry* entry = map->entries[i];
             
-            // Map this specific region
-            // Virt = Phys + Offset
+            // Default flags: Present and Writable
+            uint64_t flags = PTE_PRESENT | PTE_WRITABLE;
+
+            // If this region is the Framebuffer, DISABLE CACHING!
+            if (entry->type == LIMINE_MEMMAP_FRAMEBUFFER) {
+                flags |= PTE_NO_CACHE;
+                kprint("  [VMM] Framebuffer found and uncached.\n");
+            }
+
+            // Map the region
             for (uint64_t j = 0; j < entry->length; j += 4096) {
                 uint64_t phys = entry->base + j;
                 uint64_t virt = phys + hhdm_offset;
                 
-                // Map as Present | Writable
-                map_page(phys, virt, PTE_PRESENT | PTE_WRITABLE);
+                map_page(phys, virt, flags);
             }
         }
 
-        serial_print("[VMM] Identity Mapping Complete.\n");
+        kprint("[VMM] Identity Mapping Complete.\n");
 
         // 4. THE SWITCH
-        serial_print("[VMM] Switching to new Page Table...\n");
+        kprint("[VMM] Switching to new Page Table...\n");
         switch_pml4(pml4_phys);
-        serial_print("[VMM] SUCCESS: We are running on custom page tables!\n");
+        kprint("[VMM] SUCCESS: We are running on custom page tables!\n");
     }
 
     void unmap_page(uint64_t virtual_addr) { (void)virtual_addr; }

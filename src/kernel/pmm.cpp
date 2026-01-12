@@ -1,7 +1,7 @@
 #include "pmm.h"
 
 // Allow this file to use the serial printer from main.cpp
-extern "C" void serial_print(const char* str);
+extern "C" void kprint(const char* str);
 
 extern volatile struct limine_hhdm_request hhdm_request;
 
@@ -21,7 +21,7 @@ static void pmm_print_hex(uint64_t value) {
     }
     buffer[pos++] = '\n';
     buffer[pos] = '\0';
-    serial_print(buffer);
+    kprint(buffer);
 }
 
 namespace PMM {
@@ -47,16 +47,16 @@ namespace PMM {
     }
 
     void init(struct limine_memmap_response* map) {
-        serial_print("[PMM] Scanning RAM...\n");
+        kprint("[PMM] Scanning RAM...\n");
 
         // Get the HHDM Offset
         if (hhdm_request.response == NULL) {
-            serial_print("CRITICAL: HHDM Request failed!\n");
+            kprint("CRITICAL: HHDM Request failed!\n");
             for(;;) asm("hlt");
         }
         uint64_t hhdm_offset = hhdm_request.response->offset;
         
-        serial_print("[PMM] HHDM Offset: "); pmm_print_hex(hhdm_offset);
+        kprint("[PMM] HHDM Offset: "); pmm_print_hex(hhdm_offset);
 
         // Find range
         highest_addr = 0;
@@ -83,11 +83,11 @@ namespace PMM {
         }
 
         if (bitmap == nullptr) {
-            serial_print("CRITICAL: No RAM for bitmap!\n");
+            kprint("CRITICAL: No RAM for bitmap!\n");
             for(;;) asm("hlt");
         }
 
-        serial_print("[PMM] Bitmap VIRTUAL Address: "); pmm_print_hex((uint64_t)bitmap);
+        kprint("[PMM] Bitmap VIRTUAL Address: "); pmm_print_hex((uint64_t)bitmap);
 
         // Initialize (Mark all used) - This triggered the crash before!
         memory_set(bitmap, 0xFF, bitmap_size); 
@@ -115,7 +115,7 @@ namespace PMM {
         // Lock first 1MB
         for (uint64_t i = 0; i < 256; i++) bitmap_set(i);
         
-        serial_print("[PMM] Initialized successfully.\n");
+        kprint("[PMM] Initialized successfully.\n");
     }
 
     uint64_t alloc_page() {

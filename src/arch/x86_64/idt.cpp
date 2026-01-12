@@ -1,13 +1,25 @@
 #include "idt.h"
 #include "pic.h"
 #include "../../kernel/io.h"
-#include "../../kernel/keyboard.h" // <--- NEW
+#include "../../kernel/keyboard.h"
 
-extern "C" void serial_print(const char* str);
-extern "C" void serial_print_uint(uint64_t value); 
+extern "C" void kprint(const char* str);
+extern "C" void kprint_uint(uint64_t value); 
+
+static char input_buffer[256];
+static int buffer_index = 0;
 
 // Link to the assembly table
 extern "C" void* isr_stub_table[];
+
+bool streq(const char* str1, const char* str2) {
+    int i = 0;
+    while (str1[i] != '\0' && str2[i] != '\0') {
+        if (str1[i] != str2[i]) return false;
+        i++;
+    }
+    return str1[i] == str2[i]; // Check if both ended at the same time
+}
 
 namespace IDT {
 
@@ -52,7 +64,7 @@ namespace IDT {
     }
 
     void init() {
-        serial_print("[IDT] Initializing...\n");
+        kprint("[IDT] Initializing...\n");
 
         idtr.limit = sizeof(idt) - 1;
         idtr.base  = (uint64_t)&idt;
@@ -63,16 +75,16 @@ namespace IDT {
             set_gate(i, (uint64_t)isr_stub_table[i], 0, 0x8E);
         }
 
-        serial_print("[IDT] Loading IDT...\n");
+        kprint("[IDT] Loading IDT...\n");
         asm volatile ("lidt %0" : : "m"(idtr)); // Load it!
-        serial_print("[IDT] Loaded.\n");
+        kprint("[IDT] Loaded.\n");
         
         // FLUSH KEYBOARD BEFORE ENABLING INTERRUPTS
         flush_keyboard();
 
         // Enable interrupts!
         asm volatile ("sti"); 
-        serial_print("[IDT] Interrupts Enabled.\n");
+        kprint("[IDT] Interrupts Enabled.\n");
     }
 }
 
@@ -87,47 +99,82 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         ticks++;
         // Print a dot roughly every second (Timer runs at ~18Hz)
         if (ticks % 18 == 0) {
-            serial_print("Tick...\n"); 
+            kprint("Tick...\n"); 
         }
         PIC::send_eoi(0);
         return;
     }
-    
-    // --- IRQ 1: Keyboard (Interrupt 33) ---
+
+ // --- IRQ 1: Keyboard ---
     if (num == 33) {
         uint8_t scancode = inb(0x60);
-        
-        // Check if a key was RELEASED (Top bit set)
-        if (scancode & 0x80) {
-            // Key release (e.g., lifting your finger off 'A')
-            // We ignore this for now
-        } else {
-            // Key PRESS
-            char c = Keyboard::translate(scancode, false); // false = lowercase for now
-            
+
+        if (!(scancode & 0x80)) { // If key PRESS
+            char c = Keyboard::translate(scancode, false);
+
             if (c != 0) {
-                // We have a valid letter!
-                char str[2] = {c, '\0'};
-                serial_print(str);
+                // Handle Enter (Newline)
+                if (c == '\n') {
+                    kprint("\n"); // Move to next line on screen
+                    
+                    // Terminate the string so we can read it
+                    input_buffer[buffer_index] = '\0'; 
+
+                    // --- EXECUTE COMMAND ---
+                    if (streq(input_buffer, "hello")) {
+                        kprint("Gravitas: Hi there, user!\n");
+                    } 
+                    else if (streq(input_buffer, "help")) {
+                        kprint("Gravitas: Commands: hello, help, clear\n");
+                    }
+                    else if (streq(input_buffer, "clear")) {
+                        // We can't actually clear the serial terminal easily, 
+                        // so we just print a bunch of newlines for now.
+                        for(int i=0; i<20; i++) kprint("\n");
+                    }
+                    else if (buffer_index > 0) {
+                        kprint("Gravitas: Unknown command.\n");
+                    }
+
+                    // Reset buffer for next command
+                    buffer_index = 0;
+                    kprint("> "); // Print a prompt
+                }
+                // Handle Backspace
+                else if (c == '\b') {
+                    if (buffer_index > 0) {
+                        buffer_index--;
+                        // Hacky way to "delete" on serial: backspace, space, backspace
+                        kprint("\b \b"); 
+                    }
+                }
+                // Handle Normal Character
+                else {
+                    if (buffer_index < 255) {
+                        input_buffer[buffer_index++] = c;
+                        char str[2] = {c, '\0'};
+                        kprint(str); // Echo to screen
+                    }
+                }
             }
         }
-        
         PIC::send_eoi(1);
         return;
     }
-    serial_print("\n!!! INTERRUPT RECEIVED !!!\n");
-    serial_print("Number: "); 
+
+    kprint("\n!!! INTERRUPT RECEIVED !!!\n");
+    kprint("Number: "); 
     // Print the numeric interrupt/exception vector
-    serial_print_uint(regs->interrupt_number);
-    serial_print("\n");
+    kprint_uint(regs->interrupt_number);
+    kprint("\n");
 
     // Human-friendly names for common exceptions
     if (regs->interrupt_number == 14) {
-        serial_print("PAGE FAULT (Bad Memory Access)\n");
+        kprint("PAGE FAULT (Bad Memory Access)\n");
     } else if (regs->interrupt_number == 13) {
-        serial_print("GPF (General Protection Fault)\n");
+        kprint("GPF (General Protection Fault)\n");
     }
 
-    serial_print("Halting CPU.\n");
+    kprint("Halting CPU.\n");
     while(1) asm("hlt");
 }

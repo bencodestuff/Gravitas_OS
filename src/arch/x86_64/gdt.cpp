@@ -1,6 +1,6 @@
 #include "gdt.h"
 
-extern "C" void serial_print(const char* str);
+extern "C" void kprint(const char* str);
 
 // This function exists in Assembly (we will write it next)
 // It tells the CPU: "Reload your segment registers with our new GDT!"
@@ -40,7 +40,7 @@ namespace GDT {
     }
 
     void init() {
-        serial_print("[GDT] Initializing...\n");
+        kprint("[GDT] Initializing...\n");
 
         // 0. Null Descriptor (Index 0) - Must be zero
         set_entry(0, 0, 0);
@@ -68,8 +68,8 @@ namespace GDT {
         gdtr.limit = sizeof(gdt) - 1;
         gdtr.base  = (uint64_t)&gdt;
 
-        serial_print("[GDT] Loading new GDT...\n");
+        kprint("[GDT] Loading new GDT...\n");
         load_gdt((uint64_t)&gdtr);
-        serial_print("[GDT] Loaded.\n");
+        kprint("[GDT] Loaded.\n");
     }
 }
