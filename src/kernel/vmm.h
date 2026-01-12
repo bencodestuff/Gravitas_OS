@@ -10,4 +10,5 @@ namespace VMM {
     void unmap_page(uint64_t virtual_addr);
     void switch_pml4(uint64_t pml4_phys_addr);
     uint64_t get_kernel_pml4_phys();
+    bool is_mapped(uint64_t virtual_addr);
 }

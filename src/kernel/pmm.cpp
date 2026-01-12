@@ -48,7 +48,6 @@ namespace PMM {
 
     void init(struct limine_memmap_response* map) {
         kprint("[PMM] Scanning RAM...\n");
-
         // Get the HHDM Offset
         if (hhdm_request.response == NULL) {
             kprint("CRITICAL: HHDM Request failed!\n");
@@ -118,15 +117,19 @@ namespace PMM {
         kprint("[PMM] Initialized successfully.\n");
     }
 
+ // src/kernel/pmm.cpp
+
     uint64_t alloc_page() {
+        // --- FIX: Start at 1 to avoid Physical Address 0x0 ---
+        // Page 0 is often reserved/cursed. Never hand it out.
         uint64_t total_pages = bitmap_size * 8;
-        for (uint64_t i = 0; i < total_pages; i++) {
-            if (!bitmap_test(i)) {
-                bitmap_set(i);
-                return i * PAGE_SIZE;
-            }
+        for (uint64_t i = 1; i < total_pages; i++) { 
+             if (!bitmap_test(i)) {
+                 bitmap_set(i);
+                 return i * 4096; // Return 0x1000, 0x2000, etc.
+             }
         }
-        return 0;
+        return 0; // Out of Memory
     }
 
     void free_page(uint64_t address) {

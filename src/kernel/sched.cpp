@@ -1,6 +1,16 @@
 #include "sched.h"
 #include "heap.h"
 #include "timer.h"
+#include "arch/x86_64/gdt.h"
+
+// Minimal freestanding strcpy implementation for the kernel (C linkage)
+extern "C" char* strcpy(char* dest, const char* src) {
+    char* ret = dest;
+    while ((*dest++ = *src++) != '\0') {
+        // copy
+    }
+    return ret;
+}
 
 extern "C" void kprint(const char* str);
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp);
@@ -17,9 +27,12 @@ namespace Sched {
         uint64_t rsp;
         Task* next;
         int id;
-        // NEW FIELDS
         TaskState state;
-        uint64_t wake_timestamp; // When should I wake up?
+        uint64_t wake_timestamp;
+        char name[16];
+        
+        // --- MISSING FIELD ---
+        uint64_t kstack_top; // We need this for the TSS!
     };
 
     Task* current_task = nullptr;
@@ -40,17 +53,24 @@ namespace Sched {
     }
 
     void init() {
-        // 1. Create a "Shell" task for the currently running code
-        // We don't need a stack because we are ALREADY running on it.
-        // We just need a struct to hold our place when we switch away.
-        
+        // ... previous setup ...
         current_task = new Task;
         current_task->id = 0;
-        current_task->next = current_task; // Circular list (points to self)
+        current_task->state = READY;
+        strcpy(current_task->name, "Kernel Shell");
+        
+        // --- THE FIX ---
+        // Capture the current stack pointer so the TSS knows where to land
+        // when we return to this task from User Mode.
+        uint64_t current_rsp;
+        asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
+        current_task->kstack_top = current_rsp; 
+        // ----------------
         
         ready_queue = current_task;
+        current_task->next = current_task;
         
-        kprint("[Sched] Multithreading Initialized.\n");
+        kprint("[Sched] Initialized.\n");
     }
 
     void create_task(void(*entry_point)()) {
@@ -63,6 +83,8 @@ namespace Sched {
         // 2. Allocate a Stack for this thread (4KB)
         uint64_t* stack_bottom = new uint64_t[512]; // 512 * 8 bytes = 4KB
         uint64_t* stack_top = stack_bottom + 512;
+
+        new_task->kstack_top = (uint64_t)stack_top;
 
         // 3. Forge the Stack!
         // We need to match exactly what 'switch_context' expects to pop.
@@ -86,6 +108,9 @@ namespace Sched {
     }
 
     void yield() {
+
+        if (current_task == nullptr) return;
+
         Task* old_task = current_task;
         Task* next_task = current_task->next;
         
@@ -110,6 +135,7 @@ namespace Sched {
 
         // Switch to the found task
         current_task = next_task;
+        GDT::tss.rsp0 = current_task->kstack_top;
         switch_context(&old_task->rsp, next_task->rsp);
     }
 }

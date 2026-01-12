@@ -14,6 +14,8 @@ static int buffer_index = 0;
 
 // Link to the assembly table
 extern "C" void* isr_stub_table[];
+// Explicit syscall stub (vector 128)
+extern "C" void isr_128();
 
 static inline bool streq(const char* str1, const char* str2) {
     int i = 0;
@@ -74,9 +76,15 @@ namespace IDT {
 
         // Fill the first 48 entries (CPU Exceptions + IRQs)
         // 0x8E = Present(1) | Ring0(00) | Gate(1110 = Interrupt Gate)
-        for (int i = 0; i < 48; i++) {
-            set_gate(i, (uint64_t)isr_stub_table[i], 0, 0x8E);
+            for (int i = 0; i < 48; i++) {
+                // Use IST=1 for the timer IRQ (vector 32) so we always get a
+                // known-good kernel stack even when interrupted from user mode.
+                uint8_t ist = 0;
+                if (i == 32) ist = 1; // Timer
+                set_gate(i, (uint64_t)isr_stub_table[i], ist, 0x8E);
         }
+
+        set_gate(0x80, (uint64_t)isr_128, 1, 0xEE);
 
         kprint("[IDT] Loading IDT...\n");
         asm volatile ("lidt %0" : : "m"(idtr)); // Load it!
@@ -97,10 +105,51 @@ static uint64_t ticks = 0;
 // This is called by Assembly
 extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     uint64_t num = regs->interrupt_number;
+
+    if (num == 0x80) {
+        uint64_t id = regs->rax;
+        uint64_t arg = regs->rdi;
+        
+        if (id == 0) {
+             kprint("\n[SYSCALL] User Process says: ");
+             char c = (char)arg;
+             char str[2] = {c, 0};
+             kprint(str);
+             kprint("\n");
+        }
+        return; // Don't crash!
+    }
+
+    if (num == 14) {
+        uint64_t cr2;
+        asm volatile("mov %%cr2, %0" : "=r"(cr2));
+
+        kprint("\n!!! PAGE FAULT !!!\n");
+        
+        kprint("Faulting Address (CR2): 0x");
+        // Simple hex printer
+        for(int i=60; i>=0; i-=4) {
+             uint64_t n = (cr2 >> i) & 0xF;
+             char c = (n < 10) ? '0'+n : 'A'+(n-10);
+             char s[2] = {c, '\0'};
+             kprint(s);
+        }
+        kprint("\n");
+
+        kprint("Error Code: ");
+        if (regs->error_code & 1) kprint("Present "); else kprint("Not-Present ");
+        if (regs->error_code & 2) kprint("Write "); else kprint("Read ");
+        if (regs->error_code & 4) kprint("User "); else kprint("Kernel ");
+        kprint("\n");
+    }
+
     // --- IRQ 0: Timer (Interrupt 32) ---
     if (num == 32) {
         Timer::tick(); // Update the counter
         PIC::send_eoi(0);
+
+        Sched::yield();
+
         return;
     }
 
