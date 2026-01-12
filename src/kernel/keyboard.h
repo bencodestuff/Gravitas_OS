@@ -2,6 +2,16 @@
 #include <stdint.h>
 
 namespace Keyboard {
-    // Convert a raw Scancode (Set 1) to an ASCII character
-    char translate(uint8_t scancode, bool uppercase);
+    // Defines
+    struct KeyEvent {
+        char character;
+        bool is_pressed;
+    };
+
+    // Called by the hardware interrupt
+    void handle_interrupt();
+
+    // Called by the kernel main loop to get the next key
+    // Returns 0 if no key is waiting.
+    char get_queued_key();
 }

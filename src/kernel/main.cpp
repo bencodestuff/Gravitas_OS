@@ -10,6 +10,7 @@
 #include "io.h"
 #include "font.h"
 #include "heap.h"
+#include "shell.h"
 
 // Forward declare screen_print so `kprint` can call it.
 void screen_print(const char* str);
@@ -269,10 +270,15 @@ extern "C" void kmain(void) {
     PIC::remap();
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
     
-    kprint("Keyboard Enabled. Press keys in the QEMU window!\n");
+Shell::init();
 
-    // Halt the CPU
+    // The Infinite Kernel Loop
     while (1) {
+        // 1. Process Shell Input
+        Shell::update();
+
+        // 2. Halt CPU until next interrupt (saves power)
+        // If we don't halt, the CPU spins at 100% heat checking the buffer.
         asm("hlt");
     }
 }

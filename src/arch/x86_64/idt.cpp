@@ -12,7 +12,7 @@ static int buffer_index = 0;
 // Link to the assembly table
 extern "C" void* isr_stub_table[];
 
-bool streq(const char* str1, const char* str2) {
+static inline bool streq(const char* str1, const char* str2) {
     int i = 0;
     while (str1[i] != '\0' && str2[i] != '\0') {
         if (str1[i] != str2[i]) return false;
@@ -105,59 +105,9 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         return;
     }
 
- // --- IRQ 1: Keyboard ---
+    // --- IRQ 1: Keyboard ---
     if (num == 33) {
-        uint8_t scancode = inb(0x60);
-
-        if (!(scancode & 0x80)) { // If key PRESS
-            char c = Keyboard::translate(scancode, false);
-
-            if (c != 0) {
-                // Handle Enter (Newline)
-                if (c == '\n') {
-                    kprint("\n"); // Move to next line on screen
-                    
-                    // Terminate the string so we can read it
-                    input_buffer[buffer_index] = '\0'; 
-
-                    // --- EXECUTE COMMAND ---
-                    if (streq(input_buffer, "hello")) {
-                        kprint("Gravitas: Hi there, user!\n");
-                    } 
-                    else if (streq(input_buffer, "help")) {
-                        kprint("Gravitas: Commands: hello, help, clear\n");
-                    }
-                    else if (streq(input_buffer, "clear")) {
-                        // We can't actually clear the serial terminal easily, 
-                        // so we just print a bunch of newlines for now.
-                        for(int i=0; i<20; i++) kprint("\n");
-                    }
-                    else if (buffer_index > 0) {
-                        kprint("Gravitas: Unknown command.\n");
-                    }
-
-                    // Reset buffer for next command
-                    buffer_index = 0;
-                    kprint("> "); // Print a prompt
-                }
-                // Handle Backspace
-                else if (c == '\b') {
-                    if (buffer_index > 0) {
-                        buffer_index--;
-                        // Hacky way to "delete" on serial: backspace, space, backspace
-                        kprint("\b \b"); 
-                    }
-                }
-                // Handle Normal Character
-                else {
-                    if (buffer_index < 255) {
-                        input_buffer[buffer_index++] = c;
-                        char str[2] = {c, '\0'};
-                        kprint(str); // Echo to screen
-                    }
-                }
-            }
-        }
+        Keyboard::handle_interrupt(); // Just delegate to the driver
         PIC::send_eoi(1);
         return;
     }
