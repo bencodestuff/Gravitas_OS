@@ -6,6 +6,7 @@ mkdir -p iso_root
 # 1. Copy the Kernel
 # We copy 'gravitas.elf' to the root of the ISO
 cp bin/gravitas.elf iso_root/gravitas.elf
+cp hello.txt iso_root/hello.txt
 
 # 2. Copy the Config
 cp limine.conf iso_root/

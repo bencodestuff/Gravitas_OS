@@ -58,7 +58,11 @@ volatile struct limine_kernel_address_request kernel_address_request = {
     .revision = 0
 };
 
-// ... includes ...
+__attribute__((used, section(".requests")))
+volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
+    .revision = 0
+};
 
 // Arbitrary start address for our heap (somewhere far away from the kernel)
 // 0x1000 0000 0000 fits nicely in 64-bit space.
@@ -291,6 +295,24 @@ extern "C" void kmain(void) {
     Timer::init();
     Sched::init();
     Sched::create_task(background_worker);
+    // --- LEVEL 12: FILESYSTEM CHECK ---
+    if (module_request.response == nullptr || module_request.response->module_count < 1) {
+        kprint("[FS] No modules loaded. Did you edit limine.cfg?\n");
+    } else {
+        struct limine_file* file = module_request.response->modules[0];
+        
+        kprint("[FS] Module Found: ");
+        kprint(file->path);
+        kprint("\n[FS] Content:\n");
+        
+        // Print the file content directly from memory!
+        char* content = (char*)file->address;
+        for (uint64_t i = 0; i < file->size; i++) {
+            char str[2] = {content[i], '\0'};
+            kprint(str);
+        }
+        kprint("\n[FS] End of file.\n");
+    }
     // The Infinite Kernel Loop
     while (1) {
         // 1. Process Shell Input
