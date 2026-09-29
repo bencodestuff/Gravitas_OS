@@ -24,37 +24,76 @@ namespace VMM {
         for (uint64_t i = 0; i < size; i++) p[i] = value;
     }
 
-    // THE FIXED FUNCTION
-    static uint64_t* get_next_level(uint64_t* current_level, uint64_t index, bool allocate, bool user) {
-        uint64_t entry = current_level[index];
-        
-        if (entry & PTE_PRESENT) {
-            // --- CRITICAL FIX: UPGRADE PERMISSIONS ---
-            // If we are mapping a User page, but the existing table is Kernel-only,
-            // we MUST add the USER bit. Otherwise, the CPU blocks access at this level.
-            if (user && !(entry & PTE_USER)) {
-                current_level[index] |= PTE_USER;
-            }
-            // -----------------------------------------
+    static uint64_t pml4_to_phys(uint64_t* pml4_virt) {
+        return (uint64_t)pml4_virt - hhdm_offset;
+    }
 
-            uint64_t phys = entry & 0x000FFFFFFFFFF000;
-            return (uint64_t*)(phys + hhdm_offset);
+    uint64_t current_pml4() {
+        uint64_t cr3;
+        asm volatile("mov %%cr3, %0" : "=r"(cr3));
+        return cr3;
+    }
+
+    // THE FIXED FUNCTION — walks an explicit PML4 (physical address),
+    // allocating intermediate tables in that space when asked.
+    static uint64_t* get_next_level_in(uint64_t pml4_phys, uint64_t pml4_idx,
+                                       uint64_t pdp_idx, uint64_t pd_idx,
+                                       bool allocate, bool user) {
+        uint64_t* pml4 = (uint64_t*)(pml4_phys + hhdm_offset);
+        uint64_t entry = pml4[pml4_idx];
+        if (!(entry & PTE_PRESENT)) {
+            if (!allocate) return nullptr;
+            uint64_t new_table_phys = PMM::alloc_page();
+            if (new_table_phys == 0) return nullptr;
+            uint64_t* new_table_virt = (uint64_t*)(new_table_phys + hhdm_offset);
+            memset(new_table_virt, 0, 4096);
+            uint64_t entry_flags = PTE_PRESENT | PTE_WRITABLE;
+            if (user) entry_flags |= PTE_USER;
+            pml4[pml4_idx] = new_table_phys | entry_flags;
+            entry = pml4[pml4_idx];
         }
+        // Upgrade permissions if a user page shares this table path
+        if (user && !(entry & PTE_USER)) {
+            pml4[pml4_idx] = entry | PTE_USER;
+            entry = pml4[pml4_idx];
+        }
+        uint64_t* pdp = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset);
 
-        if (!allocate) return nullptr;
+        entry = pdp[pdp_idx];
+        if (!(entry & PTE_PRESENT)) {
+            if (!allocate) return nullptr;
+            uint64_t new_table_phys = PMM::alloc_page();
+            if (new_table_phys == 0) return nullptr;
+            uint64_t* new_table_virt = (uint64_t*)(new_table_phys + hhdm_offset);
+            memset(new_table_virt, 0, 4096);
+            uint64_t entry_flags = PTE_PRESENT | PTE_WRITABLE;
+            if (user) entry_flags |= PTE_USER;
+            pdp[pdp_idx] = new_table_phys | entry_flags;
+            entry = pdp[pdp_idx];
+        }
+        if (user && !(entry & PTE_USER)) {
+            pdp[pdp_idx] = entry | PTE_USER;
+            entry = pdp[pdp_idx];
+        }
+        uint64_t* pd = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset);
 
-        uint64_t new_table_phys = PMM::alloc_page();
-        if (new_table_phys == 0) return nullptr;
-
-        uint64_t* new_table_virt = (uint64_t*)(new_table_phys + hhdm_offset);
-        memset(new_table_virt, 0, 4096);
-        
-        // When creating a new level, if 'user' is true, we flag it as USER allowed.
-        uint64_t entry_flags = PTE_PRESENT | PTE_WRITABLE;
-        if (user) entry_flags |= PTE_USER;
-        
-        current_level[index] = new_table_phys | entry_flags;
-        return new_table_virt;
+        entry = pd[pd_idx];
+        if (!(entry & PTE_PRESENT)) {
+            if (!allocate) return nullptr;
+            uint64_t new_table_phys = PMM::alloc_page();
+            if (new_table_phys == 0) return nullptr;
+            uint64_t* new_table_virt = (uint64_t*)(new_table_phys + hhdm_offset);
+            memset(new_table_virt, 0, 4096);
+            uint64_t entry_flags = PTE_PRESENT | PTE_WRITABLE;
+            if (user) entry_flags |= PTE_USER;
+            pd[pd_idx] = new_table_phys | entry_flags;
+            entry = pd[pd_idx];
+        }
+        if (user && !(entry & PTE_USER)) {
+            pd[pd_idx] = entry | PTE_USER;
+            entry = pd[pd_idx];
+        }
+        return (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset);
     }
 
     bool is_mapped(uint64_t virtual_addr) {
@@ -63,18 +102,13 @@ namespace VMM {
         uint64_t pd_idx   = (virtual_addr >> 21) & 0x1FF;
         uint64_t pt_idx   = (virtual_addr >> 12) & 0x1FF;
 
-        uint64_t* pdp = get_next_level(kernel_pml4, pml4_idx, false, false);
-        if (!pdp) return false;
-        uint64_t* pd = get_next_level(pdp, pdp_idx, false, false);
-        if (!pd) return false;
-        uint64_t* pt = get_next_level(pd, pd_idx, false, false);
+        uint64_t* pt = get_next_level_in(current_pml4(), pml4_idx, pdp_idx, pd_idx, false, false);
         if (!pt) return false;
-
-        uint64_t entry = pt[pt_idx];
-        return (entry & PTE_PRESENT) != 0;
+        return (pt[pt_idx] & PTE_PRESENT) != 0;
     }
 
-    void map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags) {
+    void map_page_in(uint64_t pml4_phys, uint64_t physical_addr,
+                     uint64_t virtual_addr, uint64_t flags) {
         uint64_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
         uint64_t pdp_idx  = (virtual_addr >> 30) & 0x1FF;
         uint64_t pd_idx   = (virtual_addr >> 21) & 0x1FF;
@@ -82,21 +116,20 @@ namespace VMM {
 
         bool user = (flags & PTE_USER) != 0;
 
-        uint64_t* pdp = get_next_level(kernel_pml4, pml4_idx, true, user);
-        if(!pdp) return;
-        
-        uint64_t* pd = get_next_level(pdp, pdp_idx, true, user);
-        if(!pd) return;
-        
-        uint64_t* pt = get_next_level(pd, pd_idx, true, user);
-        if(!pt) return;
+        uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, true, user);
+        if (!pt) return;
 
         // Apply flags to the final page
         uint64_t phys_frame = physical_addr & 0x000FFFFFFFFFF000;
         pt[pt_idx] = phys_frame | (flags & 0xFFF);
-        
-        // Flush TLB for this specific address immediately
+
+        // Flush TLB for this specific address immediately (harmless if the
+        // address belongs to a space that isn't currently active)
         asm volatile("invlpg (%0)" :: "r"(virtual_addr) : "memory");
+    }
+
+    void map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags) {
+        map_page_in(current_pml4(), physical_addr, virtual_addr, flags);
     }
 
     void init(struct limine_memmap_response* map) {
@@ -122,7 +155,7 @@ namespace VMM {
                 uint64_t offset = entry->base - kernel_phys_base;
                 uint64_t virt_start = kernel_virt_base + offset;
                 for (uint64_t j = 0; j < entry->length; j += 4096) {
-                    map_page(entry->base + j, virt_start + j, PTE_PRESENT | PTE_WRITABLE);
+                    map_page_in(pml4_phys, entry->base + j, virt_start + j, PTE_PRESENT | PTE_WRITABLE);
                 }
             }
         }
@@ -134,7 +167,7 @@ namespace VMM {
             if (entry->type == LIMINE_MEMMAP_FRAMEBUFFER) flags |= PTE_NO_CACHE;
 
             for (uint64_t j = 0; j < entry->length; j += 4096) {
-                map_page(entry->base + j, entry->base + j + hhdm_offset, flags);
+                map_page_in(pml4_phys, entry->base + j, entry->base + j + hhdm_offset, flags);
             }
         }
 
@@ -148,5 +181,51 @@ namespace VMM {
     }
     uint64_t get_kernel_pml4_phys() {
         return (uint64_t)kernel_pml4 - hhdm_offset;
+    }
+
+    uint64_t clone_kernel_space() {
+        uint64_t new_pml4_phys = PMM::alloc_page();
+        uint64_t* new_pml4 = (uint64_t*)(new_pml4_phys + hhdm_offset);
+        memset(new_pml4, 0, 4096);
+
+        // Share the kernel's upper half (entries 256..511). Copying the
+        // top-level entries shares the entire kernel subtree, so kernel
+        // mappings made later are visible in every address space.
+        // The user half (0..255) stays zero: each process builds its own.
+        for (int i = 256; i < 512; i++) {
+            new_pml4[i] = kernel_pml4[i];
+        }
+        return new_pml4_phys;
+    }
+
+    // Recursively free a table page and everything below it (tables + frames).
+    static void free_space_level(uint64_t table_phys, int level) {
+        uint64_t* table = (uint64_t*)(table_phys + hhdm_offset);
+        for (int i = 0; i < 512; i++) {
+            uint64_t entry = table[i];
+            if (!(entry & PTE_PRESENT)) continue;
+            uint64_t next_phys = entry & 0x000FFFFFFFFFF000;
+
+            if (level < 4) {
+                // Intermediate table: recurse, then free the table itself
+                free_space_level(next_phys, level + 1);
+            }
+            // Leaf level (4): entries are data frames — free them
+            PMM::free_page(next_phys);
+        }
+        PMM::free_page(table_phys);
+    }
+
+    void destroy_user_space(uint64_t pml4_phys) {
+        if (pml4_phys == get_kernel_pml4_phys()) return; // never nuke the kernel
+
+        uint64_t* pml4 = (uint64_t*)(pml4_phys + hhdm_offset);
+        for (int i = 0; i < 256; i++) { // user half only
+            uint64_t entry = pml4[i];
+            if (!(entry & PTE_PRESENT)) continue;
+            free_space_level(entry & 0x000FFFFFFFFFF000, 2);
+            pml4[i] = 0;
+        }
+        PMM::free_page(pml4_phys);
     }
 }

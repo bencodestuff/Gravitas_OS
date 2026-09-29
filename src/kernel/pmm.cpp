@@ -113,8 +113,22 @@ namespace PMM {
 
         // Lock first 1MB
         for (uint64_t i = 0; i < 256; i++) bitmap_set(i);
-        
+
+        // Lock the kernel heap's physical range so alloc_page() never hands
+        // those frames to anyone else. The heap lives at HHDM+0x08000000,
+        // which is visible in every address space (kernel half is shared).
+        reserve_range(0x08000000, 0x400000); // 4MB for the kernel heap
+
         kprint("[PMM] Initialized successfully.\n");
+    }
+
+    // Mark a physical range as permanently in use
+    void reserve_range(uint64_t base, uint64_t length) {
+        uint64_t first_page = base / PAGE_SIZE;
+        uint64_t count = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+        for (uint64_t i = 0; i < count; i++) {
+            bitmap_set(first_page + i);
+        }
     }
 
  // src/kernel/pmm.cpp

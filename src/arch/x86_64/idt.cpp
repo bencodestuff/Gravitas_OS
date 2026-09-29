@@ -5,6 +5,7 @@
 
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
+#include "../../kernel/vmm.h"
 #include "../../fs/tar.h"
 #include "../../fs/elf.h"
 
@@ -134,12 +135,17 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              char str[2] = {c, 0};
              kprint(str);
         }
-        else if (syscall_id == 1) { // READ (Keyboard)
-             // 1. Try to get a key from the buffer
-             char c = Keyboard::get_queued_key();
-             
-             // 2. Put the result in RAX
-             // This is how return values are passed back to User Mode
+        else if (syscall_id == 1) { // READ (Keyboard) — blocks until a key
+             // Interrupts off around the check-and-block so a key arriving
+             // in between can't be missed (the IRQ will wake us instead).
+             asm volatile("cli");
+             char c = 0;
+             while (true) {
+                 c = Keyboard::get_queued_key();
+                 if (c != 0) break;
+                 Sched::block_on_keyboard();
+                 Sched::yield(); // returns when the keyboard IRQ wakes us
+             }
              regs->rax = (uint64_t)c;
         }
         else if (syscall_id == 2) { // LIST FILES: rdi = buf, rsi = max
@@ -159,11 +165,12 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  regs->rax = (uint64_t)-1; // not found
              }
         }
-        else if (syscall_id == 4) { // SPAWN: rdi = program name in tarfs.
+        else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.
              asm volatile("cli"); // no timer nesting mid-spawn
-             // Copy the name into kernel memory BEFORE the ELF load —
-             // loading a program overwrites userland memory (shared space).
+             // Copy the name AND argv strings into kernel memory BEFORE the
+             // ELF load — loading a program overwrites userland memory
+             // (everything shares one address space for now).
              char namebuf[16];
              const char* user_name = (const char*)regs->rdi;
              int ni = 0;
@@ -173,16 +180,43 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              }
              namebuf[ni] = '\0';
 
+             static char argv_stage[8][64];
+             const char* argv_copy[8];
+             uint64_t user_argc = regs->rdx;
+             if (user_argc > 8) user_argc = 8;
+             const char** user_argv = (const char**)regs->rsi;
+             int argc = 0;
+             for (uint64_t i = 0; i < user_argc; i++) {
+                 const char* us = user_argv[i];
+                 int ci = 0;
+                 while (ci < 63 && us[ci] != '\0') {
+                     argv_stage[i][ci] = us[ci];
+                     ci++;
+                 }
+                 argv_stage[i][ci] = '\0';
+                 argv_copy[i] = argv_stage[i];
+                 argc = i + 1;
+             }
+
              char* data = nullptr;
              uint64_t size = 0;
              if (!Tar::read_file(namebuf, &data, &size)) {
                  regs->rax = (uint64_t)-1;
              } else {
+                 // Build the child in its OWN address space: clone, switch,
+                 // load the ELF there, create the task, switch back.
+                 uint64_t old_cr3 = VMM::current_pml4();
+                 uint64_t child_cr3 = VMM::clone_kernel_space();
+                 VMM::switch_pml4(child_cr3);
+
                  uint64_t entry = ELF::load_elf((uint8_t*)data);
                  if (entry == 0) {
+                     VMM::switch_pml4(old_cr3);
+                     VMM::destroy_user_space(child_cr3);
                      regs->rax = (uint64_t)-1;
                  } else {
-                     int child = Sched::create_user_task(entry, namebuf);
+                     int child = Sched::create_user_task(entry, namebuf, argc, argv_copy, child_cr3);
+                     VMM::switch_pml4(old_cr3);
                      Sched::block_current(child);
                      Sched::yield(); // returns when the child wakes us
                      regs->rax = (uint64_t)child;
@@ -232,6 +266,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     if (num == 33) {
         Keyboard::handle_interrupt(); // Just delegate to the driver
         PIC::send_eoi(1);
+        Sched::wake_keyboard_waiter(); // a key may have arrived — wake getc
         return;
     }
 

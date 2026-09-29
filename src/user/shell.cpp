@@ -67,23 +67,40 @@ static bool str_eq(const char* a, const char* b) {
     return *a == *b;
 }
 
-static void cmd_cat(const char* name) {
-    static char filebuf[4096];
-    uint64_t n = syscall3(3, (uint64_t)name, (uint64_t)filebuf, sizeof(filebuf));
-    if (n == (uint64_t)-1) {
-        print("cat: no such file\n");
-        return;
-    }
-    for (uint64_t i = 0; i < n; i++) sys_putc(filebuf[i]);
-    sys_putc('\n');
-}
-
 static void cmd_help() {
-    print("Gravitas userland commands:\n");
+    print("Gravitas commands (commands are programs from the tarfs):\n");
     print("  ls          - list files in the tarfs\n");
     print("  cat <file>  - print a file's contents\n");
-    print("  run <prog>  - spawn a program from the tarfs\n");
+    print("  run <prog>  - spawn a program by exact name\n");
     print("  help        - this list\n");
+}
+
+// Split a line into words (max 'max' words, 63 chars each)
+static int split_words(char* line, char words[][64], int max) {
+    int count = 0;
+    while (*line && count < max) {
+        while (*line == ' ') line++;
+        if (*line == '\0') break;
+        int i = 0;
+        while (*line && *line != ' ' && i < 63) words[count][i++] = *line++;
+        words[count][i] = '\0';
+        count++;
+    }
+    return count;
+}
+
+// Copy src into dst (max 63 chars + NUL), returns length
+static int str_copy(char* dst, const char* src) {
+    int i = 0;
+    while (src[i] && i < 63) { dst[i] = src[i]; i++; }
+    dst[i] = '\0';
+    return i;
+}
+
+static bool str_ends_with_elf(const char* s) {
+    while (*s) s++;
+    if (s[-4] != '.' || s[-3] != 'e' || s[-2] != 'l' || s[-1] != 'f') return false;
+    return true;
 }
 
 static void execute(char* line) {
@@ -93,48 +110,49 @@ static void execute(char* line) {
     if (str_eq(line, "")) return;
     if (str_eq(line, "help")) { cmd_help(); return; }
 
-    if (line[0] == 'c' && line[1] == 'a' && line[2] == 't' && (line[3] == ' ' || line[3] == '\0')) {
-        char* name = line + 3;
-        while (*name == ' ') name++;
-        if (*name == '\0') { print("cat: missing file name\n"); return; }
-        cmd_cat(name);
-        return;
+    static char words[8][64];
+    int nwords = split_words(line, words, 8);
+    if (nwords == 0) return;
+
+    // Pick the program: 'run' takes an exact tarfs name, everything else
+    // gets ".elf" appended ('ls' -> 'ls.elf').
+    const char* prog;
+    int arg_start;
+    static char progbuf[64];
+    if (str_eq(words[0], "run")) {
+        if (nwords < 2) { print("run: missing program name\n"); return; }
+        prog = words[1];
+        arg_start = 2;
+    } else {
+        if (str_ends_with_elf(words[0])) {
+            prog = words[0];
+        } else {
+            int len = str_copy(progbuf, words[0]);
+            progbuf[len++] = '.';
+            progbuf[len++] = 'e';
+            progbuf[len++] = 'l';
+            progbuf[len++] = 'f';
+            progbuf[len] = '\0';
+            prog = progbuf;
+        }
+        arg_start = 1;
     }
 
-    if (line[0] == 'r' && line[1] == 'u' && line[2] == 'n' && (line[3] == ' ' || line[3] == '\0')) {
-        char* name = line + 3;
-        while (*name == ' ') name++;
-        if (*name == '\0') { print("run: missing program name\n"); return; }
-
-        // Spawn blocks us until the child exits
-        uint64_t pid = syscall2(4, (uint64_t)name, 0);
-        if (pid == (uint64_t)-1) { print("run: no such program\n"); return; }
-        print("[shell] program finished\n");
-        return;
+    // Build argv: argv[0] = program name, argv[1..] = extra words
+    static char argstrings[8][64];
+    static const char* argvp[9];
+    int argc = 0;
+    str_copy(argstrings[argc], prog);
+    argvp[argc] = argstrings[argc];
+    argc++;
+    for (int i = arg_start; i < nwords && argc < 8; i++) {
+        str_copy(argstrings[argc], words[i]);
+        argvp[argc] = argstrings[argc];
+        argc++;
     }
 
-    // Not a builtin: commands ARE programs. Try spawning <word>.elf from
-    // the tarfs. (This is why 'ls' works — it spawns ls.elf.)
-    static char progname[48];
-    int i = 0;
-    while (line[i] != '\0' && line[i] != ' ' && i < 40) {
-        progname[i] = line[i];
-        i++;
-    }
-    progname[i] = '\0';
-
-    // Don't double-suffix if the user already typed the .elf
-    int len = i;
-    if (!(len >= 4 && progname[len-4] == '.' && progname[len-3] == 'e'
-          && progname[len-2] == 'l' && progname[len-1] == 'f')) {
-        progname[len++] = '.';
-        progname[len++] = 'e';
-        progname[len++] = 'l';
-        progname[len++] = 'f';
-        progname[len] = '\0';
-    }
-
-    uint64_t pid = syscall2(4, (uint64_t)progname, 0);
+    // Spawn blocks us until the child exits
+    uint64_t pid = syscall3(4, (uint64_t)prog, (uint64_t)argvp, argc);
     if (pid == (uint64_t)-1) {
         print("unknown command, try 'help'\n");
         return;

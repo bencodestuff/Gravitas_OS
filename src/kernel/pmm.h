@@ -14,4 +14,7 @@ namespace PMM {
 
     // Return a page (Free it)
     void free_page(uint64_t address);
+
+    // Mark a physical range as permanently in use (kernel infrastructure)
+    void reserve_range(uint64_t base, uint64_t length);
 }

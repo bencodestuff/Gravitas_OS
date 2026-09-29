@@ -45,6 +45,7 @@ namespace Sched {
         int waiting_on;         // task id this task is blocked on (-1 = none)
         uint64_t user_rip;      // for the userland trampoline
         uint64_t user_rsp;
+        uint64_t cr3;           // this task's address space
     };
 
     Task* current_task = nullptr;
@@ -79,6 +80,7 @@ namespace Sched {
         asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
         current_task->kstack_top = current_rsp; 
         current_task->rsp = current_rsp; // valid for self-switches
+        current_task->cr3 = VMM::get_kernel_pml4_phys();
         // ----------------
         
         ready_queue = current_task;
@@ -123,12 +125,14 @@ namespace Sched {
         kprint("[Sched] Task Created.\n");
     }
 
-    int create_user_task(uint64_t rip, const char* name) {
+    int create_user_task(uint64_t rip, const char* name, int argc,
+                         const char* const* argv, uint64_t cr3) {
         Task* new_task = new Task;
         new_task->id = ++task_counter;
         new_task->state = READY;
         new_task->wake_timestamp = 0;
         new_task->waiting_on = -1;
+        new_task->cr3 = cr3;
         strcpy(new_task->name, name);
 
         // Kernel stack (interrupts from ring 3 land here via the TSS)
@@ -145,20 +149,48 @@ namespace Sched {
         uint64_t user_stack_va = 0x500000 + (uint64_t)new_task->id * 0x100000;
         VMM::map_page(PMM::alloc_page(), user_stack_va, 0x07);        // P|W|U
         VMM::map_page(PMM::alloc_page(), user_stack_va - 0x1000, 0x07);
+
+        // --- Build the initial user stack (System V argv layout) ---
+        // [rsp]     = argc
+        // [rsp+8..] = argv[0..argc-1], argv[argc] = NULL
+        // higher    = the argv string bytes themselves
+        static uint64_t str_addrs[8];
+        uint64_t total_len = 0;
+        for (int i = 0; i < argc; i++) {
+            const char* s = argv[i];
+            while (*s) { total_len++; s++; }
+            total_len++; // NUL
+        }
+        uint64_t strings_start = (user_stack_va - total_len) & ~(uint64_t)15;
+        uint64_t array_start = strings_start - ((argc + 1) * 8);
+        uint64_t new_rsp = array_start - 8;
+
+        char* dst = (char*)strings_start;
+        for (int i = 0; i < argc; i++) {
+            str_addrs[i] = (uint64_t)dst;
+            const char* s = argv[i];
+            while (*s) *dst++ = *s++;
+            *dst++ = '\0';
+        }
+        for (int i = 0; i < argc; i++) ((uint64_t*)array_start)[i] = str_addrs[i];
+        ((uint64_t*)array_start)[argc] = 0; // argv[argc] = NULL
+        *(uint64_t*)new_rsp = (uint64_t)argc;
+
         new_task->user_rip = rip;
-        new_task->user_rsp = user_stack_va;
+        new_task->user_rsp = new_rsp;
 
         // Forge the switch_context stack. NOTE: switch_context pops in
         // REVERSE push order (r15 first, rbx last), so the slots must be
         // written deepest-first as: ret, rbx, rbp, r12, r13, r14, r15.
-        // R12/R13 carry the userland RIP/RSP into the trampoline.
+        // R12/R13 carry the userland RIP/RSP into the trampoline; R14/R15
+        // carry argc/argv, which the trampoline moves into RDI/RSI.
         stack_top--; *stack_top = (uint64_t)user_entry_trampoline; // deepest: ret target
         stack_top--; *stack_top = 0;            // rbx
         stack_top--; *stack_top = 0;            // rbp
         stack_top--; *stack_top = rip;          // r12 -> user RIP
-        stack_top--; *stack_top = user_stack_va; // r13 -> user RSP
-        stack_top--; *stack_top = 0;            // r14
-        stack_top--; *stack_top = 0;            // r15
+        stack_top--; *stack_top = new_rsp;      // r13 -> user RSP
+        stack_top--; *stack_top = (uint64_t)argc;  // r14 -> argc
+        stack_top--; *stack_top = array_start;  // r15 -> argv
         new_task->rsp = (uint64_t)stack_top;
 
         new_task->next = ready_queue->next;
@@ -175,6 +207,27 @@ namespace Sched {
         current_task->waiting_on = child_id;
         // Never wake this task by timestamp — only the child's exit wakes us
         current_task->wake_timestamp = (uint64_t)-1;
+    }
+
+    static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall
+
+    void block_on_keyboard() {
+        current_task->state = SLEEPING;
+        current_task->wake_timestamp = (uint64_t)-1; // only the IRQ wakes us
+        keyboard_waiter = current_task;
+    }
+
+    void wake_keyboard_waiter() {
+        if (keyboard_waiter != nullptr) {
+            keyboard_waiter->state = READY;
+            keyboard_waiter = nullptr;
+        }
+    }
+
+    static void switch_to_task_cr3(Task* task) {
+        if (task->cr3 != VMM::current_pml4()) {
+            VMM::switch_pml4(task->cr3);
+        }
     }
 
     void exit_current() {
@@ -222,6 +275,7 @@ namespace Sched {
 
         current_task = next;
         GDT::tss.rsp0 = next->kstack_top;
+        switch_to_task_cr3(next);
         uint64_t dummy_rsp; // never used — this task ceases to exist
         switch_context(&dummy_rsp, next->rsp);
         // Never returns: the CPU is now on the next task's stack.
@@ -261,12 +315,15 @@ namespace Sched {
         // Switch to the found task
         current_task = next_task;
         GDT::tss.rsp0 = current_task->kstack_top;
+        switch_to_task_cr3(next_task);
         switch_context(&old_task->rsp, next_task->rsp);
 
         // We only get here when this task is scheduled back in.
         // Reap any task that exited since the last switch (its old kernel
         // stack is definitely abandoned by now).
         if (zombie != nullptr) {
+            // Free the exited task's address space (its user frames + tables)
+            VMM::destroy_user_space(zombie->cr3);
             delete[] zombie->kstack_mem;
             delete zombie;
             zombie = nullptr;

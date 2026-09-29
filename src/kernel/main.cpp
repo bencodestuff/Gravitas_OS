@@ -46,36 +46,12 @@ volatile struct limine_kernel_address_request kernel_address_request = {
 // Declared in initrd.cpp
 extern volatile struct limine_module_request module_request;
 
-// Arbitrary start address for our heap (somewhere far away from the kernel)
-// 0x1000 0000 0000 fits nicely in 64-bit space.
-#define HEAP_START_ADDR 0x100000000000
-#define HEAP_INITIAL_PAGES 256 // 256 * 4KB = 1 MB of Heap to start
-
-void heap_init_pages() {
-    kprint("[Heap] Mapping pages...\n");
-    
-    // We need to verify we have enough RAM for this, but for now let's assume we do.
-    // We are going to ask the PMM for pages and map them to our Heap Address.
-    
-    uint64_t virt_addr = HEAP_START_ADDR;
-    
-    for (int i = 0; i < HEAP_INITIAL_PAGES; i++) {
-        // 1. Allocate a physical page
-        uint64_t phys_addr = (uint64_t)PMM::alloc_page();
-        if (phys_addr == 0) {
-            kprint("[Heap] OUT OF RAM!\n");
-            return;
-        }
-
-        // 2. Map it to the virtual address
-        // Flags: Present | Writable (No User access yet)
-        // Note: We use the defaults, caching is fine here.
-        VMM::map_page(phys_addr, virt_addr, 0x03); 
-        
-        virt_addr += 4096;
-    }
-    kprint("[Heap] Pages mapped.\n");
-}
+// The kernel heap lives in the HHDM window at physical 0x08000000 (128MB),
+// reserved by the PMM. Every address space shares the HHDM mapping, so the
+// heap is visible from the kernel half no matter which process is active —
+// no per-space mapping needed and no clone-time surprises.
+#define HEAP_PHYS_BASE  0x08000000
+#define HEAP_SIZE       0x400000 // 4MB
 
 // --- Helper: Print Numbers to Serial ---
 extern "C" void kprint_uint(uint64_t value) {
@@ -282,8 +258,10 @@ extern "C" void kmain(void) {
     
     kprint("Page mapped successfully (No Crash).\n");
 
-    heap_init_pages();
-    Heap::init((void*)HEAP_START_ADDR, HEAP_INITIAL_PAGES * 4096);
+    // Heap: lives in the HHDM window at a reserved physical range — visible
+    // from every address space (the kernel half is shared), no mapping needed
+    uint64_t heap_va = hhdm_request.response->offset + HEAP_PHYS_BASE;
+    Heap::init((void*)heap_va, HEAP_SIZE);
 
     // TEST: Dynamic Allocation
     int* test_ptr = new int;
@@ -309,14 +287,21 @@ extern "C" void kmain(void) {
 
     Tar::init();
 
-    // Spawn the userland shell as a real ring-3 task
+    // Spawn the userland shell as a real ring-3 task in its own address space
     char* shell_data = nullptr;
     uint64_t shell_size = 0;
     if (Tar::read_file("shell.elf", &shell_data, &shell_size)) {
+        uint64_t old_cr3 = VMM::current_pml4();
+        uint64_t child_cr3 = VMM::clone_kernel_space();
+        VMM::switch_pml4(child_cr3);
+
         uint64_t entry = ELF::load_elf((uint8_t*)shell_data);
         if (entry != 0) {
-            Sched::create_user_task(entry, "shell");
+            Sched::create_user_task(entry, "shell", 0, nullptr, child_cr3);
+            VMM::switch_pml4(old_cr3);
         } else {
+            VMM::switch_pml4(old_cr3);
+            VMM::destroy_user_space(child_cr3);
             kprint("[Kernel] shell.elf failed to load!\n");
         }
     } else {
