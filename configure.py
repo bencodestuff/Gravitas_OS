@@ -15,6 +15,7 @@ CFLAGS = [
     "-target x86_64-unknown-none-elf",
     "-ffreestanding",
     "-fno-stack-protector",
+    "-fno-pie", "-fno-pic",
     "-fno-rtti",
     "-fno-exceptions",
     "-mno-red-zone",
@@ -28,6 +29,26 @@ CFLAGS = [
     "-std=c++20",
     "-g",
 ]
+
+# Userland: libc headers ONLY (no kernel include paths) so the boundary
+# stays clean — kernel code can't include libc, userland can't see kernel.
+USER_CFLAGS = [
+    "-target x86_64-unknown-none-elf",
+    "-ffreestanding",
+    "-fno-stack-protector",
+    "-fno-pie", "-fno-pic",
+    "-mno-red-zone",
+    "-mno-mmx", "-mno-sse", "-mno-sse2",
+    "-Wall", "-Wextra",
+    "-Isrc/libc/include",
+    "-g",
+]
+
+# libc C sources compile as C11
+LIBC_CFLAGS = USER_CFLAGS + ["-std=c11", "-fno-builtin"]
+
+# libc C++ sources (crt0, cxx runtime)
+LIBC_CXXFLAGS = USER_CFLAGS + ["-std=c++20", "-fno-rtti", "-fno-exceptions", "-fno-builtin"]
 
 LDFLAGS = [
     "-nostdlib",
@@ -75,6 +96,8 @@ def main():
     # Userland programs: compiled into separate ELFs, NOT linked into the kernel
     user_sources = [f for f in cpp_sources if f.startswith("src/user/")]
     cpp_sources = [f for f in cpp_sources if not f.startswith("src/user/")]
+    # The libc builds separately (its own rules); never part of the kernel
+    cpp_sources = [f for f in cpp_sources if not f.startswith("src/libc/")]
 
     print(f"Configuring for {len(cpp_sources)} C++ files...")
 
@@ -97,22 +120,50 @@ def main():
         # Userland: one freestanding ELF per source, linked at 0x400000
         # (must match USER_CODE_ADDR in the kernel)
         user_link_flags = " ".join([
-            "-nostdlib", "-static", "-Wl,--build-id=none",
+            "-nostdlib", "-static", "-no-pie", "-Wl,--build-id=none",
             "-Wl,-Ttext=$base", "-Wl,-z,max-page-size=0x1000",
             "-Wl,-e,_start",
         ])
         ninja.write(f"rule userelf\n")
-        ninja.write(f"  command = {COMPILER} {' '.join(CFLAGS)} {user_link_flags} $in -o $out\n")
+        ninja.write(f"  command = {COMPILER} {' '.join(USER_CFLAGS + ['-std=c++20', '-fno-rtti', '-fno-exceptions'])} {user_link_flags} $in -o $out\n")
         ninja.write(f"  description = USER $out\n\n")
+
+        # libc objects: compiled ONCE, linked into every userland program
+        ninja.write(f"rule libc_c\n")
+        ninja.write(f"  command = clang {' '.join(LIBC_CFLAGS)} -c $in -o $out\n")
+        ninja.write(f"  description = LIBC-C $out\n\n")
+        ninja.write(f"rule libc_cxx\n")
+        ninja.write(f"  command = {COMPILER} {' '.join(LIBC_CXXFLAGS)} -c $in -o $out\n")
+        ninja.write(f"  description = LIBC-CXX $out\n\n")
 
         ninja.write(f"rule iso\n")
         ninja.write(f"  command = ./build_iso.sh\n")
         ninja.write(f"  description = ISO gravitas.iso\n\n")
         
+        # --- libc objects (once, reused by every program) ---
+        libc_dir = "src/libc"
+        libc_objects = []
+        for root, dirs, files in os.walk(libc_dir):
+            for file in files:
+                src_path = os.path.join(root, file)
+                if file.endswith(".c"):
+                    obj = "obj/libc/" + src_path.replace("/", "_") + ".o"
+                    ninja.write(f"build {obj}: libc_c {src_path}\n")
+                    libc_objects.append(obj)
+                elif file.endswith(".cpp") and "crt0" not in file:
+                    # crt0 must come FIRST in the link (defines _start);
+                    # handled separately below.
+                    obj = "obj/libc/" + src_path.replace("/", "_") + ".o"
+                    ninja.write(f"build {obj}: libc_cxx {src_path}\n")
+                    libc_objects.append(obj)
+
+        crt0_obj = "obj/libc/src_libc_cxx_crt0.cpp.o"
+        ninja.write(f"build {crt0_obj}: libc_cxx {libc_dir}/cxx/crt0.cpp\n")
+
         # --- THE FIX IS HERE ---
         # Note the spaces inside the quotes for 'command', 'description', and 'pool'
         ninja.write(f"rule run\n")
-        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio\n")
+        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl\n")
         ninja.write(f"  description = RUN gravitas.iso\n")
         ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
@@ -152,8 +203,9 @@ def main():
         for src in user_sources:
             stem = os.path.splitext(os.path.basename(src))[0]
             out = f"bin/{stem}.elf"
-            ninja.write(f"build {out}: userelf {src}\n")
-            ninja.write(f"  base = {user_bases[stem]}\n")
+            # crt0 + all libc objects are real inputs so ninja builds them
+            ninja.write(f"build {out}: userelf {src} {crt0_obj} {' '.join(libc_objects)}\n")
+            ninja.write(f"  base = {user_bases[stem]:#x}\n")
             user_elfs.append(out)
 
         # The ISO needs the kernel AND every userland ELF (packed into the tar)

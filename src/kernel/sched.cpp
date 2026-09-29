@@ -46,6 +46,7 @@ namespace Sched {
         uint64_t user_rip;      // for the userland trampoline
         uint64_t user_rsp;
         uint64_t cr3;           // this task's address space
+        uint64_t brk;           // program break (malloc arena top), 0 = unset
     };
 
     Task* current_task = nullptr;
@@ -207,6 +208,14 @@ namespace Sched {
         current_task->waiting_on = child_id;
         // Never wake this task by timestamp — only the child's exit wakes us
         current_task->wake_timestamp = (uint64_t)-1;
+    }
+
+    uint64_t current_task_brk() {
+        return current_task->brk;
+    }
+
+    void current_task_set_brk(uint64_t value) {
+        current_task->brk = value;
     }
 
     static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall

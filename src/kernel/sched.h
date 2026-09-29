@@ -17,6 +17,10 @@ namespace Sched {
     int create_user_task(uint64_t rip, const char* name, int argc,
                          const char* const* argv, uint64_t cr3);
 
+    // Program break accessors for the syscall layer (Task is private here)
+    uint64_t current_task_brk();
+    void current_task_set_brk(uint64_t value);
+
     // Sleep the current task until the keyboard IRQ pushes a key.
     // (Caller must have interrupts disabled around the check-and-block.)
     void block_on_keyboard();

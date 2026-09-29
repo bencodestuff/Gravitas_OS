@@ -1,50 +1,23 @@
-#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <grv/syscall.h>
 
 // ls — lists the files in the tarfs.
-// A real standalone userland program: spawned by the shell via the
-// spawn syscall, runs in ring 3, and exits when done.
+// A standalone userland program: spawned by the shell with argv,
+// runs in ring 3, exits when done. Entry via crt0 -> main().
 
-static void sys_putc(char c) {
-    asm volatile(
-        "mov $0, %%rax\n"
-        "mov %0, %%rdi\n"
-        "int $0x80\n"
-        : : "r"((uint64_t)c) : "rax", "rdi"
-    );
-}
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
 
-static void print(const char* s) {
-    while (*s) sys_putc(*s++);
-}
+    char* listbuf = (char*)malloc(2048);
+    if (listbuf == NULL) {
+        printf("ls: out of memory\n");
+        return 1;
+    }
 
-// list files: rax=2, rdi=buf, rsi=max
-static uint64_t sys_list(char* buf, uint64_t max) {
-    uint64_t ret;
-    asm volatile(
-        "int $0x80\n"
-        : "=a"(ret)
-        : "a"(2), "D"(buf), "S"(max)
-        : "memory"
-    );
-    return ret;
-}
-
-// exit: rax=5 — never returns
-static void sys_exit() {
-    asm volatile(
-        "mov $5, %%rax\n"
-        "int $0x80\n"
-        : : : "memory"
-    );
-}
-
-extern "C" void _start() {
-    static char listbuf[2048];
-    sys_list(listbuf, sizeof(listbuf));
-
-    print("tarfs contents:\n");
-    print(listbuf);
-    print("\n");
-
-    sys_exit();
+    grv_list_files(listbuf, 2048);
+    printf("tarfs contents:\n%s\n", listbuf);
+    free(listbuf);
+    return 0;
 }

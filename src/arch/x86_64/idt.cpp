@@ -8,6 +8,12 @@
 #include "../../kernel/vmm.h"
 #include "../../fs/tar.h"
 #include "../../fs/elf.h"
+#include "../../kernel/pmm.h"
+
+// brk arena: every process gets the same start VA (they live in separate
+// address spaces now), kept far away from code (0x400000+) and stacks
+// (0x500000+). Grows upward in whole pages.
+#define BRK_BASE 0x8000000
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
@@ -226,6 +232,27 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 5) { // EXIT: kill the calling task. Never returns.
              asm volatile("cli");
              Sched::exit_current();
+        }
+        else if (syscall_id == 6) { // BRK: rdi = new break (or 0 to query).
+             uint64_t want = regs->rdi;
+             if (Sched::current_task_brk() == 0) Sched::current_task_set_brk(BRK_BASE);
+
+             if (want == 0) {
+                 regs->rax = Sched::current_task_brk();
+             } else if (want < BRK_BASE) {
+                 regs->rax = (uint64_t)-1;
+             } else {
+                 // Grow: map the newly-covered pages. (Shrink: accepted but
+                 // we leave the pages mapped — free_page'ing shared-with-
+                 // nothing frames here is a later refinement.)
+                 uint64_t old_top = (Sched::current_task_brk() + 0xFFF) & ~0xFFFull;
+                 uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
+                 for (uint64_t va = old_top; va < new_top; va += 4096) {
+                     VMM::map_page(PMM::alloc_page(), va, 0x07); // P|W|U
+                 }
+                 Sched::current_task_set_brk(want);
+                 regs->rax = want;
+             }
         }
         
         return;
