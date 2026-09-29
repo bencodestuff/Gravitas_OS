@@ -5,9 +5,22 @@
 
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
+#include "../../fs/tar.h"
+#include "../../fs/elf.h"
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
+
+// Hex printer for registers (no allocation, no format string needed)
+static void print_hex64(uint64_t value) {
+    kprint("0x");
+    for (int i = 60; i >= 0; i -= 4) {
+        uint64_t n = (value >> i) & 0xF;
+        char c = (n < 10) ? '0' + n : 'A' + (n - 10);
+        char s[2] = {c, '\0'};
+        kprint(s);
+    }
+}
 
 static char input_buffer[256];
 static int buffer_index = 0;
@@ -77,14 +90,20 @@ namespace IDT {
         // Fill the first 48 entries (CPU Exceptions + IRQs)
         // 0x8E = Present(1) | Ring0(00) | Gate(1110 = Interrupt Gate)
             for (int i = 0; i < 48; i++) {
-                // Use IST=1 for the timer IRQ (vector 32) so we always get a
-                // known-good kernel stack even when interrupted from user mode.
+                // IST=0 for everything: handlers run on the current task's
+                // kernel stack (TSS.rsp0, kept up to date by the scheduler).
+                // A shared IST stack cannot be used for anything that blocks
+                // or switches tasks — the next interrupt on the same IST
+                // would stomp the saved context of the task we switched away
+                // from (this exact bug cost us a day).
                 uint8_t ist = 0;
-                if (i == 32) ist = 1; // Timer
                 set_gate(i, (uint64_t)isr_stub_table[i], ist, 0x8E);
         }
 
-        set_gate(0x80, (uint64_t)isr_128, 1, 0xEE);
+        // Syscall gate: trap gate (0xEE, IF stays enabled), IST=0 so each
+        // task's syscalls — including blocking ones like spawn — live on
+        // its own kernel stack.
+        set_gate(0x80, (uint64_t)isr_128, 0, 0xEE);
 
         kprint("[IDT] Loading IDT...\n");
         asm volatile ("lidt %0" : : "m"(idtr)); // Load it!
@@ -110,12 +129,10 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         uint64_t syscall_id = regs->rax;
         uint64_t arg1 = regs->rdi;
 
-        if (syscall_id == 0) { // WRITE (Log)
-             kprint("[User] ");
+        if (syscall_id == 0) { // WRITE (raw char to screen + serial)
              char c = (char)arg1;
              char str[2] = {c, 0};
              kprint(str);
-             kprint("\n");
         }
         else if (syscall_id == 1) { // READ (Keyboard)
              // 1. Try to get a key from the buffer
@@ -124,6 +141,57 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              // 2. Put the result in RAX
              // This is how return values are passed back to User Mode
              regs->rax = (uint64_t)c;
+        }
+        else if (syscall_id == 2) { // LIST FILES: rdi = buf, rsi = max
+             Tar::list_into((char*)regs->rdi, regs->rsi);
+             regs->rax = 0;
+        }
+        else if (syscall_id == 3) { // READ FILE: rdi = name, rsi = buf, rdx = max
+             char* data = nullptr;
+             uint64_t size = 0;
+             if (Tar::read_file((const char*)regs->rdi, &data, &size)) {
+                 // Cap the copy at the caller's buffer size
+                 uint64_t n = (size < regs->rdx) ? size : regs->rdx;
+                 char* dst = (char*)regs->rsi;
+                 for (uint64_t i = 0; i < n; i++) dst[i] = data[i];
+                 regs->rax = n;
+             } else {
+                 regs->rax = (uint64_t)-1; // not found
+             }
+        }
+        else if (syscall_id == 4) { // SPAWN: rdi = program name in tarfs.
+             // Blocks until the spawned program exits; rax = child task id.
+             asm volatile("cli"); // no timer nesting mid-spawn
+             // Copy the name into kernel memory BEFORE the ELF load —
+             // loading a program overwrites userland memory (shared space).
+             char namebuf[16];
+             const char* user_name = (const char*)regs->rdi;
+             int ni = 0;
+             while (ni < 15 && user_name[ni] != '\0') {
+                 namebuf[ni] = user_name[ni];
+                 ni++;
+             }
+             namebuf[ni] = '\0';
+
+             char* data = nullptr;
+             uint64_t size = 0;
+             if (!Tar::read_file(namebuf, &data, &size)) {
+                 regs->rax = (uint64_t)-1;
+             } else {
+                 uint64_t entry = ELF::load_elf((uint8_t*)data);
+                 if (entry == 0) {
+                     regs->rax = (uint64_t)-1;
+                 } else {
+                     int child = Sched::create_user_task(entry, namebuf);
+                     Sched::block_current(child);
+                     Sched::yield(); // returns when the child wakes us
+                     regs->rax = (uint64_t)child;
+                 }
+             }
+        }
+        else if (syscall_id == 5) { // EXIT: kill the calling task. Never returns.
+             asm volatile("cli");
+             Sched::exit_current();
         }
         
         return;
@@ -134,15 +202,13 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         asm volatile("mov %%cr2, %0" : "=r"(cr2));
 
         kprint("\n!!! PAGE FAULT !!!\n");
-        
-        kprint("Faulting Address (CR2): 0x");
-        // Simple hex printer
-        for(int i=60; i>=0; i-=4) {
-             uint64_t n = (cr2 >> i) & 0xF;
-             char c = (n < 10) ? '0'+n : 'A'+(n-10);
-             char s[2] = {c, '\0'};
-             kprint(s);
-        }
+
+        kprint("Faulting Address (CR2): ");
+        print_hex64(cr2);
+        kprint("\n");
+
+        kprint("Faulting Instruction (RIP): ");
+        print_hex64(regs->rip);
         kprint("\n");
 
         kprint("Error Code: ");
@@ -173,6 +239,9 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     kprint("Number: "); 
     // Print the numeric interrupt/exception vector
     kprint_uint(regs->interrupt_number);
+    kprint("\n");
+    kprint("Faulting Instruction (RIP): ");
+    print_hex64(regs->rip);
     kprint("\n");
 
     // Human-friendly names for common exceptions

@@ -2,6 +2,12 @@
 #include "heap.h"
 #include "timer.h"
 #include "arch/x86_64/gdt.h"
+#include "pmm.h"
+#include "vmm.h"
+
+// Assembly trampoline: runs a forged user task's first switch_context frame
+// (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
+extern "C" void user_entry_trampoline();
 
 // Minimal freestanding strcpy implementation for the kernel (C linkage)
 extern "C" char* strcpy(char* dest, const char* src) {
@@ -30,14 +36,21 @@ namespace Sched {
         TaskState state;
         uint64_t wake_timestamp;
         char name[16];
-        
+
         // --- MISSING FIELD ---
         uint64_t kstack_top; // We need this for the TSS!
+        uint64_t* kstack_mem; // Base of the heap-allocated kernel stack (for freeing)
+
+        // --- Process lifecycle ---
+        int waiting_on;         // task id this task is blocked on (-1 = none)
+        uint64_t user_rip;      // for the userland trampoline
+        uint64_t user_rsp;
     };
 
     Task* current_task = nullptr;
     Task* ready_queue = nullptr; // A simple linked list (Round Robin)
     int task_counter = 0;
+    static Task* zombie = nullptr; // exited task awaiting cleanup by the next switch
 
     void sleep(uint64_t ms) {
         // 1. Calculate target time
@@ -65,6 +78,7 @@ namespace Sched {
         uint64_t current_rsp;
         asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
         current_task->kstack_top = current_rsp; 
+        current_task->rsp = current_rsp; // valid for self-switches
         // ----------------
         
         ready_queue = current_task;
@@ -99,12 +113,119 @@ namespace Sched {
         stack_top--; *stack_top = 0; // RBX
 
         new_task->rsp = (uint64_t)stack_top;
+        new_task->kstack_mem = stack_bottom;
+        new_task->waiting_on = -1;
 
         // 4. Add to the circular linked list
         new_task->next = ready_queue->next;
         ready_queue->next = new_task;
         
         kprint("[Sched] Task Created.\n");
+    }
+
+    int create_user_task(uint64_t rip, const char* name) {
+        Task* new_task = new Task;
+        new_task->id = ++task_counter;
+        new_task->state = READY;
+        new_task->wake_timestamp = 0;
+        new_task->waiting_on = -1;
+        strcpy(new_task->name, name);
+
+        // Kernel stack (interrupts from ring 3 land here via the TSS)
+        uint64_t* stack_bottom = new uint64_t[512];
+        uint64_t* stack_top = stack_bottom + 512;
+        new_task->kstack_top = (uint64_t)stack_top;
+        new_task->kstack_mem = stack_bottom;
+
+        // User stack: unique virtual address per process.
+        // 0x500000 is reserved for the legacy hand-launched program; tasks
+        // start at 0x600000. Map the page itself plus the one below it, since
+        // the stack pointer sits at the top of the page and early pushes go
+        // downwards.
+        uint64_t user_stack_va = 0x500000 + (uint64_t)new_task->id * 0x100000;
+        VMM::map_page(PMM::alloc_page(), user_stack_va, 0x07);        // P|W|U
+        VMM::map_page(PMM::alloc_page(), user_stack_va - 0x1000, 0x07);
+        new_task->user_rip = rip;
+        new_task->user_rsp = user_stack_va;
+
+        // Forge the switch_context stack. NOTE: switch_context pops in
+        // REVERSE push order (r15 first, rbx last), so the slots must be
+        // written deepest-first as: ret, rbx, rbp, r12, r13, r14, r15.
+        // R12/R13 carry the userland RIP/RSP into the trampoline.
+        stack_top--; *stack_top = (uint64_t)user_entry_trampoline; // deepest: ret target
+        stack_top--; *stack_top = 0;            // rbx
+        stack_top--; *stack_top = 0;            // rbp
+        stack_top--; *stack_top = rip;          // r12 -> user RIP
+        stack_top--; *stack_top = user_stack_va; // r13 -> user RSP
+        stack_top--; *stack_top = 0;            // r14
+        stack_top--; *stack_top = 0;            // r15
+        new_task->rsp = (uint64_t)stack_top;
+
+        new_task->next = ready_queue->next;
+        ready_queue->next = new_task;
+
+        kprint("[Sched] User task '");
+        kprint(name);
+        kprint("' created.\n");
+        return new_task->id;
+    }
+
+    void block_current(int child_id) {
+        current_task->state = SLEEPING;
+        current_task->waiting_on = child_id;
+        // Never wake this task by timestamp — only the child's exit wakes us
+        current_task->wake_timestamp = (uint64_t)-1;
+    }
+
+    void exit_current() {
+        Task* dead = current_task;
+        kprint("[Sched] Task '");
+        kprint(dead->name);
+        kprint("' exited.\n");
+
+        // 1. Wake anyone blocked on this task
+        Task* t = ready_queue;
+        do {
+            if (t->waiting_on == dead->id) {
+                t->state = READY;
+                t->waiting_on = -1;
+            }
+            t = t->next;
+        } while (t != ready_queue);
+
+        // 2. Last task standing? Nothing to switch to — halt forever.
+        if (dead->next == dead) {
+            kprint("[Sched] No tasks left. Halting.\n");
+            while (1) asm("hlt");
+        }
+
+        // 3. Unlink from the circular list
+        Task* prev = dead;
+        while (prev->next != dead) prev = prev->next;
+        prev->next = dead->next;
+        if (ready_queue == dead) ready_queue = dead->next;
+
+        // 4. Pick the next ready task (single CPU: no SMP races here)
+        Task* next = dead->next;
+        while (next->state != READY) {
+            if (next->state == SLEEPING &&
+                Timer::get_ticks() >= next->wake_timestamp) {
+                next->state = READY;
+                break;
+            }
+            next = next->next;
+        }
+
+        // 5. Free the Task struct AFTER the next switch (we are standing on
+        // the dying kernel stack, so we can't free it here).
+        zombie = dead;
+
+        current_task = next;
+        GDT::tss.rsp0 = next->kstack_top;
+        uint64_t dummy_rsp; // never used — this task ceases to exist
+        switch_context(&dummy_rsp, next->rsp);
+        // Never returns: the CPU is now on the next task's stack.
+        while (1) asm("hlt");
     }
 
     void yield() {
@@ -133,9 +254,22 @@ namespace Sched {
             next_task = next_task->next;
         }
 
+        // Only one runnable task (or we looped back to ourselves)?
+        // Then there is nothing to switch — just keep running.
+        if (old_task == next_task) return;
+
         // Switch to the found task
         current_task = next_task;
         GDT::tss.rsp0 = current_task->kstack_top;
         switch_context(&old_task->rsp, next_task->rsp);
+
+        // We only get here when this task is scheduled back in.
+        // Reap any task that exited since the last switch (its old kernel
+        // stack is definitely abandoned by now).
+        if (zombie != nullptr) {
+            delete[] zombie->kstack_mem;
+            delete zombie;
+            zombie = nullptr;
+        }
     }
 }

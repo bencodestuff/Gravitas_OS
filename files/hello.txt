@@ -1,0 +1,2 @@
+Hello from the Gravitas tar filesystem!
+If cat can read this, file syscalls work.

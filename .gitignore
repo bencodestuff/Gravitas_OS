@@ -2,6 +2,7 @@
 bin/
 obj/
 iso_root/
+tar_root/
 *.iso
 *.elf
 *.o

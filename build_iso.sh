@@ -6,9 +6,17 @@ mkdir -p iso_root
 # 1. Copy the Kernel
 # We copy 'gravitas.elf' to the root of the ISO
 cp bin/gravitas.elf iso_root/gravitas.elf
-cp hello.txt iso_root/hello.txt
 
-# 2. Copy the Config
+# 2. Pack the tarfs: data files + userland programs
+mkdir -p tar_root
+cp files/* tar_root/
+for f in bin/*.elf; do
+    [ "$(basename "$f")" = "gravitas.elf" ] && continue
+    cp "$f" tar_root/
+done
+tar --format=ustar -cf iso_root/files.tar -C tar_root .
+
+# 3. Copy the Config
 cp limine.conf iso_root/
 
 # 3. Copy Limine System Files

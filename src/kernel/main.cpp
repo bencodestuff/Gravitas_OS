@@ -14,6 +14,7 @@
 #include "timer.h"
 #include "../drivers/framebuffer.h"
 #include "../fs/elf.h"
+#include "../fs/tar.h"
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
@@ -97,17 +98,18 @@ extern "C" void kprint_uint(uint64_t value) {
 #define USER_STACK_ADDR 0x500000
 
 void load_and_run_user_program() {
-    // 1. Check for Module
-    if (module_request.response == nullptr || module_request.response->module_count == 0) {
-        kprint("No modules loaded. Cannot run user program.\n");
+    // 1. Find the userland shell in the tarfs
+    char* data = nullptr;
+    uint64_t size = 0;
+    if (!Tar::read_file("shell.elf", &data, &size)) {
+        kprint("No shell.elf in tarfs. Cannot run user program.\n");
         return;
     }
 
-    struct limine_file* file = module_request.response->modules[0];
-    kprint("[Kernel] Loading ELF module...\n");
+    kprint("[Kernel] Loading shell.elf from tarfs...\n");
 
     // 2. Load the ELF (Allocates RAM and copies code)
-    uint64_t entry_point = ELF::load_elf((uint8_t*)file->address);
+    uint64_t entry_point = ELF::load_elf((uint8_t*)data);
 
     if (entry_point == 0) {
         kprint("[Kernel] ELF Load Failed.\n");
@@ -140,18 +142,6 @@ void load_and_run_user_program() {
 }
 
 // A simple function for our second thread
-void background_worker() {
-    while (true) {
-        kprint(" [BG] ");
-
-        // Waste some time so we don't spam
-        Sched::sleep(500);
-        // We must manually yield for now (Cooperative Multithreading)
-        // because we haven't hooked the Timer Interrupt to force it yet.
-        Sched::yield(); 
-    }
-}
-
 // ... includes ...
 
 
@@ -313,21 +303,27 @@ extern "C" void kmain(void) {
     PIC::remap();
     kprint("[PIC] Remapped.\n");
     
-    Shell::init();
-
     Timer::init();
-    Sched::create_task(background_worker);
     PIC::unmask(0); // Enable Timer (IRQ 0)
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
 
-    load_and_run_user_program();
+    Tar::init();
+
+    // Spawn the userland shell as a real ring-3 task
+    char* shell_data = nullptr;
+    uint64_t shell_size = 0;
+    if (Tar::read_file("shell.elf", &shell_data, &shell_size)) {
+        uint64_t entry = ELF::load_elf((uint8_t*)shell_data);
+        if (entry != 0) {
+            Sched::create_user_task(entry, "shell");
+        } else {
+            kprint("[Kernel] shell.elf failed to load!\n");
+        }
+    } else {
+        kprint("[Kernel] No shell.elf in tarfs!\n");
+    }
 
     while (1) {
-        // 1. Process Shell Input
-        Shell::update();
-        Sched::yield(); // Give other tasks a chance to run
-        // 2. Halt CPU until next interrupt (saves power)
-        // If we don't halt, the CPU spins at 100% heat checking the buffer.
-        //asm("hlt");
+        asm("hlt"); // Idle: the scheduler switches to tasks from timer IRQs
     }
 }

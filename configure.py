@@ -23,7 +23,7 @@ CFLAGS = [
     "-Isrc",
     "-Isrc/kernel",
     "-Isrc/drivers",
-    "-Isrc/fs"
+    "-Isrc/fs",
     "-Isrc/arch/x86_64",
     "-std=c++20",
     "-g",
@@ -72,6 +72,10 @@ def main():
     cpp_sources = [f for f in cpp_sources if "aarch64" not in f]
     asm_sources = [f for f in asm_sources if "aarch64" not in f]
 
+    # Userland programs: compiled into separate ELFs, NOT linked into the kernel
+    user_sources = [f for f in cpp_sources if f.startswith("src/user/")]
+    cpp_sources = [f for f in cpp_sources if not f.startswith("src/user/")]
+
     print(f"Configuring for {len(cpp_sources)} C++ files...")
 
     with open("build.ninja", "w") as ninja:
@@ -89,6 +93,17 @@ def main():
         ninja.write(f"rule link\n")
         ninja.write(f"  command = {LINKER} {' '.join(LDFLAGS)} $in -o $out\n")
         ninja.write(f"  description = LINK $out\n\n")
+
+        # Userland: one freestanding ELF per source, linked at 0x400000
+        # (must match USER_CODE_ADDR in the kernel)
+        user_link_flags = " ".join([
+            "-nostdlib", "-static", "-Wl,--build-id=none",
+            "-Wl,-Ttext=$base", "-Wl,-z,max-page-size=0x1000",
+            "-Wl,-e,_start",
+        ])
+        ninja.write(f"rule userelf\n")
+        ninja.write(f"  command = {COMPILER} {' '.join(CFLAGS)} {user_link_flags} $in -o $out\n")
+        ninja.write(f"  description = USER $out\n\n")
 
         ninja.write(f"rule iso\n")
         ninja.write(f"  command = ./build_iso.sh\n")
@@ -118,7 +133,31 @@ def main():
             objects.append(obj)
 
         ninja.write(f"\nbuild {KERNEL_FILE}: link {' '.join(objects)}\n")
-        ninja.write(f"build iso: iso {KERNEL_FILE}\n")
+
+        user_elfs = []
+        # All userland programs share one flat address space, so each program
+        # gets its OWN load base. The shell owns 0x400000; everything else
+        # lives at 32MB upwards, far above the per-task user stacks
+        # (0x600000 + id * 1MB). Otherwise spawning one program zeroes
+        # another program's bss and everything explodes.
+        user_bases = {}
+        next_base = 0x2000000
+        for src in user_sources:
+            stem = os.path.splitext(os.path.basename(src))[0]
+            if stem == "shell":
+                user_bases[stem] = 0x400000
+            else:
+                user_bases[stem] = next_base
+                next_base += 0x100000
+        for src in user_sources:
+            stem = os.path.splitext(os.path.basename(src))[0]
+            out = f"bin/{stem}.elf"
+            ninja.write(f"build {out}: userelf {src}\n")
+            ninja.write(f"  base = {user_bases[stem]}\n")
+            user_elfs.append(out)
+
+        # The ISO needs the kernel AND every userland ELF (packed into the tar)
+        ninja.write(f"build iso: iso {KERNEL_FILE} {' '.join(user_elfs)}\n")
         ninja.write(f"build run: run iso\n")
         ninja.write(f"build clean: clean\n")
         
