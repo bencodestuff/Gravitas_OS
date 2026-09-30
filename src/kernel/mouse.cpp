@@ -175,6 +175,9 @@ namespace Mouse {
                 int16_t dy = packet[2];
                 if (flags & PACKET_X_NEG) dx |= 0xFF00;
                 if (flags & PACKET_Y_NEG) dy |= 0xFF00;
+                dy = -dy; // PS/2 reports Y screen-inverted: up is positive
+                          // in the raw protocol; screen convention (down
+                          // positive) needs the flip
 
                 // cursor advances with every packet, kernel-side — the
                 // cursor stays live even when no app is draining packets

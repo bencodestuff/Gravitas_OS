@@ -197,6 +197,19 @@ namespace Tar {
         (void)priv; (void)handle; // data lives inside the archive
     }
 
+    static uint64_t strlen_(const char* s) {
+        uint64_t n = 0;
+        while (s[n]) n++;
+        return n;
+    }
+    static bool strncmp_(const char* a, const char* b, uint64_t n) {
+        for (uint64_t i = 0; i < n; i++) {
+            if (a[i] != b[i]) return a[i] - b[i];
+            if (a[i] == '\0') return 0;
+        }
+        return 0;
+    }
+
     static uint64_t tarfs_readdir(void* priv, const char* path, char* buf, uint64_t max) {
         (void)priv;
         if (path[0] != '\0') return 0; // flat namespace: only the root lists
@@ -206,7 +219,23 @@ namespace Tar {
 
     static bool tarfs_is_dir(void* priv, const char* path) {
         (void)priv;
-        return path[0] == '\0'; // flat namespace: only the archive root is a dir
+        if (path[0] == '\0') return true; // the archive root
+        // A path is a directory if any member lives "inside" it:
+        // member names like "Pictures/Earth.bmp" imply dir "Pictures"
+        uint64_t plen = strlen_(path);
+        uint8_t* cursor = archive_base;
+        TarHeader* h; uint8_t* d; uint64_t sz;
+        while (next_entry(cursor, h, d, sz)) {
+            const char* m = trim_dotslash(h->name);
+            uint64_t mlen = strlen_(m);
+            // explicit dir entry "Pictures/"?
+            if (mlen == plen + 1 && m[plen] == '/' &&
+                strncmp_(m, path, plen) == 0) return true;
+            // implicit dir: member "Pictures/x" under "Pictures"?
+            if (mlen > plen + 1 && m[plen] == '/' &&
+                strncmp_(m, path, plen) == 0) return true;
+        }
+        return false;
     }
 
     static VFS::Filesystem tarfs = {

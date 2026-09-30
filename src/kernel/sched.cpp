@@ -107,9 +107,22 @@ namespace Sched {
         // when we return to this task from User Mode.
         uint64_t current_rsp;
         asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
-        current_task->kstack_top = current_rsp; 
+        current_task->kstack_top = current_rsp;
         current_task->rsp = current_rsp; // valid for self-switches
         current_task->cr3 = VMM::get_kernel_pml4_phys();
+
+        // Initialize ALL per-task state the spawn path normally sets —
+        // the kernel task is hand-built here, and uninitialized fields
+        // get INHERITED by the first userland process (the shell's CWD
+        // used to be boot garbage: prompts printed 0x01 bytes and "cd"
+        // broke in ways that took a scancode trace to find)
+        current_task->brk = 0;
+        current_task->brk_limit = 0;
+        current_task->waiting_on = -1;
+        current_task->user_rip = 0;
+        current_task->user_rsp = 0;
+        current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
+        for (int i = 0; i < VFS::MAX_FDS; i++) current_task->fds[i] = nullptr;
         // ----------------
         
         ready_queue = current_task;
