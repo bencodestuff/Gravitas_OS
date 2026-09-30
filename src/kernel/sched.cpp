@@ -48,6 +48,7 @@ namespace Sched {
         uint64_t user_rsp;
         uint64_t cr3;           // this task's address space
         uint64_t brk;           // program break (malloc arena top), 0 = unset
+        uint64_t brk_limit;     // end of the MAPPED brk region (page-aligned)
         VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
         char cwd[64];           // current working directory (starts "/")
     };
@@ -195,6 +196,7 @@ namespace Sched {
         new_task->user_rip = rip;
         new_task->user_rsp = new_rsp;
         new_task->brk = 0; // 0 = unset; brk syscall initializes on first use
+        new_task->brk_limit = 0;
         // CWD is inherited from the spawning process (Unix semantics) —
         // otherwise `cd /bin` + `ls` would list "/" in every child
         strcpy(new_task->cwd, current_task->cwd);
@@ -248,8 +250,20 @@ namespace Sched {
         current_task->brk = value;
     }
 
+    uint64_t current_task_brk_limit() {
+        return current_task->brk_limit;
+    }
+
+    void current_task_set_brk_limit(uint64_t value) {
+        current_task->brk_limit = value;
+    }
+
     VFS::FileHandle** current_task_fds() {
         return current_task->fds;
+    }
+
+    uint64_t current_task_cr3() {
+        return current_task->cr3;
     }
 
     const char* current_task_cwd() {

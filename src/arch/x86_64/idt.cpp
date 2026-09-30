@@ -6,6 +6,7 @@
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
 #include "../../kernel/mouse.h"
+#include "../../drivers/framebuffer.h"
 #include "../../kernel/vmm.h"
 #include "../../fs/tar.h"
 #include "../../fs/elf.h"
@@ -213,6 +214,21 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  regs->rax = 0;
              }
         }
+        else if (syscall_id == 16) { // FB INFO+MAP: rdi = grv_fb_info*
+             // Maps the framebuffer into the CALLING task's address space
+             // at a fresh user VA, returns geometry + that address.
+             struct FbPkt { uint64_t w,h,pitch,bpp,address,size; };
+             FbPkt* out = (FbPkt*)regs->rdi;
+             Framebuffer::Info info;
+             if (Framebuffer::get_info_and_map(Sched::current_task_cr3(), &info)) {
+                 out->w = info.width; out->h = info.height;
+                 out->pitch = info.pitch; out->bpp = info.bpp;
+                 out->address = info.address; out->size = info.size;
+                 regs->rax = 0;
+             } else {
+                 regs->rax = (uint64_t)-1;
+             }
+        }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.
              asm volatile("cli"); // no timer nesting mid-spawn
@@ -297,22 +313,26 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         }
         else if (syscall_id == 6) { // BRK: rdi = new break (or 0 to query).
              uint64_t want = regs->rdi;
-             if (Sched::current_task_brk() == 0) Sched::current_task_set_brk(BRK_BASE);
+             if (Sched::current_task_brk() == 0) {
+                 Sched::current_task_set_brk(BRK_BASE);
+                 Sched::current_task_set_brk_limit(BRK_BASE);
+             }
 
              if (want == 0) {
                  regs->rax = Sched::current_task_brk();
              } else if (want < BRK_BASE) {
                  regs->rax = (uint64_t)-1;
              } else {
-                 // Grow: map the newly-covered pages. (Shrink: accepted but
-                 // we leave the pages mapped — free_page'ing shared-with-
-                 // nothing frames here is a later refinement.)
-                 uint64_t old_top = (Sched::current_task_brk() + 0xFFF) & ~0xFFFull;
+                 // Grow: map [brk_limit, round_up(want)) — brk_limit is the
+                 // true mapped top, so nothing gets skipped when brk isn't
+                 // page-aligned. (Shrink: accepted, pages stay mapped.)
+                 uint64_t limit = Sched::current_task_brk_limit();
                  uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
-                 for (uint64_t va = old_top; va < new_top; va += 4096) {
+                 for (uint64_t va = limit; va < new_top; va += 4096) {
                      VMM::map_page(PMM::alloc_page(), va, 0x07); // P|W|U
                  }
                  Sched::current_task_set_brk(want);
+                 Sched::current_task_set_brk_limit(new_top);
                  regs->rax = want;
              }
         }

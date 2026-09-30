@@ -41,9 +41,13 @@ void* malloc(size_t size) {
     }
 
     size_t need = CHUNK_HDR_SIZE + size;
-    chunk_t* c = (chunk_t*)grv_brk((char*)current_brk + need);
-    if ((long)c == -1 || c == current_brk) return NULL; // brk refused
+    void* new_break = grv_brk((char*)current_brk + need);
+    if ((long)new_break == -1 || new_break == current_brk) return NULL; // brk refused
 
+    // The chunk begins at the OLD break (grv_brk returns the NEW break —
+    // using it as the chunk base would place the payload past the mapped
+    // region)
+    chunk_t* c = (chunk_t*)current_brk;
     c->size = size;
     c->used = 1;
     c->next = NULL;
@@ -56,7 +60,7 @@ void* malloc(size_t size) {
         end->next = c;
     }
 
-    current_brk = (char*)c + CHUNK_HDR_SIZE + size;
+    current_brk = new_break;
     return (void*)(c + 1);
 }
 

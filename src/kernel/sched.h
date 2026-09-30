@@ -28,6 +28,8 @@ namespace Sched {
     // Program break accessors for the syscall layer (Task is private here)
     uint64_t current_task_brk();
     void current_task_set_brk(uint64_t value);
+    uint64_t current_task_brk_limit();
+    void current_task_set_brk_limit(uint64_t value);
 
     // Sleep the current task until the keyboard IRQ pushes a key.
     // (Caller must have interrupts disabled around the check-and-block.)
@@ -41,6 +43,9 @@ namespace Sched {
 
     // Sleep the current task for 'ticks' timer ticks (timer IRQ wakes it).
     void sleep_current(uint64_t ticks);
+
+    // Current task's address space (syscall layer needs it for fb mapping)
+    uint64_t current_task_cr3();
 
     // Tear down the current task, wake whoever was waiting on it, and
     // switch to the next ready task. Never returns.

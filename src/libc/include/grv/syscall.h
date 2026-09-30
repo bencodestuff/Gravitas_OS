@@ -46,6 +46,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_GETCWD 13
 #define GRV_SYSCALL_SLEEP  14
 #define GRV_SYSCALL_MOUSERD 15
+#define GRV_SYSCALL_FBINFO 16
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -128,6 +129,23 @@ struct grv_mouse_packet {
 /* Drain one mouse packet. Returns 1 if a packet was read, 0 if none. */
 static inline int grv_mouse_read(struct grv_mouse_packet* pkt) {
     return (int)syscall1(GRV_SYSCALL_MOUSERD, (long)pkt);
+}
+
+/* --- Framebuffer --- */
+struct grv_fb_info {
+    unsigned long width;
+    unsigned long height;
+    unsigned long pitch;    // bytes per row
+    unsigned long bpp;
+    unsigned long address;  // USERLAND virtual address of the pixels
+    unsigned long size;     // total bytes
+};
+
+/* Map the framebuffer into this process and return its geometry.
+   Returns 0 on success, -1 on failure. After success, write pixels
+   directly to (address + y*pitch + x*4). */
+static inline int grv_fb_info(struct grv_fb_info* info) {
+    return (int)syscall1(GRV_SYSCALL_FBINFO, (long)info);
 }
 
 __END_DECLS

@@ -3,6 +3,10 @@
 #include "font.h"
 #include "framebuffer.h"
 #include "kernel/io.h"
+#include "kernel/vmm.h"
+
+// Defined in main.cpp — global (NOT in this namespace!)
+extern volatile struct limine_hhdm_request hhdm_request;
 
 __attribute__((used, section(".requests")))
 volatile struct limine_framebuffer_request framebuffer_request = {
@@ -11,6 +15,10 @@ volatile struct limine_framebuffer_request framebuffer_request = {
 };
 
 namespace Framebuffer {
+
+    static uint64_t hhdm_offset_val() {
+        return hhdm_request.response->offset;
+    }
 
     // Forward declare screen_print so `kprint` can call it.
     void screen_print(const char* str);
@@ -145,4 +153,68 @@ namespace Framebuffer {
         }
     }
 
+
+    // --- Userland graphics support (syscall 16) ---
+    // Framebuffer geometry + direct mapping into a target address space.
+
+    static bool read_pte(uint64_t pml4_phys, uint64_t vaddr, uint64_t* out_entry) {
+        uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+        uint64_t pdp_idx  = (vaddr >> 30) & 0x1FF;
+        uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
+        uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
+
+        uint64_t* walk = (uint64_t*)(pml4_phys + hhdm_offset_val());
+        uint64_t entry = walk[pml4_idx];
+        if (!(entry & 1)) return false;
+        walk = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset_val());
+        entry = walk[pdp_idx];
+        if (!(entry & 1)) return false;
+        walk = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset_val());
+        entry = walk[pd_idx];
+        if (!(entry & 1)) return false;
+        walk = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset_val());
+        *out_entry = walk[pt_idx];
+        return true;
+    }
+
+    bool get_info_and_map(uint64_t cr3, Info* info) {
+        if (framebuffer_request.response == nullptr ||
+            framebuffer_request.response->framebuffer_count < 1) return false;
+        struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
+
+        info->width  = fb->width;
+        info->height = fb->height;
+        info->pitch  = fb->pitch;
+        info->bpp    = fb->bpp;
+        info->size   = (uint64_t)fb->height * fb->pitch;
+
+        // The Limine framebuffer address is an HHDM virtual address. Find
+        // the PHYSICAL base by walking the KERNEL page tables (the HHDM
+        // mapping lives there) — frame by frame, since the framebuffer may
+        // not be physically contiguous.
+        //
+        // Simpler: the framebuffer's HHDM address IS physical + HHDM offset.
+        // The Limine spec guarantees the framebuffer response's address is
+        // the HHDM-mapped virtual address, so:
+        uint64_t phys = (uint64_t)fb->address - hhdm_request.response->offset;
+        info->address = 0; // set below
+
+        // Map every 4KB page of the framebuffer into the target space at a
+        // fresh contiguous user VA.
+        uint64_t pages = (info->size + 4095) / 4096;
+        uint64_t base = VMM::alloc_user_range(cr3, pages);
+        if (base == 0) return false;
+
+        for (uint64_t p = 0; p < pages; p++) {
+            VMM::map_page_in(cr3, phys + p * 4096, base + p * 4096,
+                             0x07); // P|W|U
+        }
+        info->address = base;
+        return true;
+    }
+
+    void reset_cursor() {
+        cursor_x = 0;
+        cursor_y = 0;
+    }
 }
