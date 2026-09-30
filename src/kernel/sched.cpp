@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "../fs/vfs.h"
+#include "compositor.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
 // (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
@@ -296,6 +297,10 @@ namespace Sched {
         return current_task->cr3;
     }
 
+    int current_task_id() {
+        return current_task->id;
+    }
+
     const char* current_task_cwd() {
         return current_task->cwd;
     }
@@ -428,6 +433,7 @@ namespace Sched {
                     VFS::close_fd_for(zombie->fds, i);
                 }
             }
+            Compositor::surfaces_for_task_gone(zombie->id);
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);
             delete[] zombie->kstack_mem;

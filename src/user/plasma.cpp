@@ -42,13 +42,12 @@ static int clampi(int v, int lo, int hi) {
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
 
-    struct grv_fb_info fb;
-    if (grv_fb_info(&fb) != 0) {
-        printf("plasma: no framebuffer\n");
-        return 1;
-    }
-    if (fb.bpp != 32) {
-        printf("plasma: want 32bpp, got %d\n", (int)fb.bpp);
+    // Surface-based: the compositor owns the real framebuffer; we render
+    // into our own surface and commit each frame.
+    struct grv_surface_info surf;
+    int sid = grv_surface_create(1280, 800, &surf);
+    if (sid < 0) {
+        printf("plasma: surface_create failed\n");
         return 1;
     }
 
@@ -56,13 +55,13 @@ int main(int argc, char** argv) {
     palette = (unsigned int*)malloc(256 * sizeof(unsigned int));
     build_palette(0);
 
-    unsigned int* fbmem = (unsigned int*)fb.address;
+    unsigned int* fbmem = (unsigned int*)surf.address;
 
     printf("plasma: %dx%d — move the mouse, click 3x to exit\n",
-           (int)fb.width, (int)fb.height);
+           (int)surf.width, (int)surf.height);
 
     // Effect state: ripple center follows the mouse (starts center)
-    int cx = (int)fb.width / 2, cy = (int)fb.height / 2;
+    int cx = (int)surf.width / 2, cy = (int)surf.height / 2;
     int palette_phase = 0;
     int frame = 0;
     int left_clicks = 0;
@@ -78,8 +77,8 @@ int main(int argc, char** argv) {
         // --- input: mouse ---
         struct grv_mouse_packet pkt;
         while (grv_mouse_read(&pkt)) {
-            cx = clampi(cx + pkt.dx, 0, (int)fb.width - 1);
-            cy = clampi(cy + pkt.dy, 0, (int)fb.height - 1);
+            cx = clampi(cx + pkt.dx, 0, (int)surf.width - 1);
+            cy = clampi(cy + pkt.dy, 0, (int)surf.height - 1);
 
             bool left = (pkt.buttons & 1) != 0;
             if (left && !prev_left) {         // rising edge = click
@@ -101,7 +100,7 @@ int main(int argc, char** argv) {
         // mouse-ripple term. (Per-pixel sines were ~3fps real under TCG.)
         int t = (frame * 14) & 1023;
         static int xterm[4096], yterm[4096];
-        int W = (int)fb.width, H = (int)fb.height;
+        int W = (int)surf.width, H = (int)surf.height;
         for (int x = 0; x < W; x++)
             xterm[x] = isin((x * 8 + t * 3) & 1023);
         for (int y = 0; y < H; y++)
@@ -126,8 +125,10 @@ int main(int argc, char** argv) {
                 int idx = ((v + 2048) * 255) / 4096;
                 *px++ = palette[idx & 0xFF];
             }
-            row += fb.pitch / 4;
+            row += surf.width; // surface is tightly packed (pitch == width*4)
         }
+
+        grv_surface_commit(); // hand the frame to the compositor
 
         frame++;
         frames_done++;

@@ -48,6 +48,9 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_MOUSERD 15
 #define GRV_SYSCALL_FBINFO 16
 #define GRV_SYSCALL_TICKS  17
+#define GRV_SYSCALL_SURFACE_CREATE 18
+#define GRV_SYSCALL_SURFACE_COMMIT 19
+#define GRV_SYSCALL_SURFACE_MOVE   20
 #define GRV_SYSCALL_FBINFO 16
 
 /* Open flags (subset) */
@@ -153,6 +156,28 @@ static inline int grv_fb_info(struct grv_fb_info* info) {
 /* Timer ticks since boot (50Hz). For honest FPS: (t2-t1)*20 = ms elapsed. */
 static inline unsigned long grv_ticks(void) {
     return (unsigned long)syscall1(GRV_SYSCALL_TICKS, 0);
+}
+
+/* --- Surfaces (compositor) --- */
+struct grv_surface_info {
+    unsigned long address;
+    unsigned long width;
+    unsigned long height;
+};
+
+static inline int grv_surface_create(unsigned long w, unsigned long h,
+                                     struct grv_surface_info* out) {
+    long id = syscall3(GRV_SYSCALL_SURFACE_CREATE, (long)w, (long)h, (long)out);
+    if (id >= 0 && out) { out->width = w; out->height = h; }
+    return (int)id;
+}
+
+static inline void grv_surface_commit(void) {
+    syscall1(GRV_SYSCALL_SURFACE_COMMIT, 0);
+}
+
+static inline void grv_surface_move(int id, int x, int y) {
+    syscall3(GRV_SYSCALL_SURFACE_MOVE, (long)id, (long)x, (long)y);
 }
 
 __END_DECLS

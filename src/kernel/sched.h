@@ -14,6 +14,7 @@ namespace Sched {
 
     const char* current_task_cwd();  // read the current task's CWD
     void current_task_set_cwd(const char* path); // store a canonical path
+    int current_task_id();
 
     // --- Process lifecycle ---
     // Build a ring-3 task: 'rip' is the userland entry point (from the ELF

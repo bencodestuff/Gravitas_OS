@@ -50,6 +50,9 @@ namespace Mouse {
     static volatile int write_ptr = 0;
     static volatile int read_ptr = 0;
 
+    // --- cursor position: deltas accumulate as packets arrive ---
+    static int cur_x = 640, cur_y = 400; // start center-ish
+
     // --- assembly-stream state ---
     static uint8_t cycle = 0;
     static uint8_t packet[3];
@@ -173,6 +176,13 @@ namespace Mouse {
                 if (flags & PACKET_X_NEG) dx |= 0xFF00;
                 if (flags & PACKET_Y_NEG) dy |= 0xFF00;
 
+                // cursor advances with every packet, kernel-side — the
+                // cursor stays live even when no app is draining packets
+                cur_x += dx;
+                cur_y += dy;
+                if (cur_x < 0) cur_x = 0;
+                if (cur_y < 0) cur_y = 0;
+
                 p.dx = dx;
                 p.dy = dy;
                 p.buttons = (flags & PACKET_BTN_LEFT  ? 1 : 0) |
@@ -198,5 +208,13 @@ namespace Mouse {
 
     bool has_packet() {
         return read_ptr != write_ptr;
+    }
+
+    int cursor_x() { return cur_x; }
+    int cursor_y() { return cur_y; }
+
+    // applied by the compositor after clamping (framebuffer bounds known there)
+    void apply_position_clamp(int x, int y) {
+        cur_x = x; cur_y = y;
     }
 }

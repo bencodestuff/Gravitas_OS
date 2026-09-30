@@ -9,7 +9,7 @@ cp bin/gravitas.elf iso_root/gravitas.elf
 
 # 2. Pack the tarfs: data files + userland programs
 mkdir -p tar_root
-cp files/* tar_root/
+cp -r files/* tar_root/
 for f in bin/*.elf; do
     [ "$(basename "$f")" = "gravitas.elf" ] && continue
     cp "$f" tar_root/

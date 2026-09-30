@@ -6,6 +6,7 @@
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
 #include "../../kernel/mouse.h"
+#include "../../kernel/compositor.h"
 #include "../../drivers/framebuffer.h"
 #include "../../kernel/vmm.h"
 #include "../../fs/tar.h"
@@ -231,6 +232,28 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         }
         else if (syscall_id == 17) { // TICKS: timer ticks since boot (50Hz)
              regs->rax = Timer::get_ticks();
+        }
+        else if (syscall_id == 18) { // SURFACE CREATE: rdi=w, rsi=h, rdx=out struct
+             long id = Compositor::surface_create(regs->rdi, regs->rsi);
+             if (id >= 0 && regs->rdx) {
+                 struct FbPkt { uint64_t address,width,height; };
+                 FbPkt* out = (FbPkt*)regs->rdx;
+                 Compositor::Info info;
+                 if (Compositor::surface_info((int)id, &info)) {
+                     out->address = info.address;
+                     out->width = info.width;
+                     out->height = info.height;
+                 }
+             }
+             regs->rax = (uint64_t)id;
+        }
+        else if (syscall_id == 19) { // SURFACE COMMIT: recomposite the screen
+             Compositor::composite_if_dirty(true);
+             regs->rax = 0;
+        }
+        else if (syscall_id == 20) { // SURFACE MOVE: rdi=id, rsi=x, rdx=y
+             Compositor::surface_move((int)regs->rdi, (int)regs->rsi, (int)regs->rdx);
+             regs->rax = 0;
         }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.

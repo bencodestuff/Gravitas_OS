@@ -14,7 +14,12 @@ build.ninja
 .idea/
 *.swp
 
+
 # OS generated
 limine/
 limine-cd-efi.bin
 limine.sys
+
+# Images
+files/Pictures
+
