@@ -212,9 +212,68 @@ namespace Tar {
 
     static uint64_t tarfs_readdir(void* priv, const char* path, char* buf, uint64_t max) {
         (void)priv;
-        if (path[0] != '\0') return 0; // flat namespace: only the root lists
-        list_into(buf, max);
-        return 1;
+        uint64_t plen = strlen_(path);
+        uint8_t* cursor = archive_base;
+        TarHeader* h; uint8_t* d; uint64_t sz;
+
+        // Collect direct children (deduped), subdirectories marked '/'
+        static char children[64][40];
+        bool child_is_dir[64];
+        int nchild = 0;
+
+        while (next_entry(cursor, h, d, sz)) {
+            const char* m = trim_dotslash(h->name);
+            uint64_t mlen = strlen_(m);
+            if (mlen == 0) continue;
+
+            // What part of this member is under 'path'?
+            const char* rest = nullptr;
+            if (path[0] == '\0') {
+                rest = m;                       // root: members are children
+            } else {
+                if (mlen <= plen) continue;
+                if (strncmp_(m, path, plen) != 0 || m[plen] != '/') continue;
+                rest = m + plen + 1;            // inside this dir
+            }
+            if (rest[0] == '\0') continue;      // the dir's own entry
+
+            bool isdir = false;
+            uint64_t rlen = strlen_(rest);
+            if (rest[rlen-1] == '/') { isdir = true; rlen--; }
+
+            // First component only; anything below it means this child
+            // is itself a directory
+            uint64_t nlen = rlen;
+            for (uint64_t i = 0; i < rlen; i++) {
+                if (rest[i] == '/') { nlen = i; isdir = true; break; }
+            }
+            if (nlen >= 39) nlen = 39;
+
+            // dedupe (one dir can be implied by many members)
+            bool dup = false;
+            for (int i = 0; i < nchild; i++) {
+                if (strncmp_(children[i], rest, nlen) == 0 && children[i][nlen] == '\0') {
+                    dup = true; break;
+                }
+            }
+            if (dup || nchild >= 64) continue;
+
+            for (uint64_t i = 0; i < nlen; i++) children[nchild][i] = rest[i];
+            children[nchild][nlen] = '\0';
+            child_is_dir[nchild] = isdir;
+            nchild++;
+        }
+
+        // Emit: one name per line, dirs with trailing '/'
+        uint64_t written = 0;
+        for (int i = 0; i < nchild; i++) {
+            const char* n = children[i];
+            while (*n && written + 3 < max) buf[written++] = *n++;
+            if (child_is_dir[i] && written + 3 < max) buf[written++] = '/';
+            if (written + 3 < max) buf[written++] = '\n';
+        }
+        buf[written] = '\0';
+        return written;
     }
 
     static bool tarfs_is_dir(void* priv, const char* path) {

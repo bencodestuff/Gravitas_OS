@@ -58,7 +58,6 @@ namespace Keyboard {
 
     void handle_interrupt() {
         uint8_t scancode = inb(0x60);
-        kprint("[kbd] sc="); kprint_uint(scancode); kprint("\n");
 
         // 0xE0 prefix: extended keys (arrows, right ctrl/alt) — skip the
         // followup byte entirely for now
@@ -82,9 +81,6 @@ namespace Keyboard {
         char c = shift ? scan_set_1_shift[scancode] : scan_set_1[scancode];
         if (c == 0) return;
         if (c < 32 && c != '\n' && c != '\b' && c != '\t') {
-            kprint("[kbd] CONTROL CHAR "); kprint_uint(c);
-            kprint(" from sc="); kprint_uint(scancode);
-            kprint(" shift="); kprint_uint(shift); kprint("\n");
             return; // don't inject control garbage into the line
         }
 
