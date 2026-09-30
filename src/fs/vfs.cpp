@@ -241,9 +241,13 @@ bool is_directory(const char* path) {
 }
 
 void canonicalize(const char* path, char* out, uint64_t out_max) {
-    static char joined[256];
-    effective_path(path, joined, sizeof(joined));
-    normalize(joined, out, out_max);
+    // Go through the same fallback resolution is_directory uses —
+    // otherwise `cd Pictures` validates against /bin/Pictures but STORES
+    // /Pictures (a nonexistent path), and every later ls/cd breaks.
+    static char fixed[256];
+    const char* effective = nullptr;
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    normalize(effective, out, out_max);
 }
 
 // --- fd plumbing: the table lives in the current task ---
