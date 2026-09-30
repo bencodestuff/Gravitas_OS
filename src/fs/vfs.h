@@ -44,8 +44,15 @@ struct Filesystem {
     void (*close)(void* priv, void* handle);
 
     // Fill 'buf' with entries of the directory at 'path', one name per
-    // line, NUL-terminated. Returns 0 if path is not a directory.
+    // line, NUL-terminated. Directory names get a trailing '/'.
+    // Returns 0 if path is not a directory.
     uint64_t (*readdir)(void* priv, const char* path, char* buf, uint64_t max);
+
+    // Is this path an existing directory?
+    bool (*is_dir)(void* priv, const char* path);
+
+    // Create a directory (ramfs only; used by mount() for mountpoints)
+    int (*mkdir)(void* priv, const char* path);
 };
 
 // --- An open file (referenced by an fd) ---
@@ -78,8 +85,16 @@ void close_fd(int fd);
 void close_fd_for(FileHandle** fds, int fd);          // arbitrary table (task exit)
 
 // Resolve a path to (filesystem, fs-relative path). Longest mount-prefix
-// wins. Returns nullptr if nothing covers the path.
+// wins. Relative paths resolve against the current task's CWD.
+// Returns nullptr if nothing covers the path.
 Filesystem* resolve(const char* path, const char** rel_path);
+
+// Is this path an existing directory? (relative paths resolve vs CWD)
+bool is_directory(const char* path);
+
+// Canonicalize a path: CWD-relative join, '.'/'..' resolution, absolute.
+// Used by chdir to store the real working directory.
+void canonicalize(const char* path, char* out, uint64_t out_max);
 
 // Convenience: read a whole file into a buffer (kernel-side; used by spawn)
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size);

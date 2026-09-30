@@ -12,6 +12,9 @@ namespace Sched {
     // Returns the current task's fd table (array of MAX_FDS pointers)
     VFS::FileHandle** current_task_fds();
 
+    const char* current_task_cwd();  // read the current task's CWD
+    void current_task_set_cwd(const char* path); // store a canonical path
+
     // --- Process lifecycle ---
     // Build a ring-3 task: 'rip' is the userland entry point (from the ELF
     // loader), 'cr3' is its pre-cloned address space (ELF code must already

@@ -42,6 +42,8 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_WRITEFD 9
 #define GRV_SYSCALL_CLOSE  10
 #define GRV_SYSCALL_LISTDIR 11
+#define GRV_SYSCALL_CHDIR  12
+#define GRV_SYSCALL_GETCWD 13
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -98,6 +100,16 @@ static inline long grv_write_fd(int fd, const void* buf, unsigned long count) {
 
 static inline void grv_close(int fd) {
     syscall1(GRV_SYSCALL_CLOSE, (long)fd);
+}
+
+/* chdir: change the process working directory (0 = ok, -1 = no such dir).
+   getcwd: copies the CWD into buf, returns its length. */
+static inline int grv_chdir(const char* path) {
+    return (int)syscall1(GRV_SYSCALL_CHDIR, (long)path);
+}
+
+static inline long grv_getcwd(char* buf, unsigned long max) {
+    return syscall2(GRV_SYSCALL_GETCWD, (long)buf, (long)max);
 }
 
 __END_DECLS

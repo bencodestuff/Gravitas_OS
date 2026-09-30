@@ -104,30 +104,73 @@ Filesystem* resolve(const char* path, const char** rel_path) {
     return m->fs;
 }
 
-bool mount(const char* path, Filesystem* fs) {
-    if (mount_count >= MAX_MOUNTS) return false;
-    static char canon_storage[MAX_MOUNTS][128];
-    normalize(path, canon_storage[mount_count], 128);
-    mounts[mount_count].path = canon_storage[mount_count];
-    mounts[mount_count].fs = fs;
-    mount_count++;
-    return true;
+// --- CWD-aware path building ---
+// Relative paths (no leading '/') resolve against the current task's CWD.
+// strlen for internal use (kernel libc lives in klibc.cpp)
+static uint64_t strlen_(const char* s) {
+    uint64_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static char* effective_path(const char* path, char* out, uint64_t out_max) {
+    if (path[0] == '/') {
+        uint64_t i = 0;
+        for (; path[i] && i + 1 < out_max; i++) out[i] = path[i];
+        out[i] = '\0';
+        return out;
+    }
+
+    // Relative: CWD + '/' + path (normalize() cleans it up afterwards)
+    const char* cwd = Sched::current_task_cwd();
+    uint64_t i = 0;
+    for (; cwd[i] && i + 1 < out_max; i++) out[i] = cwd[i];
+    if (i + 1 < out_max) out[i++] = '/';
+    for (; *path && i + 1 < out_max; i++) out[i] = *path++;
+    out[i] = '\0';
+    return out;
 }
 
 // --- Bare-name fallback (the embryonic PATH) ---
-// "ls.elf" with no slash: try /bin first (that's where programs live),
-// then the bare name itself.
+// "ls.elf" with no slash: try the CWD-relative path first, then /bin
+// (that's where programs live). Returns the first that exists, else the
+// CWD-relative path (so error messages say what was actually tried).
 static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
                                   const char** effective) {
     bool has_slash = false;
     for (const char* p = path; *p; p++) {
         if (*p == '/') { has_slash = true; break; }
     }
-    if (has_slash) {
-        *effective = path;
+
+    // "." and ".." are pure navigation — never treat them as program names
+    if (has_slash || path[0] == '\0' ||
+        (path[0] == '.' && (path[1] == '\0' || (path[1] == '.' && path[2] == '\0')))) {
+        *effective = effective_path(path, out, out_max);
         return true;
     }
-    // /bin/<name>
+
+    // try CWD-relative: if it exists there (file OR dir), use it
+    char cwdtry[256];
+    effective_path(path, cwdtry, sizeof(cwdtry));
+    const char* rel = nullptr;
+    Filesystem* fs = resolve(cwdtry, &rel);
+    if (fs && fs->is_dir && fs->is_dir(fs->priv, rel)) {
+        // a directory exists there
+        *effective = effective_path(path, out, out_max);
+        return true;
+    }
+    if (fs && fs->open) {
+        uint64_t sz = 0;
+        void* h = fs->open(fs->priv, rel, VFS::O_RDONLY, &sz);
+        if (h != nullptr) {
+            fs->close(fs->priv, h);
+            // a file exists there
+            *effective = effective_path(path, out, out_max);
+            return true;
+        }
+    }
+
+    // fall back to /bin/<name>
     uint64_t i = 0;
     out[i++] = '/';
     out[i++] = 'b';
@@ -138,6 +181,69 @@ static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
     out[i] = '\0';
     *effective = out;
     return true;
+}
+
+bool mount(const char* path, Filesystem* fs) {
+    if (mount_count >= MAX_MOUNTS) return false;
+    static char canon_storage[MAX_MOUNTS][128];
+    normalize(path, canon_storage[mount_count], 128);
+    mounts[mount_count].path = canon_storage[mount_count];
+    mounts[mount_count].fs = fs;
+    mount_count++;
+
+    // Create the mountpoint directory in the parent filesystem, so `ls /`
+    // shows it (e.g. /bin appearing in the ramfs root). The parent mount
+    // must already be registered (mount "/" first).
+    const char* mp = mounts[mount_count-1].path;
+    if (mp[1] != '\0') { // skip "/" itself
+        // find the longest OTHER mount that covers this path
+        Mount* parent = nullptr;
+        uint64_t best_len = 0;
+        for (int i = 0; i < mount_count - 1; i++) {
+            const char* pp = mounts[i].path;
+            uint64_t pl = strlen_(pp);
+            // same rule as find_mount: root "/" covers everything;
+            // otherwise the char right after the prefix must end the
+            // parent component ('/' boundary or end-of-string)
+            bool covers = (pl == 1 && pp[0] == '/');
+            if (!covers) {
+                covers = true;
+                for (uint64_t j = 0; j < pl; j++) {
+                    if (mp[j] != pp[j]) { covers = false; break; }
+                }
+                if (covers && pl < strlen_(mp) && mp[pl] != '/') covers = false;
+            }
+            if (covers && pl > best_len) {
+                parent = &mounts[i];
+                best_len = pl;
+            }
+        }
+        if (parent && parent->fs->mkdir) {
+            // strip the parent prefix -> fs-relative path (root's rel
+            // paths have no leading slash; deeper mounts: skip the '/')
+            const char* rel = mp + best_len;
+            if (best_len > 1 && *rel == '/') rel++;
+            parent->fs->mkdir(parent->fs->priv, rel);
+        }
+    }
+    return true;
+}
+
+bool is_directory(const char* path) {
+    static char fixed[256];
+    const char* effective = nullptr;
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+
+    const char* rel = nullptr;
+    Filesystem* fs = resolve(effective, &rel);
+    if (fs == nullptr || fs->is_dir == nullptr) return false;
+    return fs->is_dir(fs->priv, rel);
+}
+
+void canonicalize(const char* path, char* out, uint64_t out_max) {
+    static char joined[256];
+    effective_path(path, joined, sizeof(joined));
+    normalize(joined, out, out_max);
 }
 
 // --- fd plumbing: the table lives in the current task ---

@@ -19,17 +19,44 @@ static bool str_ends_with_elf(const char* s) {
 }
 
 static void cmd_help() {
-    printf("Gravitas commands (commands are programs from the tarfs):\n");
-    printf("  ls          - list files in the tarfs\n");
+    printf("Gravitas commands (commands are programs from the VFS):\n");
+    printf("  ls [path]   - list a directory (default: cwd)\n");
     printf("  cat <file>  - print a file's contents\n");
+    printf("  cd <dir>    - change directory (builtin)\n");
+    printf("  pwd         - print working directory (builtin)\n");
     printf("  run <prog>  - spawn a program by exact name\n");
     printf("  help        - this list\n");
 }
+
+// --- Shell builtins that mutate the shell's OWN state ---
+// cd must be a builtin (it changes this process's CWD — a child program
+// could never do it), and pwd reads it. Everything else is a program.
+
+static void cmd_cd(char* line) {
+    while (*line == ' ') line++;
+    if (*line == '\0') { printf("cd: missing directory\n"); return; }
+    if (grv_chdir(line) != 0) {
+        printf("cd: no such directory: %s\n", line);
+    }
+}
+
+static void cmd_pwd() {
+    static char cwd[64];
+    grv_getcwd(cwd, sizeof(cwd));
+    printf("%s\n", cwd);
+}
+
+// Startup listing: shows the CWD (the shell boots at "/")
 
 static void execute(char* line) {
     while (*line == ' ') line++;
     if (*line == '\0') return;
     if (str_eq(line, "help")) { cmd_help(); return; }
+    if (str_eq(line, "pwd")) { cmd_pwd(); return; }
+    if (line[0] == 'c' && line[1] == 'd' && (line[2] == ' ' || line[2] == '\0')) {
+        cmd_cd(line + 2);
+        return;
+    }
 
     // Split into words
     static char* words[8];
@@ -93,15 +120,18 @@ int main(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("[shell] Gravitas userland shell v0.2 (libc)\n");
 
-    // Startup listing: proves tarfs + list syscall work end to end
+    // Startup listing: shows the CWD (the shell boots at "/")
     char* listbuf = (char*)malloc(2048);
-    grv_readdir("/bin", listbuf, 2048);
-    printf("[shell] tarfs contents:\n%s", listbuf);
+    grv_readdir(".", listbuf, 2048);
+    printf("[shell] cwd contents:\n%s", listbuf);
     printf("[shell] type 'help'\n");
 
     static char line[128];
     while (1) {
-        printf("\n> ");
+        // Prompt shows the CWD
+        static char cwd[64];
+        grv_getcwd(cwd, sizeof(cwd));
+        printf("\n%s > ", cwd);
 
         int len = 0;
         while (1) {

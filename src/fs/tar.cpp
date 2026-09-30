@@ -204,6 +204,11 @@ namespace Tar {
         return 1;
     }
 
+    static bool tarfs_is_dir(void* priv, const char* path) {
+        (void)priv;
+        return path[0] == '\0'; // flat namespace: only the archive root is a dir
+    }
+
     static VFS::Filesystem tarfs = {
         .fs_type  = "tarfs",
         .priv     = nullptr,
@@ -212,6 +217,8 @@ namespace Tar {
         .write    = nullptr,   // read-only
         .close    = tarfs_close,
         .readdir  = tarfs_readdir,
+        .is_dir   = tarfs_is_dir,
+        .mkdir    = nullptr,   // read-only
     };
 
     VFS::Filesystem* vfs_instance() {

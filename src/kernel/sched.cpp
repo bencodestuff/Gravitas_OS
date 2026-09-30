@@ -49,6 +49,7 @@ namespace Sched {
         uint64_t cr3;           // this task's address space
         uint64_t brk;           // program break (malloc arena top), 0 = unset
         VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
+        char cwd[64];           // current working directory (starts "/")
     };
 
     Task* current_task = nullptr;
@@ -182,6 +183,9 @@ namespace Sched {
         new_task->user_rip = rip;
         new_task->user_rsp = new_rsp;
         new_task->brk = 0; // 0 = unset; brk syscall initializes on first use
+        // CWD is inherited from the spawning process (Unix semantics) —
+        // otherwise `cd /bin` + `ls` would list "/" in every child
+        strcpy(new_task->cwd, current_task->cwd);
         for (int i = 0; i < VFS::MAX_FDS; i++) new_task->fds[i] = nullptr;
 
         // Forge the switch_context stack. NOTE: switch_context pops in
@@ -224,6 +228,18 @@ namespace Sched {
 
     VFS::FileHandle** current_task_fds() {
         return current_task->fds;
+    }
+
+    const char* current_task_cwd() {
+        return current_task->cwd;
+    }
+
+    // chdir: validate that the target exists and is a directory (done by
+    // the caller via VFS), then store the canonical path
+    void current_task_set_cwd(const char* path) {
+        int i = 0;
+        while (path[i] && i < 63) { current_task->cwd[i] = path[i]; i++; }
+        current_task->cwd[i] = '\0';
     }
 
     static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall

@@ -138,11 +138,27 @@ static uint64_t ramfs_readdir(void* priv, const char* path, char* buf, uint64_t 
     uint64_t written = 0;
     for (Node* c = n->first_child; c; c = c->next_sibling) {
         const char* name = c->name;
-        while (*name && written + 2 < max) buf[written++] = *name++;
-        if (written + 2 < max) buf[written++] = '\n';
+        while (*name && written + 3 < max) buf[written++] = *name++;
+        if (c->is_dir && written + 3 < max) buf[written++] = '/';
+        if (written + 3 < max) buf[written++] = '\n';
     }
     buf[written] = '\0';
     return written;
+}
+
+static bool ramfs_is_dir(void* priv, const char* path) {
+    (void)priv;
+    Node* n = walk(root, path, false);
+    return n != nullptr && n->is_dir;
+}
+
+static int ramfs_mkdir(void* priv, const char* path) {
+    (void)priv;
+    // walk with creation of intermediate dirs, final node = dir
+    Node* n = walk(root, path, true);
+    if (n == nullptr) return -1;
+    n->is_dir = true; // final component may have been created as a file
+    return 0;
 }
 
 // --- The filesystem instance ---
@@ -154,6 +170,8 @@ static VFS::Filesystem fs = {
     .write    = ramfs_write,
     .close    = ramfs_close,
     .readdir  = ramfs_readdir,
+    .is_dir   = ramfs_is_dir,
+    .mkdir    = ramfs_mkdir,
 };
 
 VFS::Filesystem* instance() {

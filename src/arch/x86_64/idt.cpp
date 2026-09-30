@@ -20,6 +20,9 @@
 // PATH: "ls.elf" -> /bin/ls.elf)
 #define BIN_MOUNT "/bin"
 
+// chdir/getcwd: per-process CWD, lives on the Task
+#define CWD_MAX 64
+
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
 
@@ -165,6 +168,31 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 11) { // LISTDIR: rdi = dir path, rsi = buf, rdx = max
              VFS::readdir((const char*)regs->rdi, (char*)regs->rsi, regs->rdx);
              regs->rax = 0;
+        }
+        else if (syscall_id == 12) { // CHDIR: rdi = path -> rax = 0 or -1
+             const char* path = (const char*)regs->rdi;
+
+
+
+             // Must exist and be a directory
+             if (!VFS::is_directory(path)) {
+                 regs->rax = (uint64_t)-1;
+             } else {
+                 // Store the canonical path (cwd-relative + ./.. resolved)
+                 static char canon[64];
+                 VFS::canonicalize(path, canon, sizeof(canon));
+                 Sched::current_task_set_cwd(canon);
+                 regs->rax = 0;
+             }
+        }
+        else if (syscall_id == 13) { // GETCWD: rdi = buf, rsi = max
+             char* buf = (char*)regs->rdi;
+             const char* cwd = Sched::current_task_cwd();
+             uint64_t max = regs->rsi;
+             uint64_t i = 0;
+             while (cwd[i] && i + 1 < max) { buf[i] = cwd[i]; i++; }
+             buf[i] = '\0';
+             regs->rax = (uint64_t)i;
         }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.

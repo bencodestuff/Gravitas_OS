@@ -328,6 +328,19 @@ extern "C" void kmain(void) {
         }
     }
 
+    // --- Root listing + mountpoint diagnostics ---
+    {
+        char listing[256];
+        VFS::readdir("/", listing, sizeof(listing));
+        kprint("[VFS] / contains: ");
+        kprint(listing);
+        kprint("\n");
+        kprint(VFS::is_directory("/bin") ? "[VFS] /bin is a dir\n"
+                                          : "[VFS] /bin NOT a dir!\n");
+        kprint(VFS::is_directory("/tmp") ? "[VFS] /tmp is a dir\n"
+                                          : "[VFS] /tmp NOT a dir!\n");
+    }
+
     // Spawn the userland shell as a real ring-3 task in its own address space
     // (bare name resolves through /bin via the VFS PATH fallback)
     int shell_fd = VFS::open_fd("/bin/shell.elf", VFS::O_RDONLY);
