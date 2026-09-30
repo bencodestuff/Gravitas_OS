@@ -230,6 +230,16 @@ namespace Sched {
         current_task->wake_timestamp = (uint64_t)-1;
     }
 
+    void sleep_current(uint64_t ticks) {
+        // Timestamp-based: yield()'s wake loop flips us back to READY when
+        // Timer::get_ticks() passes the target. waiting_on stays -1 (no
+        // process should wake us early).
+        if (ticks == 0) return;
+        current_task->state = SLEEPING;
+        current_task->waiting_on = -1;
+        current_task->wake_timestamp = Timer::get_ticks() + ticks;
+    }
+
     uint64_t current_task_brk() {
         return current_task->brk;
     }

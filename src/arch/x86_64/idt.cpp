@@ -10,7 +10,6 @@
 #include "../../fs/elf.h"
 #include "../../fs/vfs.h"
 #include "../../kernel/pmm.h"
-
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
@@ -193,6 +192,13 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              while (cwd[i] && i + 1 < max) { buf[i] = cwd[i]; i++; }
              buf[i] = '\0';
              regs->rax = (uint64_t)i;
+        }
+        else if (syscall_id == 14) { // SLEEP: rdi = ms — block, wake on timer
+             // Timer ticks at 50Hz (20ms per tick). Round up so sleep(1)
+             // actually sleeps one tick instead of returning instantly.
+             uint64_t ms = regs->rdi;
+             uint64_t ticks = (ms + 19) / 20;
+             Sched::sleep_current(ticks);
         }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.

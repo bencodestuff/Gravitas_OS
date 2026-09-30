@@ -39,6 +39,9 @@ namespace Sched {
     // Put the current task to sleep until task 'child_id' has exited.
     void block_current(int child_id);
 
+    // Sleep the current task for 'ticks' timer ticks (timer IRQ wakes it).
+    void sleep_current(uint64_t ticks);
+
     // Tear down the current task, wake whoever was waiting on it, and
     // switch to the next ready task. Never returns.
     void exit_current();

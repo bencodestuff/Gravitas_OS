@@ -61,6 +61,49 @@ int printf(const char* restrict format, ...) {
 			if (!print(str, len))
 				return -1;
 			written += len;
+		} else if (*format == 'd' || *format == 'i') {
+			format++;
+			int value = va_arg(parameters, int);
+
+			// Itoa into a local buffer (freestanding: no itoa in libc)
+			char numbuf[12]; // -2147483648 is 11 chars + NUL
+			int pos = 11;
+			numbuf[pos] = '\0';
+			bool negative = value < 0;
+			unsigned int uv = negative ? (unsigned int)(-(long long)value) : (unsigned int)value;
+			if (uv == 0) numbuf[--pos] = '0';
+			while (uv > 0) {
+				numbuf[--pos] = '0' + (uv % 10);
+				uv /= 10;
+			}
+			if (negative) numbuf[--pos] = '-';
+
+			const char* str = &numbuf[pos];
+			size_t len = 11 - (size_t)pos;
+			if (maxrem < len) return -1;
+			if (!print(str, len))
+				return -1;
+			written += len;
+		} else if (*format == 'x') {
+			format++;
+			unsigned int value = va_arg(parameters, unsigned int);
+
+			char numbuf[9]; // 8 hex digits + NUL
+			int pos = 8;
+			numbuf[pos] = '\0';
+			if (value == 0) numbuf[--pos] = '0';
+			while (value > 0) {
+				unsigned int digit = value % 16;
+				numbuf[--pos] = (digit < 10) ? ('0' + digit) : ('a' + digit - 10);
+				value /= 16;
+			}
+
+			const char* str = &numbuf[pos];
+			size_t len = 8 - (size_t)pos;
+			if (maxrem < len) return -1;
+			if (!print(str, len))
+				return -1;
+			written += len;
 		} else {
 			format = format_begun_at;
 			size_t len = strlen(format);

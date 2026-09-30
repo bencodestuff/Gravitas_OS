@@ -44,6 +44,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_LISTDIR 11
 #define GRV_SYSCALL_CHDIR  12
 #define GRV_SYSCALL_GETCWD 13
+#define GRV_SYSCALL_SLEEP  14
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -110,6 +111,11 @@ static inline int grv_chdir(const char* path) {
 
 static inline long grv_getcwd(char* buf, unsigned long max) {
     return syscall2(GRV_SYSCALL_GETCWD, (long)buf, (long)max);
+}
+
+/* Sleep for ms milliseconds (blocked, not busy-waited). */
+static inline void grv_sleep(unsigned long ms) {
+    syscall1(GRV_SYSCALL_SLEEP, (long)ms);
 }
 
 __END_DECLS
