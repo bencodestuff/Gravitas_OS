@@ -45,6 +45,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_CHDIR  12
 #define GRV_SYSCALL_GETCWD 13
 #define GRV_SYSCALL_SLEEP  14
+#define GRV_SYSCALL_MOUSERD 15
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -116,6 +117,17 @@ static inline long grv_getcwd(char* buf, unsigned long max) {
 /* Sleep for ms milliseconds (blocked, not busy-waited). */
 static inline void grv_sleep(unsigned long ms) {
     syscall1(GRV_SYSCALL_SLEEP, (long)ms);
+}
+
+/* --- Mouse (PS/2, relative) --- */
+struct grv_mouse_packet {
+    short dx, dy;         // movement since last packet
+    unsigned char buttons; // bit0 left, bit1 right, bit2 middle
+};
+
+/* Drain one mouse packet. Returns 1 if a packet was read, 0 if none. */
+static inline int grv_mouse_read(struct grv_mouse_packet* pkt) {
+    return (int)syscall1(GRV_SYSCALL_MOUSERD, (long)pkt);
 }
 
 __END_DECLS

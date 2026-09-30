@@ -11,6 +11,7 @@
 #include "heap.h"
 #include "shell.h"
 #include "sched.h"
+#include "mouse.h"
 #include "timer.h"
 #include "../drivers/framebuffer.h"
 #include "../fs/elf.h"
@@ -172,6 +173,11 @@ extern "C" void kmain(void) {
     Timer::init();
     PIC::unmask(0); // Enable Timer (IRQ 0)
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
+    Mouse::init();
+    PIC::unmask(12); // Enable Mouse (IRQ 12)
+    kprint("[PIC] IRQ12 mask bit: ");
+    kprint_uint(PIC::get_mask(12));
+    kprint(" (want 0)\n");
 
     // --- Filesystem layer ---
     // 1. Locate the tar module (becomes the read-only /bin)

@@ -52,9 +52,23 @@ namespace PIC {
         } else {
             port = PIC2_DATA;
             irq -= 8;
+
+            // Unmasking a slave IRQ also needs the CASCADE line (master
+            // IRQ2) unmasked, or the slave's interrupts can never reach
+            // the CPU. This was exactly the mouse bug: slave IRQ12 was
+            // unmasked but the master kept IRQ2 masked.
+            uint8_t m = inb(PIC1_DATA) & ~(1 << 2);
+            outb(PIC1_DATA, m);
         }
 
         value = inb(port) & ~(1 << irq);
         outb(port, value);
+    }
+
+    uint8_t get_mask(uint8_t irq) {
+        // Diagnostics: current IMR bit for this IRQ (1 = masked)
+        uint16_t port = (irq < 8) ? PIC1_DATA : PIC2_DATA;
+        uint8_t local = (irq < 8) ? irq : irq - 8;
+        return (inb(port) >> local) & 1;
     }
 }

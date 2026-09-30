@@ -5,6 +5,7 @@
 
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
+#include "../../kernel/mouse.h"
 #include "../../kernel/vmm.h"
 #include "../../fs/tar.h"
 #include "../../fs/elf.h"
@@ -200,6 +201,18 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              uint64_t ticks = (ms + 19) / 20;
              Sched::sleep_current(ticks);
         }
+        else if (syscall_id == 15) { // MOUSE READ: rdi = struct* {dx,dy,buttons}
+             // Non-blocking. rax = 1 if a packet was drained, 0 if none.
+             struct MousePkt { int16_t dx, dy; uint8_t buttons; };
+             MousePkt* out = (MousePkt*)regs->rdi;
+             int16_t dx, dy; uint8_t buttons;
+             if (Mouse::read_packet(&dx, &dy, &buttons)) {
+                 out->dx = dx; out->dy = dy; out->buttons = buttons;
+                 regs->rax = 1;
+             } else {
+                 regs->rax = 0;
+             }
+        }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.
              asm volatile("cli"); // no timer nesting mid-spawn
@@ -343,6 +356,13 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         Keyboard::handle_interrupt(); // Just delegate to the driver
         PIC::send_eoi(1);
         Sched::wake_keyboard_waiter(); // a key may have arrived — wake getc
+        return;
+    }
+
+    // --- IRQ 12: Mouse (PS/2 aux) ---
+    if (num == 44) {
+        Mouse::handle_interrupt();
+        PIC::send_eoi(12);
         return;
     }
 

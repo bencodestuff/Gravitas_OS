@@ -10,4 +10,5 @@ namespace PIC {
     
     // Unmask (enable) a specific IRQ (e.g., 1 for Keyboard)
     void unmask(uint8_t irq);
+    uint8_t get_mask(uint8_t irq);
 }
