@@ -45,6 +45,48 @@ namespace Framebuffer {
     static int cursor_x = 0;
     static int cursor_y = 0;
 
+
+    // Scroll the whole console up by one character row (8px).
+    // Pixel-level memmove via put_pixel would be brutally slow (each pixel
+    // is an MMIO-ish framebuffer write); write rows directly through the
+    // framebuffer pointer instead.
+    static void scroll_up() {
+        if (framebuffer_request.response == nullptr ||
+            framebuffer_request.response->framebuffer_count < 1) return;
+        struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
+
+        uint32_t* base = (uint32_t*)(uintptr_t)fb->address;
+        uint32_t pitch_px = fb->pitch / 4;      // pixels per row
+        uint32_t width    = fb->width;
+
+        // Move every row below the first up by 8 pixel-rows
+        for (uint32_t y = 0; y + 8 < fb->height; y++) {
+            uint32_t* dst = base + y * pitch_px;
+            uint32_t* src = base + (y + 8) * pitch_px;
+            for (uint32_t x = 0; x < width; x++) dst[x] = src[x];
+        }
+
+        // Clear the last 8 rows
+        uint32_t color_bg = 0x00000000;
+        for (uint32_t y = fb->height - 8; y < fb->height; y++) {
+            uint32_t* row = base + y * pitch_px;
+            for (uint32_t x = 0; x < width; x++) row[x] = color_bg;
+        }
+    }
+
+    // Keep the cursor inside the framebuffer; scroll when it runs off the
+    // bottom. Returns the (possibly adjusted) cursor_y.
+    static int clamp_cursor_y(int cy) {
+        if (framebuffer_request.response == nullptr ||
+            framebuffer_request.response->framebuffer_count < 1) return cy;
+        struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
+        while (cy + 8 > (int)fb->height) {
+            scroll_up();
+            cy -= 8;
+        }
+        return cy;
+    }
+
     void screen_print(const char* str) {
         // 1. Safety check
         if (framebuffer_request.response == nullptr) return;
@@ -73,7 +115,7 @@ namespace Framebuffer {
             // --- Handle Newline ---
             if (c == '\n') {
                 cursor_x = 0;
-                cursor_y += 8;
+                cursor_y = clamp_cursor_y(cursor_y + 8);
                 continue;
             }
 
@@ -97,7 +139,7 @@ namespace Framebuffer {
                 // Simple line wrap if we hit the right edge
                 if (cursor_x >= (int)fb->width) {
                     cursor_x = 0;
-                    cursor_y += 8;
+                    cursor_y = clamp_cursor_y(cursor_y + 8);
                 }
             }
         }
