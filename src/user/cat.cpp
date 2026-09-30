@@ -3,8 +3,9 @@
 #include <string.h>
 #include <grv/syscall.h>
 
-// cat — prints a file from the tarfs.
+// cat — prints a file from the VFS.
 // Usage: cat <file>   (argv[1] = file name)
+// Exercises the fd syscalls (open/read/close) from userland.
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -12,23 +13,22 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    char* filebuf = (char*)malloc(4096);
-    if (filebuf == NULL) {
-        printf("cat: out of memory\n");
-        return 1;
-    }
-
-    long n = grv_read_file(argv[1], filebuf, 4096);
-    if (n == -1) {
+    int fd = grv_open(argv[1], GRV_O_RDONLY);
+    if (fd < 0) {
         printf("cat: no such file\n");
-        free(filebuf);
         return 1;
     }
 
-    // fwrite the bytes: file data isn't NUL-terminated, so print per-byte
-    for (long i = 0; i < n; i++) putchar(filebuf[i]);
-    putchar('\n');
+    char buf[512];
+    long n;
+    while ((n = grv_read_fd(fd, buf, sizeof(buf))) > 0) {
+        for (long i = 0; i < n; i++) putchar(buf[i]);
+    }
+    grv_close(fd);
 
-    free(filebuf);
+    if (n < 0) {
+        printf("\ncat: read error\n");
+        return 1;
+    }
     return 0;
 }
