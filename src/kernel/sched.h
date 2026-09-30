@@ -1,11 +1,16 @@
 #pragma once
 #include <stdint.h>
 
+#include "../fs/vfs.h" // fd tables are per-task (Unix style), vfs.h defines MAX_FDS
+
 namespace Sched {
     void sleep(uint64_t ms);
     void init();
     void create_task(void(*entry_point)());
     void yield(); // Voluntarily give up CPU
+
+    // Returns the current task's fd table (array of MAX_FDS pointers)
+    VFS::FileHandle** current_task_fds();
 
     // --- Process lifecycle ---
     // Build a ring-3 task: 'rip' is the userland entry point (from the ELF

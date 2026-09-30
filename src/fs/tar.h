@@ -4,6 +4,8 @@
 // Minimal ustar (POSIX tar) filesystem backed by a Limine module.
 // The module is detected by its ".tar" path suffix.
 
+namespace VFS { struct Filesystem; }
+
 namespace Tar {
     // Scan Limine modules for a .tar archive. Safe to call once at boot.
     void init();
@@ -19,4 +21,7 @@ namespace Tar {
     // 'out_data' at the file's bytes directly inside the archive
     // (no copy), with 'out_size' = byte length.
     bool read_file(const char* path, char** out_data, uint64_t* out_size);
+
+    // VFS adapter: a read-only Filesystem over the mounted archive
+    VFS::Filesystem* vfs_instance();
 }

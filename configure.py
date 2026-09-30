@@ -14,8 +14,10 @@ LINKER = "ld.lld"
 CFLAGS = [
     "-target x86_64-unknown-none-elf",
     "-ffreestanding",
-    "-fno-stack-protector",
+    "-fno-builtin",
     "-fno-pie", "-fno-pic",
+    "-mcmodel=kernel",
+    "-fno-stack-protector",
     "-fno-rtti",
     "-fno-exceptions",
     "-mno-red-zone",

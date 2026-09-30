@@ -1,5 +1,6 @@
 #include <limine.h>
 #include "tar.h"
+#include "vfs.h"
 #include "../drivers/framebuffer.h"
 
 // Defined in initrd.cpp
@@ -166,5 +167,54 @@ namespace Tar {
             }
         }
         return false;
+    }
+
+    // --- VFS adapter: read-only Filesystem over the mounted archive ---
+    // Handle = pointer to the member data inside the archive (zero-copy).
+    // Offsets are tracked in the VFS FileHandle; the size was reported at
+    // open, and the VFS clamps reads against it.
+
+    static void* tarfs_open(void* priv, const char* path, int flags, uint64_t* out_size) {
+        (void)priv;
+        if (flags & (VFS::O_CREATE | VFS::O_WRONLY | VFS::O_RDWR)) return nullptr; // RO fs
+        char* data = nullptr;
+        uint64_t size = 0;
+        if (!read_file(path, &data, &size)) return nullptr;
+        *out_size = size;
+        return data;
+    }
+
+    static uint64_t tarfs_read(void* priv, void* handle, void* buf,
+                               uint64_t count, uint64_t offset) {
+        (void)priv;
+        uint8_t* src = (uint8_t*)handle + offset;
+        uint8_t* dst = (uint8_t*)buf;
+        for (uint64_t i = 0; i < count; i++) dst[i] = src[i];
+        return count;
+    }
+
+    static void tarfs_close(void* priv, void* handle) {
+        (void)priv; (void)handle; // data lives inside the archive
+    }
+
+    static uint64_t tarfs_readdir(void* priv, const char* path, char* buf, uint64_t max) {
+        (void)priv;
+        if (path[0] != '\0') return 0; // flat namespace: only the root lists
+        list_into(buf, max);
+        return 1;
+    }
+
+    static VFS::Filesystem tarfs = {
+        .fs_type  = "tarfs",
+        .priv     = nullptr,
+        .open     = tarfs_open,
+        .read     = tarfs_read,
+        .write    = nullptr,   // read-only
+        .close    = tarfs_close,
+        .readdir  = tarfs_readdir,
+    };
+
+    VFS::Filesystem* vfs_instance() {
+        return &tarfs;
     }
 }

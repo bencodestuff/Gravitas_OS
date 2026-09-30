@@ -15,6 +15,8 @@
 #include "../drivers/framebuffer.h"
 #include "../fs/elf.h"
 #include "../fs/tar.h"
+#include "../fs/vfs.h"
+#include "../fs/ramfs.h"
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
@@ -285,17 +287,64 @@ extern "C" void kmain(void) {
     PIC::unmask(0); // Enable Timer (IRQ 0)
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
 
+    // --- Filesystem layer ---
+    // 1. Locate the tar module (becomes the read-only /bin)
     Tar::init();
+    // 2. Root = ramfs (writable); 3. tarfs at /bin
+    VFS::init();
+    RamFS::init();
+    VFS::mount("/", RamFS::instance());
+    VFS::mount("/bin", Tar::vfs_instance());
+    kprint("[VFS] Mounted root(ramfs) + /bin(tarfs).\n");
+
+    // --- VFS self-test: ramfs create/write/read round-trip ---
+    {
+        int fd = VFS::open_fd("/tmp/selftest.txt", VFS::O_CREATE | VFS::O_WRONLY);
+        if (fd < 0) {
+            kprint("[VFS] SELF-TEST FAIL: open(O_CREATE)\n");
+        } else {
+            VFS::write_fd(fd, "ramfs write works", 17);
+            VFS::close_fd(fd);
+
+            char rbuf[32] = {0};
+            fd = VFS::open_fd("/tmp/selftest.txt", VFS::O_RDONLY);
+            VFS::read_fd(fd, rbuf, 31);
+            VFS::close_fd(fd);
+
+            const char* expect = "ramfs write works";
+            bool ok = true;
+            for (int i = 0; i < 17; i++) {
+                if (rbuf[i] != expect[i]) { ok = false; break; }
+            }
+            kprint(ok ? "[VFS] SELF-TEST OK: ramfs write+read round-trip\n"
+                      : "[VFS] SELF-TEST FAIL: data mismatch\n");
+
+            // readdir listing
+            char listing[256];
+            VFS::readdir("/tmp", listing, sizeof(listing));
+            kprint("[VFS] /tmp contains: ");
+            kprint(listing);
+            kprint("\n");
+        }
+    }
 
     // Spawn the userland shell as a real ring-3 task in its own address space
-    char* shell_data = nullptr;
-    uint64_t shell_size = 0;
-    if (Tar::read_file("shell.elf", &shell_data, &shell_size)) {
+    // (bare name resolves through /bin via the VFS PATH fallback)
+    int shell_fd = VFS::open_fd("/bin/shell.elf", VFS::O_RDONLY);
+    if (shell_fd < 0) {
+        kprint("[Kernel] shell.elf not found in tarfs!\n");
+    } else {
+        uint64_t fsize = VFS::fd_size(shell_fd);
+        char* shell_data = new char[fsize];
+        VFS::read_fd(shell_fd, shell_data, fsize);
+        VFS::close_fd(shell_fd);
+
         uint64_t old_cr3 = VMM::current_pml4();
         uint64_t child_cr3 = VMM::clone_kernel_space();
         VMM::switch_pml4(child_cr3);
 
         uint64_t entry = ELF::load_elf((uint8_t*)shell_data);
+        delete[] shell_data;
         if (entry != 0) {
             Sched::create_user_task(entry, "shell", 0, nullptr, child_cr3);
             VMM::switch_pml4(old_cr3);
@@ -304,8 +353,6 @@ extern "C" void kmain(void) {
             VMM::destroy_user_space(child_cr3);
             kprint("[Kernel] shell.elf failed to load!\n");
         }
-    } else {
-        kprint("[Kernel] No shell.elf in tarfs!\n");
     }
 
     while (1) {

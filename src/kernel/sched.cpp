@@ -4,6 +4,7 @@
 #include "arch/x86_64/gdt.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "../fs/vfs.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
 // (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
@@ -47,6 +48,7 @@ namespace Sched {
         uint64_t user_rsp;
         uint64_t cr3;           // this task's address space
         uint64_t brk;           // program break (malloc arena top), 0 = unset
+        VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
     };
 
     Task* current_task = nullptr;
@@ -179,6 +181,8 @@ namespace Sched {
 
         new_task->user_rip = rip;
         new_task->user_rsp = new_rsp;
+        new_task->brk = 0; // 0 = unset; brk syscall initializes on first use
+        for (int i = 0; i < VFS::MAX_FDS; i++) new_task->fds[i] = nullptr;
 
         // Forge the switch_context stack. NOTE: switch_context pops in
         // REVERSE push order (r15 first, rbx last), so the slots must be
@@ -216,6 +220,10 @@ namespace Sched {
 
     void current_task_set_brk(uint64_t value) {
         current_task->brk = value;
+    }
+
+    VFS::FileHandle** current_task_fds() {
+        return current_task->fds;
     }
 
     static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall
@@ -331,6 +339,12 @@ namespace Sched {
         // Reap any task that exited since the last switch (its old kernel
         // stack is definitely abandoned by now).
         if (zombie != nullptr) {
+            // Close any fds the task leaked, then free its address space
+            for (int i = 0; i < VFS::MAX_FDS; i++) {
+                if (zombie->fds[i] != nullptr) {
+                    VFS::close_fd_for(zombie->fds, i);
+                }
+            }
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);
             delete[] zombie->kstack_mem;

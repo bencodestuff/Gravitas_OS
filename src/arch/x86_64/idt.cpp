@@ -8,12 +8,17 @@
 #include "../../kernel/vmm.h"
 #include "../../fs/tar.h"
 #include "../../fs/elf.h"
+#include "../../fs/vfs.h"
 #include "../../kernel/pmm.h"
 
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
 #define BRK_BASE 0x8000000
+
+// Boot mounts the tarfs here; bare filenames resolve through it (embryonic
+// PATH: "ls.elf" -> /bin/ls.elf)
+#define BIN_MOUNT "/bin"
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
@@ -155,18 +160,16 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              regs->rax = (uint64_t)c;
         }
         else if (syscall_id == 2) { // LIST FILES: rdi = buf, rsi = max
-             Tar::list_into((char*)regs->rdi, regs->rsi);
+             // SHIM (deprecated): now reads the /bin directory listing
+             VFS::readdir(BIN_MOUNT, (char*)regs->rdi, regs->rsi);
              regs->rax = 0;
         }
         else if (syscall_id == 3) { // READ FILE: rdi = name, rsi = buf, rdx = max
+             // SHIM (deprecated): open+read+close over the VFS
              char* data = nullptr;
              uint64_t size = 0;
-             if (Tar::read_file((const char*)regs->rdi, &data, &size)) {
-                 // Cap the copy at the caller's buffer size
-                 uint64_t n = (size < regs->rdx) ? size : regs->rdx;
-                 char* dst = (char*)regs->rsi;
-                 for (uint64_t i = 0; i < n; i++) dst[i] = data[i];
-                 regs->rax = n;
+             if (VFS::read_full((const char*)regs->rdi, (char*)regs->rsi, regs->rdx, &size)) {
+                 regs->rax = (long)size;
              } else {
                  regs->rax = (uint64_t)-1; // not found
              }
@@ -204,11 +207,17 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  argc = i + 1;
              }
 
-             char* data = nullptr;
-             uint64_t size = 0;
-             if (!Tar::read_file(namebuf, &data, &size)) {
+             // Read the program's ELF image through the VFS (bare names
+             // resolve through /bin). Heap buffer, freed after the load.
+             int fd = VFS::open_fd(namebuf, VFS::O_RDONLY);
+             if (fd < 0) {
                  regs->rax = (uint64_t)-1;
              } else {
+                 uint64_t fsize = VFS::fd_size(fd);
+                 char* data = new char[fsize];
+                 VFS::read_fd(fd, data, fsize);
+                 VFS::close_fd(fd);
+
                  // Build the child in its OWN address space: clone, switch,
                  // load the ELF there, create the task, switch back.
                  uint64_t old_cr3 = VMM::current_pml4();
@@ -216,6 +225,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  VMM::switch_pml4(child_cr3);
 
                  uint64_t entry = ELF::load_elf((uint8_t*)data);
+                 delete[] data;
                  if (entry == 0) {
                      VMM::switch_pml4(old_cr3);
                      VMM::destroy_user_space(child_cr3);
@@ -232,6 +242,19 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 5) { // EXIT: kill the calling task. Never returns.
              asm volatile("cli");
              Sched::exit_current();
+        }
+        else if (syscall_id == 7) { // OPEN: rdi = path, rsi = flags -> rax = fd
+             regs->rax = (uint64_t)VFS::open_fd((const char*)regs->rdi, (int)regs->rsi);
+        }
+        else if (syscall_id == 8) { // READ: rdi = fd, rsi = buf, rdx = count
+             regs->rax = (uint64_t)VFS::read_fd((int)regs->rdi, (void*)regs->rsi, regs->rdx);
+        }
+        else if (syscall_id == 9) { // WRITE: rdi = fd, rsi = buf, rdx = count
+             regs->rax = (uint64_t)VFS::write_fd((int)regs->rdi, (const void*)regs->rsi, regs->rdx);
+        }
+        else if (syscall_id == 10) { // CLOSE: rdi = fd
+             VFS::close_fd((int)regs->rdi);
+             regs->rax = 0;
         }
         else if (syscall_id == 6) { // BRK: rdi = new break (or 0 to query).
              uint64_t want = regs->rdi;

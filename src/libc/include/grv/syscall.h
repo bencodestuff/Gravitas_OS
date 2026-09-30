@@ -38,6 +38,16 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SPAWN  4
 #define GRV_SYSCALL_EXIT   5
 #define GRV_SYSCALL_BRK    6
+#define GRV_SYSCALL_OPEN   7
+#define GRV_SYSCALL_READFD  8
+#define GRV_SYSCALL_WRITEFD 9
+#define GRV_SYSCALL_CLOSE  10
+
+/* Open flags (subset) */
+#define GRV_O_RDONLY 0
+#define GRV_O_WRONLY 1
+#define GRV_O_RDWR   2
+#define GRV_O_CREATE 4
 
 /* --- Convenience wrappers --- */
 
@@ -74,6 +84,24 @@ static inline __attribute__((__noreturn__)) void grv_exit(int code) {
    Returns the new break, or (void*)-1 on failure. */
 static inline void* grv_brk(void* addr) {
     return (void*)syscall1(GRV_SYSCALL_BRK, (long)addr);
+}
+
+/* --- File descriptors --- */
+
+static inline int grv_open(const char* path, int flags) {
+    return (int)syscall2(GRV_SYSCALL_OPEN, (long)path, (long)flags);
+}
+
+static inline long grv_read_fd(int fd, void* buf, unsigned long count) {
+    return syscall3(GRV_SYSCALL_READFD, (long)fd, (long)buf, (long)count);
+}
+
+static inline long grv_write_fd(int fd, const void* buf, unsigned long count) {
+    return syscall3(GRV_SYSCALL_WRITEFD, (long)fd, (long)buf, (long)count);
+}
+
+static inline void grv_close(int fd) {
+    syscall1(GRV_SYSCALL_CLOSE, (long)fd);
 }
 
 __END_DECLS
