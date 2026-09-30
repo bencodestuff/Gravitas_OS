@@ -198,6 +198,53 @@ namespace VMM {
         return new_pml4_phys;
     }
 
+    // --- User VA allocator (walk-the-tables, no metadata) ---
+    // Region: 256MB .. 1GB. Below it: code (0x400000+), stacks/brk legacy
+    // (0x500000..0x8000000). Above: kernel space.
+    constexpr uint64_t USER_VA_BASE = 0x10000000; // 256MB
+    constexpr uint64_t USER_VA_END  = 0x40000000; // 1GB
+
+    // Is the page range unmapped in this space? (creates nothing)
+    static bool range_free(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages) {
+        for (uint64_t p = 0; p < pages; p++) {
+            uint64_t va = vaddr + p * 4096;
+            uint64_t pml4_idx = (va >> 39) & 0x1FF;
+            uint64_t pdp_idx  = (va >> 30) & 0x1FF;
+            uint64_t pd_idx   = (va >> 21) & 0x1FF;
+            uint64_t pt_idx   = (va >> 12) & 0x1FF;
+
+            uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, false, false);
+            if (pt == nullptr) continue;          // table absent -> free
+            if (pt[pt_idx] & PTE_PRESENT) return false;
+        }
+        return true;
+    }
+
+    uint64_t alloc_user_range(uint64_t pml4_phys, uint64_t pages) {
+        if (pages == 0) return 0;
+        uint64_t candidate = USER_VA_BASE;
+        while (candidate + pages * 4096 <= USER_VA_END) {
+            if (range_free(pml4_phys, candidate, pages)) {
+                // Reserve with a guard mapping on the FIRST page: until the
+                // caller overwrites it with real mappings, any future scan
+                // sees PRESENT and skips this range. (Single-CPU + spawns
+                // under cli make the alloc/map window safe anyway; the
+                // guard makes it structurally safe.)
+                map_page_in(pml4_phys, PMM::alloc_page(), candidate,
+                            PTE_PRESENT | PTE_WRITABLE);
+                return candidate;
+            }
+            candidate += 4096;
+        }
+        return 0; // region exhausted
+    }
+
+    bool reserve_user_range(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages) {
+        if (!range_free(pml4_phys, vaddr, pages)) return false;
+        map_page_in(pml4_phys, PMM::alloc_page(), vaddr, PTE_PRESENT | PTE_WRITABLE);
+        return true;
+    }
+
     // Recursively free a table page and everything below it (tables + frames).
     static void free_space_level(uint64_t table_phys, int level) {
         uint64_t* table = (uint64_t*)(table_phys + hhdm_offset);

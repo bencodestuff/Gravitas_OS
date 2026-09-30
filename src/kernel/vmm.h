@@ -21,6 +21,16 @@ namespace VMM {
     // Returns the physical address of the new PML4.
     uint64_t clone_kernel_space();
 
+    // Find and reserve a free virtual range in 'pml4' (user region:
+    // USER_VA_BASE .. USER_VA_END). Returns the base VA, or 0 on failure.
+    // Used for stacks, ELF loads, shared buffers — anything that needs a
+    // guaranteed-unique mapping in that address space.
+    uint64_t alloc_user_range(uint64_t pml4_phys, uint64_t pages);
+
+    // Mark a VA range as reserved WITHOUT mapping pages (e.g. the brk
+    // arena start). Subsequent alloc_user_range calls will skip it.
+    bool reserve_user_range(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages);
+
     // Free all user-half frames and tables of an address space (the kernel
     // upper half is shared and left alone). Used at process exit.
     void destroy_user_space(uint64_t pml4_phys);

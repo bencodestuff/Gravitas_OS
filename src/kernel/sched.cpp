@@ -145,14 +145,26 @@ namespace Sched {
         new_task->kstack_top = (uint64_t)stack_top;
         new_task->kstack_mem = stack_bottom;
 
-        // User stack: unique virtual address per process.
-        // 0x500000 is reserved for the legacy hand-launched program; tasks
-        // start at 0x600000. Map the page itself plus the one below it, since
-        // the stack pointer sits at the top of the page and early pushes go
-        // downwards.
-        uint64_t user_stack_va = 0x500000 + (uint64_t)new_task->id * 0x100000;
-        VMM::map_page(PMM::alloc_page(), user_stack_va, 0x07);        // P|W|U
-        VMM::map_page(PMM::alloc_page(), user_stack_va - 0x1000, 0x07);
+        // User stack: allocated from the per-space VA allocator (no more
+        // id-based fixed slots — two processes can overlap freely since
+        // they own separate address spaces, and one process can't).
+        uint64_t old_cr3 = VMM::current_pml4();
+        bool switched = false;
+        if (old_cr3 != new_task->cr3) {
+            VMM::switch_pml4(new_task->cr3);
+            switched = true;
+        }
+        uint64_t stack_base = VMM::alloc_user_range(new_task->cr3, 2); // 2 pages
+        if (stack_base == 0) {
+            kprint("[Sched] Out of user VA for stack!\n");
+            if (switched) VMM::switch_pml4(old_cr3);
+            // NOTE: caller must clean up the task on failure (id already used)
+            return -1;
+        }
+        // Map the top page; the allocator's guard page is the bottom one.
+        // Stack top = base + 2 pages (grows down toward the guard).
+        VMM::map_page(PMM::alloc_page(), stack_base + 4096, 0x07); // P|W|U
+        if (switched) VMM::switch_pml4(old_cr3);
 
         // --- Build the initial user stack (System V argv layout) ---
         // [rsp]     = argc
@@ -165,7 +177,7 @@ namespace Sched {
             while (*s) { total_len++; s++; }
             total_len++; // NUL
         }
-        uint64_t strings_start = (user_stack_va - total_len) & ~(uint64_t)15;
+        uint64_t strings_start = (stack_base + 8192 - total_len) & ~(uint64_t)15;
         uint64_t array_start = strings_start - ((argc + 1) * 8);
         uint64_t new_rsp = array_start - 8;
 
