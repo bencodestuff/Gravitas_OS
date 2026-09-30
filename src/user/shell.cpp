@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
 
     // Startup listing: proves tarfs + list syscall work end to end
     char* listbuf = (char*)malloc(2048);
-    grv_list_files(listbuf, 2048);
+    grv_readdir("/bin", listbuf, 2048);
     printf("[shell] tarfs contents:\n%s", listbuf);
     printf("[shell] type 'help'\n");
 

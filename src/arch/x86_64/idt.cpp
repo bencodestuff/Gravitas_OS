@@ -159,20 +159,12 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              }
              regs->rax = (uint64_t)c;
         }
-        else if (syscall_id == 2) { // LIST FILES: rdi = buf, rsi = max
-             // SHIM (deprecated): now reads the /bin directory listing
-             VFS::readdir(BIN_MOUNT, (char*)regs->rdi, regs->rsi);
+        /* Syscall 2 (list tarfs) and 3 (read by name) RETIRED — superseded by
+   the VFS: open/read/close fds (7-10) and readdir (11). The numbers are
+   deliberately unused holes, like real OSes keep. */
+        else if (syscall_id == 11) { // LISTDIR: rdi = dir path, rsi = buf, rdx = max
+             VFS::readdir((const char*)regs->rdi, (char*)regs->rsi, regs->rdx);
              regs->rax = 0;
-        }
-        else if (syscall_id == 3) { // READ FILE: rdi = name, rsi = buf, rdx = max
-             // SHIM (deprecated): open+read+close over the VFS
-             char* data = nullptr;
-             uint64_t size = 0;
-             if (VFS::read_full((const char*)regs->rdi, (char*)regs->rsi, regs->rdx, &size)) {
-                 regs->rax = (long)size;
-             } else {
-                 regs->rax = (uint64_t)-1; // not found
-             }
         }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.

@@ -33,8 +33,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 /* Syscall numbers */
 #define GRV_SYSCALL_PUTC   0
 #define GRV_SYSCALL_GETC   1
-#define GRV_SYSCALL_LIST   2
-#define GRV_SYSCALL_READ   3
+/* 2, 3 retired (flat-tarfs list/read by name) — superseded by the VFS */
 #define GRV_SYSCALL_SPAWN  4
 #define GRV_SYSCALL_EXIT   5
 #define GRV_SYSCALL_BRK    6
@@ -42,6 +41,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_READFD  8
 #define GRV_SYSCALL_WRITEFD 9
 #define GRV_SYSCALL_CLOSE  10
+#define GRV_SYSCALL_LISTDIR 11
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -59,14 +59,10 @@ static inline char grv_getc(void) {
     return (char)syscall1(GRV_SYSCALL_GETC, 0);
 }
 
-/* Fill buf with tarfs entry names, '\n'-separated, NUL-terminated. */
-static inline void grv_list_files(char* buf, unsigned long max) {
-    syscall2(GRV_SYSCALL_LIST, (long)buf, (long)max);
-}
-
-/* Read a file from the tarfs. Returns bytes copied, or -1 if not found. */
-static inline long grv_read_file(const char* name, char* buf, unsigned long max) {
-    return syscall3(GRV_SYSCALL_READ, (long)name, (long)buf, (long)max);
+/* Fill buf with the entries of directory 'path', '\n'-separated,
+   NUL-terminated. */
+static inline void grv_readdir(const char* path, char* buf, unsigned long max) {
+    syscall3(GRV_SYSCALL_LISTDIR, (long)path, (long)buf, (long)max);
 }
 
 /* Spawn a program from the tarfs (blocks until it exits).

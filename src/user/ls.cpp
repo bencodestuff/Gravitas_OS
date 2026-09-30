@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    grv_list_files(listbuf, 2048);
+    grv_readdir("/bin", listbuf, 2048);
     printf("tarfs contents:\n%s\n", listbuf);
     free(listbuf);
     return 0;
