@@ -20,7 +20,8 @@ extern "C" char* strcpy(char* dest, const char* src) {
 }
 
 extern "C" void kprint(const char* str);
-extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp);
+extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
+                               void* old_fxsave, void* new_fxsave);
 
 
 
@@ -42,6 +43,14 @@ namespace Sched {
         uint64_t kstack_top; // We need this for the TSS!
         uint64_t* kstack_mem; // Base of the heap-allocated kernel stack (for freeing)
 
+        // --- FPU/SSE context ---
+        // Eager save/restore in switch_context. The area needs 16-byte
+        // alignment for fxsave, but the kernel heap only guarantees 8 —
+        // so it's a separate aligned allocation (fxsave_raw is the
+        // unaligned base kept for delete[]).
+        uint8_t* fxsave_area;    // 512 bytes, 16+ aligned
+        uint8_t* fxsave_raw;     // allocation base
+
         // --- Process lifecycle ---
         int waiting_on;         // task id this task is blocked on (-1 = none)
         uint64_t user_rip;      // for the userland trampoline
@@ -52,6 +61,8 @@ namespace Sched {
         VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
         char cwd[64];           // current working directory (starts "/")
     };
+
+    static uint8_t fpu_template[512] __attribute__((aligned(64)));
 
     Task* current_task = nullptr;
     Task* ready_queue = nullptr; // A simple linked list (Round Robin)
@@ -77,6 +88,18 @@ namespace Sched {
         current_task->id = 0;
         current_task->state = READY;
         strcpy(current_task->name, "Kernel Shell");
+
+        // --- FPU: snapshot the boot-clean state as the template for all
+        // future tasks. Limine leaves the FPU enabled + initialized; a
+        // task whose fxsave_area was never saved would otherwise fxrstor
+        // heap garbage (-> #GP on first float use).
+        for (int i = 0; i < 512; i++) fpu_template[i] = 0;
+        asm volatile("fxsave %0" : : "m"(fpu_template) : "memory");
+
+        // The kernel-main task gets an fxsave area too (timer switch saves it)
+        current_task->fxsave_raw = new uint8_t[512 + 63];
+        current_task->fxsave_area = (uint8_t*)(((uint64_t)current_task->fxsave_raw + 63) & ~(uint64_t)63);
+        for (int i = 0; i < 512; i++) current_task->fxsave_area[i] = fpu_template[i];
         
         // --- THE FIX ---
         // Capture the current stack pointer so the TSS knows where to land
@@ -200,6 +223,13 @@ namespace Sched {
         // CWD is inherited from the spawning process (Unix semantics) —
         // otherwise `cd /bin` + `ls` would list "/" in every child
         strcpy(new_task->cwd, current_task->cwd);
+
+        // FPU area: separately allocated (heap is only 8-aligned; fxsave
+        // needs 16) and seeded with the boot-clean template so the first
+        // fxrstor is valid
+        new_task->fxsave_raw = new uint8_t[512 + 63];
+        new_task->fxsave_area = (uint8_t*)(((uint64_t)new_task->fxsave_raw + 63) & ~(uint64_t)63);
+        for (int i = 0; i < 512; i++) new_task->fxsave_area[i] = fpu_template[i];
         for (int i = 0; i < VFS::MAX_FDS; i++) new_task->fds[i] = nullptr;
 
         // Forge the switch_context stack. NOTE: switch_context pops in
@@ -346,7 +376,7 @@ namespace Sched {
         GDT::tss.rsp0 = next->kstack_top;
         switch_to_task_cr3(next);
         uint64_t dummy_rsp; // never used — this task ceases to exist
-        switch_context(&dummy_rsp, next->rsp);
+        switch_context(&dummy_rsp, next->rsp, dead->fxsave_area, next->fxsave_area);
         // Never returns: the CPU is now on the next task's stack.
         while (1) asm("hlt");
     }
@@ -385,7 +415,8 @@ namespace Sched {
         current_task = next_task;
         GDT::tss.rsp0 = current_task->kstack_top;
         switch_to_task_cr3(next_task);
-        switch_context(&old_task->rsp, next_task->rsp);
+        switch_context(&old_task->rsp, next_task->rsp,
+                       old_task->fxsave_area, next_task->fxsave_area);
 
         // We only get here when this task is scheduled back in.
         // Reap any task that exited since the last switch (its old kernel
@@ -400,6 +431,7 @@ namespace Sched {
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);
             delete[] zombie->kstack_mem;
+            delete[] zombie->fxsave_raw;
             delete zombie;
             zombie = nullptr;
         }

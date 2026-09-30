@@ -81,7 +81,18 @@ static void execute(char* line) {
     static char progbuf[64];
     if (str_eq(words[0], "run")) {
         if (nwords < 2) { printf("run: missing program name\n"); return; }
-        prog = words[1];
+        if (str_ends_with_elf(words[1])) {
+            prog = words[1];
+        } else {
+            // accept 'run plasma' the same as 'run plasma.elf'
+            int len = 0;
+            const char* w = words[1];
+            while (*w && len < 58) progbuf[len++] = *w++;
+            progbuf[len++] = '.'; progbuf[len++] = 'e';
+            progbuf[len++] = 'l'; progbuf[len++] = 'f';
+            progbuf[len] = '\0';
+            prog = progbuf;
+        }
         arg_start = 2;
     } else {
         if (str_ends_with_elf(words[0])) {

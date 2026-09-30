@@ -46,8 +46,11 @@ USER_CFLAGS = [
     "-g",
 ]
 
-# libc C sources compile as C11
+# libc C sources compile as C11. libm files get SSE enabled (they return
+# doubles; FPU state is saved per-task now) — everything else stays
+# integer-only.
 LIBC_CFLAGS = USER_CFLAGS + ["-std=c11", "-fno-builtin"]
+LIBM_CFLAGS = [f for f in LIBC_CFLAGS if f not in ("-mno-sse", "-mno-mmx", "-mno-sse2")]
 
 # libc C++ sources (crt0, cxx runtime)
 LIBC_CXXFLAGS = USER_CFLAGS + ["-std=c++20", "-fno-rtti", "-fno-exceptions", "-fno-builtin"]
@@ -134,6 +137,9 @@ def main():
         ninja.write(f"rule libc_c\n")
         ninja.write(f"  command = clang {' '.join(LIBC_CFLAGS)} -c $in -o $out\n")
         ninja.write(f"  description = LIBC-C $out\n\n")
+        ninja.write(f"rule libm_c\n")
+        ninja.write(f"  command = clang {' '.join(LIBM_CFLAGS)} -c $in -o $out\n")
+        ninja.write(f"  description = LIBM-C $out\n\n")
         ninja.write(f"rule libc_cxx\n")
         ninja.write(f"  command = {COMPILER} {' '.join(LIBC_CXXFLAGS)} -c $in -o $out\n")
         ninja.write(f"  description = LIBC-CXX $out\n\n")
@@ -150,7 +156,9 @@ def main():
                 src_path = os.path.join(root, file)
                 if file.endswith(".c"):
                     obj = "obj/libc/" + src_path.replace("/", "_") + ".o"
-                    ninja.write(f"build {obj}: libc_c {src_path}\n")
+                    rule = "libc_c"
+                    if "libm" in src_path: rule = "libm_c"
+                    ninja.write(f"build {obj}: {rule} {src_path}\n")
                     libc_objects.append(obj)
                 elif file.endswith(".cpp") and "crt0" not in file:
                     # crt0 must come FIRST in the link (defines _start);

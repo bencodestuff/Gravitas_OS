@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <grv/syscall.h>
 
 // plasma — the classic demoscene effect, mouse-reactive.
@@ -8,42 +9,6 @@
 // center that FOLLOWS THE MOUSE, and a time pulse. Clicks push a palette
 // phase shift. Everything integer: precomputed sine table (1024 entries),
 // palette of 256 colors. Exits on 3 left-clicks.
-
-// --- fixed-point sine table: sin(x) * 512 for x in [0, 1024) mapping to
-// a full 2*pi cycle ---
-static int* sintab = 0;
-#define SIN_SCALE 512
-#define SIN_MASK  1023
-
-static void build_sintab() {
-    sintab = (int*)malloc(1024 * sizeof(int));
-    // Fixed-point sin: X = radians << 22, Taylor series valid within a
-    // quadrant, quadrant identities for the rest. Validated against libm
-    // on the host: max error 1/512.
-    const long long K = 25735;       // (2*pi/1024) << 22
-    const long long QUART = K * 256; // (pi/2) << 22
-    for (int i = 0; i < 1024; i++) {
-        long long X = (long long)i * K;
-        long long q = (X / QUART) & 3;
-        long long r = X % QUART;
-        int mirror = (q == 1 || q == 3);
-        int sign = (q >= 2) ? -1 : 1;
-        long long a = mirror ? (QUART - r) : r;
-        long long a2 = (a * a) >> 22;
-        long long a3 = (a2 * a) >> 22;
-        long long a4 = (a2 * a2) >> 22;
-        long long a5 = (a4 * a) >> 22;
-        long long a6 = (a3 * a3) >> 22;
-        long long a7 = (a6 * a) >> 22;
-        long long s = a - a3 / 6 + a5 / 120 - a7 / 5040; // sin(a) << 22
-        sintab[i] = (int)(sign * (s >> 13));             // sin * 512
-    }
-}
-
-// sin(a) where a is in 1/1024-turns units (0..1023), returns sin * 512
-static int fsin(int a) {
-    return sintab[a & SIN_MASK];
-}
 
 // 256-entry palette: hue sweep -> RGB, fixed-point HSV-ish
 static unsigned int* palette = 0;
@@ -87,7 +52,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    build_sintab();
+    math_init(); // libm: build the sine table
     palette = (unsigned int*)malloc(256 * sizeof(unsigned int));
     build_palette(0);
 
@@ -134,13 +99,13 @@ int main(int argc, char** argv) {
         // Per-frame precompute: x and y terms cost 2K table lookups per
         // frame instead of 4M — the only per-pixel work left is the
         // mouse-ripple term. (Per-pixel sines were ~3fps real under TCG.)
-        int t = (frame * 14) & SIN_MASK;
+        int t = (frame * 14) & 1023;
         static int xterm[4096], yterm[4096];
         int W = (int)fb.width, H = (int)fb.height;
         for (int x = 0; x < W; x++)
-            xterm[x] = fsin((x * 8 + t * 3) & SIN_MASK);
+            xterm[x] = isin((x * 8 + t * 3) & 1023);
         for (int y = 0; y < H; y++)
-            yterm[y] = fsin((y * 12 - t * 2) & SIN_MASK);
+            yterm[y] = isin((y * 12 - t * 2) & 1023);
 
         unsigned int* row = fbmem;
         for (int y = 0; y < H; y++) {
@@ -155,8 +120,8 @@ int main(int argc, char** argv) {
                 int dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
                 int v = xterm[x]
                       + yterm_v
-                      + fsin((dist * 20 - t * 4) & SIN_MASK)
-                      + fsin(t);
+                      + isin((dist * 20 - t * 4) & 1023)
+                      + isin(t);
                 // v in [-2048, 2048] -> 0..255
                 int idx = ((v + 2048) * 255) / 4096;
                 *px++ = palette[idx & 0xFF];
