@@ -47,6 +47,8 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SLEEP  14
 #define GRV_SYSCALL_MOUSERD 15
 #define GRV_SYSCALL_FBINFO 16
+#define GRV_SYSCALL_TICKS  17
+#define GRV_SYSCALL_FBINFO 16
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -146,6 +148,11 @@ struct grv_fb_info {
    directly to (address + y*pitch + x*4). */
 static inline int grv_fb_info(struct grv_fb_info* info) {
     return (int)syscall1(GRV_SYSCALL_FBINFO, (long)info);
+}
+
+/* Timer ticks since boot (50Hz). For honest FPS: (t2-t1)*20 = ms elapsed. */
+static inline unsigned long grv_ticks(void) {
+    return (unsigned long)syscall1(GRV_SYSCALL_TICKS, 0);
 }
 
 __END_DECLS

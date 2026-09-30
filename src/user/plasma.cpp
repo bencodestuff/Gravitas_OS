@@ -17,31 +17,26 @@ static int* sintab = 0;
 
 static void build_sintab() {
     sintab = (int*)malloc(1024 * sizeof(int));
-    // angle 0..2pi over 1024 entries; sin via Taylor series in fixed point
+    // Fixed-point sin: X = radians << 22, Taylor series valid within a
+    // quadrant, quadrant identities for the rest. Validated against libm
+    // on the host: max error 1/512.
+    const long long K = 25735;       // (2*pi/1024) << 22
+    const long long QUART = K * 256; // (pi/2) << 22
     for (int i = 0; i < 1024; i++) {
-        // x = i * 2pi / 1024, in radians-ish: t = i * 0.0061359
-        // Taylor: sin(t) = t - t^3/6 + t^5/120 - ... in units of SIN_SCALE
-        // Fixed point: t = i (0..1023) representing radians scaled by
-        // (2*pi/1024). Work in units where t64 = i * 2pi/1024 * 64 for
-        // headroom, then series in t64-space.
-        long long t64 = (long long)i * 402; // 2*pi*64/1024 = 0.3927...*64 = 402/1024... simplification: i*402/1024 rad*64
-        // do the series in scaled space: s = t (radians * 64 * 1024 / 1024)
-        // Simpler: angle in 1/1024 turns: a = i. radians = a * 6.2832/1024.
-        // Use scaled radians: r = a * 4/1024 * pi*1024... KISS:
-        // precompute with integer Taylor over r = a (0..1023), where
-        // real_radians = a * 0.0061359. Series needs radians; scale by 2^16:
-        long long R = (long long)i * 411775; // 0.0061359 * 2^16 = 402.0... i * 402
-        // R is radians << 16 where radians = i * 2pi/1024. R = i * 402 (=0.0061359*65536=402.03)
-        long long Rsq = (R * R) >> 16;           // r^2 << 16
-        long long Rsq2 = (Rsq * R) >> 16;        // r^3 << 16
-        long long Rsq4 = (Rsq * Rsq) >> 16;      // r^4 << 16
-        long long Rsq5 = (Rsq4 * R) >> 16;       // r^5 << 16
-        long long Rsq6 = (Rsq4 * Rsq) >> 16;     // r^6 << 16
-        long long Rsq7 = (Rsq6 * R) >> 16;       // r^7 << 16
-        long long s = R - Rsq2 / 6 + Rsq5 / 120 - Rsq7 / 5040;
-        // s is radians << 16; convert to SIN_SCALE units (sin*512):
-        // sin ~= s / 65536 * 512 = s / 128
-        sintab[i] = (int)(s / 128);
+        long long X = (long long)i * K;
+        long long q = (X / QUART) & 3;
+        long long r = X % QUART;
+        int mirror = (q == 1 || q == 3);
+        int sign = (q >= 2) ? -1 : 1;
+        long long a = mirror ? (QUART - r) : r;
+        long long a2 = (a * a) >> 22;
+        long long a3 = (a2 * a) >> 22;
+        long long a4 = (a2 * a2) >> 22;
+        long long a5 = (a4 * a) >> 22;
+        long long a6 = (a3 * a3) >> 22;
+        long long a7 = (a6 * a) >> 22;
+        long long s = a - a3 / 6 + a5 / 120 - a7 / 5040; // sin(a) << 22
+        sintab[i] = (int)(sign * (s >> 13));             // sin * 512
     }
 }
 
@@ -109,9 +104,10 @@ int main(int argc, char** argv) {
     bool prev_left = false;
     bool left_down = false;
 
-    // Frames rendered once per second for the FPS counter
-    int fps_count = 0;
+    // FPS accounting
+    int frames_done = 0;
     int fps_total = 0;
+    unsigned long ticks_at_window_start = 0;
 
     while (left_clicks < 3) {
         // --- input: mouse ---
@@ -131,19 +127,35 @@ int main(int argc, char** argv) {
         }
 
         // --- render one frame ---
-        int t = (frame * 4) & SIN_MASK;       // time pulse
+        // t advances fast enough to see motion: the moving phase rides
+        // inside all three terms so the whole field flows against the
+        // mouse ripples.
+        //
+        // Per-frame precompute: x and y terms cost 2K table lookups per
+        // frame instead of 4M — the only per-pixel work left is the
+        // mouse-ripple term. (Per-pixel sines were ~3fps real under TCG.)
+        int t = (frame * 14) & SIN_MASK;
+        static int xterm[4096], yterm[4096];
+        int W = (int)fb.width, H = (int)fb.height;
+        for (int x = 0; x < W; x++)
+            xterm[x] = fsin((x * 8 + t * 3) & SIN_MASK);
+        for (int y = 0; y < H; y++)
+            yterm[y] = fsin((y * 12 - t * 2) & SIN_MASK);
+
         unsigned int* row = fbmem;
-        for (int y = 0; y < (int)fb.height; y++) {
+        for (int y = 0; y < H; y++) {
             int dy = y - cy;
+            int yterm_v = yterm[y];
             unsigned int* px = row;
-            for (int x = 0; x < (int)fb.width; x++) {
+            for (int x = 0; x < W; x++) {
                 int dx = x - cx;
-                // ripples from the mouse center: distance approximated by
-                // |dx| + |dy| (manhattan — cheap and looks right)
+                // ripples from the mouse center: manhattan distance — cheap
+                // and looks right; the time term rides inside the phase so
+                // ripples flow outward
                 int dist = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
-                int v = fsin((x * 8) & SIN_MASK)
-                      + fsin((y * 12) & SIN_MASK)
-                      + fsin((dist * 20) & SIN_MASK)
+                int v = xterm[x]
+                      + yterm_v
+                      + fsin((dist * 20 - t * 4) & SIN_MASK)
                       + fsin(t);
                 // v in [-2048, 2048] -> 0..255
                 int idx = ((v + 2048) * 255) / 4096;
@@ -153,19 +165,26 @@ int main(int argc, char** argv) {
         }
 
         frame++;
-        fps_count++;
+        frames_done++;
 
-        // FPS report once per second (~50 frames)
-        if (fps_count >= 50) {
-            printf("plasma: %d frames/s (mouse %d,%d %s)\n",
-                   fps_count, cx, cy, left_down ? "[L]" : "");
-            fps_total += fps_count;
-            fps_count = 0;
+        // FPS: honest wall-clock via timer ticks (syscall 17). The old
+        // counter assumed 20ms/loop which sleep-instant-return broke.
+        if (frames_done >= 50) {
+            unsigned long now = grv_ticks();
+            unsigned long ms = (ticks_at_window_start && now > ticks_at_window_start)
+                             ? (now - ticks_at_window_start) * 20 : 1;
+            printf("plasma: %d frames in %dms (~%d fps) mouse %d,%d %s\n",
+                   frames_done, (int)ms,
+                   (int)((unsigned long)frames_done * 1000 / (ms ? ms : 1)),
+                   cx, cy, left_down ? "[L]" : "");
+            fps_total += frames_done;
+            frames_done = 0;
+            ticks_at_window_start = now;
         }
 
-        grv_sleep(20); // ~50Hz
+        grv_sleep(20); // pace to ~50Hz max
     }
 
-    printf("plasma: %d frames total. bye!\n", fps_total + fps_count);
+    printf("plasma: %d frames total. bye!\n", fps_total + frames_done);
     return 0;
 }

@@ -229,6 +229,9 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  regs->rax = (uint64_t)-1;
              }
         }
+        else if (syscall_id == 17) { // TICKS: timer ticks since boot (50Hz)
+             regs->rax = Timer::get_ticks();
+        }
         else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
              // Blocks until the spawned program exits; rax = child task id.
              asm volatile("cli"); // no timer nesting mid-spawn

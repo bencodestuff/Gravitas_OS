@@ -165,7 +165,9 @@ def main():
         # --- THE FIX IS HERE ---
         # Note the spaces inside the quotes for 'command', 'description', and 'pool'
         ninja.write(f"rule run\n")
-        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl\n")
+        # KVM when available (10-50x TCG), else TCG fallback
+        accel = "-enable-kvm" if os.path.exists("/dev/kvm") else ""
+        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl {accel}\n")
         ninja.write(f"  description = RUN gravitas.iso\n")
         ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
