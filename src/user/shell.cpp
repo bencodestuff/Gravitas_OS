@@ -229,7 +229,7 @@ static void execute(char* line) {
     // Spawn blocks us until the child exits
     long pid = grv_spawn(prog, argv, argc);
     if (pid == -1) {
-        printf("unknown command, try 'help'\n");
+        printf("shell: cannot run '%s' (try 'help', 'ls')\n", prog);
         return;
     }
     printf("[shell] program finished\n");
@@ -252,15 +252,27 @@ int main(int argc, char** argv) {
         grv_getcwd(cwd, sizeof(cwd));
         printf("\n%s root@gravitas# ", cwd);
 
+        // Line reader with a prompt floor: backspace is swallowed once
+        // everything typed is gone, so the cursor can never ride back
+        // across the prompt text and erase it.
         int len = 0;
         while (1) {
             char c = grv_getc();
 
-            putchar(c); // echo
-
-            if (c == '\n') { line[len] = '\0'; break; }
-            if (c == '\b') { if (len > 0) len--; continue; }
-            if (len < 126) line[len++] = c;
+            if (c == '\n') { putchar('\n'); line[len] = '\0'; break; }
+            if (c == '\b') {
+                if (len > 0) { // the console '\b' moves AND blanks the cell
+                    putchar('\b');
+                    len--;
+                }
+                continue;
+            }
+            if (c >= 32 && c < 127) { // printable only
+                if (len < 120) { line[len++] = c; putchar(c); }
+                else putchar(0x07); // alert on overflow
+                continue;
+            }
+            // control characters: swallowed, neither echoed nor stored
         }
         execute(line);
     }

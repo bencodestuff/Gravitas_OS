@@ -61,45 +61,68 @@ int printf(const char* restrict format, ...) {
 			if (!print(str, len))
 				return -1;
 			written += len;
-		} else if (*format == 'd' || *format == 'i') {
+		} else if (*format == 'd' || *format == 'i' || *format == 'u') {
 			format++;
-			int value = va_arg(parameters, int);
+			bool is_unsigned = (*(format-1) == 'u');
+
+			// Length modifier: 'l' selects long (64-bit) — without one the
+			// value is read as int (32-bit). long long is overkill for an
+			// OS where u64 counts ticks, not calendar years.
+			bool long_val = false;
+			if (*format == 'l') { long_val = true; format++; }
 
 			// Itoa into a local buffer (freestanding: no itoa in libc)
-			char numbuf[12]; // -2147483648 is 11 chars + NUL
-			int pos = 11;
+			char numbuf[24];
+			int pos = 23;
 			numbuf[pos] = '\0';
-			bool negative = value < 0;
-			unsigned int uv = negative ? (unsigned int)(-(long long)value) : (unsigned int)value;
+
+			unsigned long long uv;
+			if (is_unsigned) {
+				uv = long_val ? va_arg(parameters, unsigned long)
+				              : (unsigned int)va_arg(parameters, unsigned int);
+			} else {
+				long long sv = long_val ? va_arg(parameters, long)
+				                        : (long long)(int)va_arg(parameters, int);
+				if (sv < 0) {
+					// safe magnitude even at the negative extreme
+					uv = (unsigned long long)(-(sv + 1)) + 1ULL;
+					numbuf[--pos] = '-';
+				} else {
+					uv = (unsigned long long)sv;
+				}
+			}
 			if (uv == 0) numbuf[--pos] = '0';
 			while (uv > 0) {
 				numbuf[--pos] = '0' + (uv % 10);
 				uv /= 10;
 			}
-			if (negative) numbuf[--pos] = '-';
 
 			const char* str = &numbuf[pos];
-			size_t len = 11 - (size_t)pos;
+			size_t len = 24 - (size_t)pos;
 			if (maxrem < len) return -1;
 			if (!print(str, len))
 				return -1;
 			written += len;
 		} else if (*format == 'x') {
 			format++;
-			unsigned int value = va_arg(parameters, unsigned int);
+			bool long_val = (*format == 'l');
+			if (long_val) format++;
 
-			char numbuf[9]; // 8 hex digits + NUL
-			int pos = 8;
+			unsigned long long uv = long_val ? va_arg(parameters, unsigned long)
+			                                 : (unsigned int)va_arg(parameters, unsigned int);
+
+			char numbuf[17]; // 16 hex digits + NUL
+			int pos = 16;
 			numbuf[pos] = '\0';
-			if (value == 0) numbuf[--pos] = '0';
-			while (value > 0) {
-				unsigned int digit = value % 16;
+			while (uv > 0) {
+				unsigned int digit = uv % 16;
 				numbuf[--pos] = (digit < 10) ? ('0' + digit) : ('a' + digit - 10);
-				value /= 16;
+				uv /= 16;
 			}
+			if (pos == 16) numbuf[--pos] = '0';
 
 			const char* str = &numbuf[pos];
-			size_t len = 8 - (size_t)pos;
+			size_t len = 17 - (size_t)pos;
 			if (maxrem < len) return -1;
 			if (!print(str, len))
 				return -1;

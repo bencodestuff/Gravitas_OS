@@ -45,22 +45,10 @@ static void print_hex64(uint64_t value) {
 // invalidates user pointers, so the name is copied before any load).
 static char spawn_namebuf[64];
 
-static char input_buffer[256];
-static int buffer_index = 0;
-
 // Link to the assembly table
 extern "C" void* isr_stub_table[];
 // Explicit syscall stub (vector 128)
 extern "C" void isr_128();
-
-static inline bool streq(const char* str1, const char* str2) {
-    int i = 0;
-    while (str1[i] != '\0' && str2[i] != '\0') {
-        if (str1[i] != str2[i]) return false;
-        i++;
-    }
-    return str1[i] == str2[i]; // Check if both ended at the same time
-}
 
 namespace IDT {
 
@@ -122,8 +110,6 @@ namespace IDT {
         kprint("[IDT] Interrupts Enabled.\n");
     }
 }
-
-static uint64_t ticks = 0;
 
 // Stages a spawn: kernel-side copies of argv, VFS read of the ELF image,
 // child address-space clone + load + task creation. Returns the child id,
