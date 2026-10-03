@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "heap.h"
+#include "../drivers/cursor.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile struct limine_hhdm_request hhdm_request;
@@ -47,17 +48,8 @@ static bool fb_ready() {
     return true;
 }
 
-// --- 8x8 arrow cursor: 0 = transparent, 1 = black outline, 2 = white fill
-static const uint8_t cursor_sprite[8][8] = {
-    {2,1,0,0,0,0,0,0},
-    {2,2,1,0,0,0,0,0},
-    {2,2,2,1,0,0,0,0},
-    {2,2,2,2,1,0,0,0},
-    {2,2,2,2,2,1,0,0},
-    {2,2,1,2,2,2,1,0},
-    {2,1,0,1,2,2,2,1},
-    {1,0,0,0,1,2,2,1},
-};
+// --- 16x16 arrow cursor sprite lives in ../drivers/cursor.h ---
+// (0 = transparent, 1 = black outline, 2 = white fill)
 
 int surface_create(uint64_t w, uint64_t h) {
     if (!fb_ready()) return -1;
@@ -111,8 +103,6 @@ int surface_create(uint64_t w, uint64_t h) {
     s->x = 0; s->y = 0;
 
     // Zero the surface (fresh pages may contain boot garbage)
-    uint8_t* mem = (uint8_t*)(uintptr_t)(phys + 0xFFFF800000000000ull);
-    // (HHDM offset read properly below — simpler: zero via the owner VA map)
     uint8_t* hh = (uint8_t*)(uintptr_t)(phys + hhdm_request.response->offset);
     for (uint64_t i = 0; i < size; i++) hh[i] = 0;
 
@@ -187,16 +177,16 @@ void composite() {
 
     // Layer 1 (top): the mouse cursor
     int mx = Mouse::cursor_x(), my = Mouse::cursor_y();
-    if (mx > (int)fb_w - 8) mx = (int)fb_w - 8;
-    if (my > (int)fb_h - 8) my = (int)fb_h - 8;
+    if (mx > (int)fb_w - CURSOR_W) mx = (int)fb_w - CURSOR_W;
+    if (my > (int)fb_h - CURSOR_H) my = (int)fb_h - CURSOR_H;
     if (mx < 0) mx = 0;
     if (my < 0) my = 0;
     Mouse::apply_position_clamp(mx, my);
 
-    for (int cy = 0; cy < 8; cy++) {
+    for (int cy = 0; cy < CURSOR_H; cy++) {
         uint32_t* dst = fb_base + (my + cy) * fb_pitch_px + mx;
-        for (int cx = 0; cx < 8; cx++) {
-            uint8_t v = cursor_sprite[cy][cx];
+        for (int cx = 0; cx < CURSOR_W; cx++) {
+            uint8_t v = cursor_sprite16[cy][cx];
             if (v == 0) { dst++; continue; }
             *dst++ = (v == 1) ? 0x00000000 : 0x00FFFFFF;
         }

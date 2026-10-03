@@ -51,7 +51,6 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SURFACE_CREATE 18
 #define GRV_SYSCALL_SURFACE_COMMIT 19
 #define GRV_SYSCALL_SURFACE_MOVE   20
-#define GRV_SYSCALL_FBINFO 16
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0

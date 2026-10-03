@@ -7,6 +7,7 @@ tar_root/
 *.elf
 *.o
 *.d
+.ninja_deps
 .ninja_log
 build.ninja
 # Editors
@@ -23,3 +24,4 @@ limine.sys
 # Images
 files/Pictures
 
+test_artifacts/

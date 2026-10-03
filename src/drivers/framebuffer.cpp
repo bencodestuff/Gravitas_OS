@@ -16,10 +16,6 @@ volatile struct limine_framebuffer_request framebuffer_request = {
 
 namespace Framebuffer {
 
-    static uint64_t hhdm_offset_val() {
-        return hhdm_request.response->offset;
-    }
-
     // Forward declare screen_print so `kprint` can call it.
     void screen_print(const char* str);
 
@@ -32,21 +28,6 @@ namespace Framebuffer {
 
         // 2. Print to QEMU Window (Screen)
         screen_print(str);
-    }
-
-    // Helper: Put a pixel on the screen
-    void put_pixel(int x, int y, uint32_t color) {
-        if (framebuffer_request.response == nullptr || framebuffer_request.response->framebuffer_count < 1) return;
-        struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
-
-        // Safety check
-        if (x < 0 || x >= (int)fb->width || y < 0 || y >= (int)fb->height) return;
-
-        // Calculate memory location: Base + (y * pitch) + (x * bytes_per_pixel)
-        uint8_t* base = (uint8_t*) (uintptr_t) fb->address;
-        uint64_t offset = (uint64_t)y * fb->pitch + (uint64_t)x * 4;
-        uint32_t* ptr = (uint32_t*)(base + offset);
-        *ptr = color;
     }
 
     // Cursor position
@@ -155,26 +136,6 @@ namespace Framebuffer {
 
     // --- Userland graphics support (syscall 16) ---
     // Framebuffer geometry + direct mapping into a target address space.
-
-    static bool read_pte(uint64_t pml4_phys, uint64_t vaddr, uint64_t* out_entry) {
-        uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
-        uint64_t pdp_idx  = (vaddr >> 30) & 0x1FF;
-        uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
-        uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
-
-        uint64_t* walk = (uint64_t*)(pml4_phys + hhdm_offset_val());
-        uint64_t entry = walk[pml4_idx];
-        if (!(entry & 1)) return false;
-        walk = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset_val());
-        entry = walk[pdp_idx];
-        if (!(entry & 1)) return false;
-        walk = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset_val());
-        entry = walk[pd_idx];
-        if (!(entry & 1)) return false;
-        walk = (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset_val());
-        *out_entry = walk[pt_idx];
-        return true;
-    }
 
     bool get_info_and_map(uint64_t cr3, Info* info) {
         if (framebuffer_request.response == nullptr ||

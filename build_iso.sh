@@ -8,6 +8,9 @@ mkdir -p iso_root
 cp bin/gravitas.elf iso_root/gravitas.elf
 
 # 2. Pack the tarfs: data files + userland programs
+# (Clean tar_root first: it must mirror files/ exactly, with no stale
+# entries from previous builds.)
+rm -rf tar_root
 mkdir -p tar_root
 cp -r files/* tar_root/
 for f in bin/*.elf; do

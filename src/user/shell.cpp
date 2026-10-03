@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
         // Prompt shows the CWD
         static char cwd[64];
         grv_getcwd(cwd, sizeof(cwd));
-        printf("\n%s > ", cwd);
+        printf("\n%s root@gravitas# ", cwd);
 
         int len = 0;
         while (1) {

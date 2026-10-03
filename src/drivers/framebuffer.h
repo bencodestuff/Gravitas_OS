@@ -2,9 +2,6 @@
 #include <stdint.h>
 
 namespace Framebuffer {
-    void init();
-    void put_pixel(int x, int y, uint32_t color);
-    void print(const char* str);
     void clear_screen(uint32_t color);
 
     // --- Info for userland graphics (syscall 16) ---

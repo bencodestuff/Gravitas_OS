@@ -169,12 +169,10 @@ int Font::draw_string(int x, int y, const char* s, uint32_t fg, uint32_t bg) {
 
 // --- Boot-time font from the tarfs ---
 
-bool Font::load_from_disk() {
-    const char* path = "/bin/fonts/bizcat.psf";
-
+bool Font::load_from_disk(const char* path) {
     int fd = VFS::open_fd(path, VFS::O_RDONLY);
     if (fd < 0) {
-        kprint("[font] no /bin/fonts/bizcat.psf; keeping 8x8\n");
+        kprint("[font] no console font in tarfs; keeping 8x8\n");
         return false;
     }
 
@@ -214,8 +212,10 @@ bool Font::load_from_disk() {
     psf_length  = psf.length;
     psf_height  = psf.height;
 
-    kprint("[font] loaded bizcat.psf 8x");
+    kprint("[font] loaded ");
+    kprint(path);
+    kprint(" (8x");
     kprint_uint(psf_height);
-    kprint(" from tarfs\n");
+    kprint(")\n");
     return true;
 }

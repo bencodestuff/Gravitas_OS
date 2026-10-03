@@ -15,8 +15,8 @@
 // for ASCII; anything outside [32,126] renders as a blank cell.
 //
 // Rendering writes rows directly through the framebuffer pointer (same
-// access pattern as Compositor and the console scroll path) — NOT via
-// Framebuffer::put_pixel, which is one MMIO write per pixel.
+// access pattern as Compositor and the console scroll path) — one write
+// per pixel-run, not one call per pixel.
 
 namespace Font {
 
@@ -30,10 +30,10 @@ namespace Font {
     // previously active font (usually the 8x8 fallback) stays active.
     bool use_psf2(const uint8_t* data, uint64_t size);
 
-    // Boot-time load: read /bin/fonts/bizcat.psf from the tarfs (via the
-    // VFS) and install it. Never fatal — on any failure it logs and keeps
-    // the embedded 8x8. Returns true if a PSF2 font is now active.
-    bool load_from_disk();
+    // Boot-time load: read a PSF2 font from the tarfs (via the VFS) and
+    // install it. Never fatal — on any failure it logs and keeps the
+    // embedded 8x8. Returns true if a PSF2 font is now active.
+    bool load_from_disk(const char* path = "/bin/fonts/bizcat.psf");
 
     // True if a PSF2 font is active (diagnostics only).
     bool psf2_active();
