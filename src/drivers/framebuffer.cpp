@@ -1,7 +1,7 @@
 #include <limine.h>
 
-#include "font.h"
 #include "framebuffer.h"
+#include "../kernel/font.h"
 #include "kernel/io.h"
 #include "kernel/vmm.h"
 
@@ -54,7 +54,7 @@ namespace Framebuffer {
     static int cursor_y = 0;
 
 
-    // Scroll the whole console up by one character row (8px).
+    // Scroll the whole console up by one character row (Font::cell_h px).
     // Pixel-level memmove via put_pixel would be brutally slow (each pixel
     // is an MMIO-ish framebuffer write); write rows directly through the
     // framebuffer pointer instead.
@@ -63,22 +63,38 @@ namespace Framebuffer {
             framebuffer_request.response->framebuffer_count < 1) return;
         struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
 
+        const int cell_h = Font::cell_h();
+
         uint32_t* base = (uint32_t*)(uintptr_t)fb->address;
         uint32_t pitch_px = fb->pitch / 4;      // pixels per row
         uint32_t width    = fb->width;
 
-        // Move every row below the first up by 8 pixel-rows
-        for (uint32_t y = 0; y + 8 < fb->height; y++) {
+        // Move every row below the first up by one cell height
+        for (uint32_t y = 0; y + cell_h < fb->height; y++) {
             uint32_t* dst = base + y * pitch_px;
-            uint32_t* src = base + (y + 8) * pitch_px;
+            uint32_t* src = base + (y + cell_h) * pitch_px;
             for (uint32_t x = 0; x < width; x++) dst[x] = src[x];
         }
 
-        // Clear the last 8 rows
+        // Clear the last cell-height rows
         uint32_t color_bg = 0x00000000;
-        for (uint32_t y = fb->height - 8; y < fb->height; y++) {
+        for (uint32_t y = fb->height - cell_h; y < fb->height; y++) {
             uint32_t* row = base + y * pitch_px;
             for (uint32_t x = 0; x < width; x++) row[x] = color_bg;
+        }
+    }
+
+    // Fill the whole framebuffer (row writes, like scroll_up)
+    void clear_screen(uint32_t color) {
+        if (framebuffer_request.response == nullptr ||
+            framebuffer_request.response->framebuffer_count < 1) return;
+        struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
+
+        uint32_t* base = (uint32_t*)(uintptr_t)fb->address;
+        uint32_t pitch_px = fb->pitch / 4;
+        for (uint32_t y = 0; y < fb->height; y++) {
+            uint32_t* row = base + y * pitch_px;
+            for (uint32_t x = 0; x < fb->width; x++) row[x] = color;
         }
     }
 
@@ -88,7 +104,7 @@ namespace Framebuffer {
         if (framebuffer_request.response == nullptr ||
             framebuffer_request.response->framebuffer_count < 1) return cy;
         struct limine_framebuffer* fb = framebuffer_request.response->framebuffers[0];
-        while (cy + 8 > (int)fb->height) {
+        while (cy + Font::cell_h() > (int)fb->height) {
             scroll_up();
             cy -= 8;
         }
@@ -108,14 +124,10 @@ namespace Framebuffer {
             char c = str[i];
 
             if (c == '\b') {
-                if (cursor_x >= 8) {
-                    cursor_x -= 8; // Move cursor back
-                    // Manually erase the character by drawing a black square
-                    for (int y = 0; y < 8; y++) {
-                        for (int x = 0; x < 8; x++) {
-                            put_pixel(cursor_x + x, cursor_y + y, color_bg);
-                        }
-                    }
+                if (cursor_x >= Font::cell_w()) {
+                    cursor_x -= Font::cell_w(); // Move cursor back
+                    // Blank the glyph cell (draw with the NUL -> blank path)
+                    Font::draw_char(cursor_x, cursor_y, '\0', color_text, color_bg);
                 }
                 continue; // Move to next character in string
             }
@@ -123,31 +135,18 @@ namespace Framebuffer {
             // --- Handle Newline ---
             if (c == '\n') {
                 cursor_x = 0;
-                cursor_y = clamp_cursor_y(cursor_y + 8);
+                cursor_y = clamp_cursor_y(cursor_y + Font::cell_h());
                 continue;
             }
 
             // --- Draw Printable Characters ---
             if (c >= 32 && c <= 126) {
-                int index = c - 32; 
-
-                for (int y = 0; y < 8; y++) {
-                    uint8_t row = font8x8_basic[index][y];
-                    for (int x = 0; x < 8; x++) {
-                        // If bit is 1, draw White. If 0, draw Black.
-                        if ((row >> (7 - x)) & 1) {
-                            put_pixel(cursor_x + x, cursor_y + y, color_text);
-                        } else {
-                            put_pixel(cursor_x + x, cursor_y + y, color_bg);
-                        }
-                    }
-                }
-                cursor_x += 8; 
+                cursor_x = Font::draw_char(cursor_x, cursor_y, c, color_text, color_bg);
 
                 // Simple line wrap if we hit the right edge
                 if (cursor_x >= (int)fb->width) {
                     cursor_x = 0;
-                    cursor_y = clamp_cursor_y(cursor_y + 8);
+                    cursor_y = clamp_cursor_y(cursor_y + Font::cell_h());
                 }
             }
         }

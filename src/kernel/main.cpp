@@ -13,6 +13,7 @@
 #include "sched.h"
 #include "mouse.h"
 #include "timer.h"
+#include "font.h"
 #include "../drivers/framebuffer.h"
 #include "../fs/elf.h"
 #include "../fs/tar.h"
@@ -188,6 +189,16 @@ extern "C" void kmain(void) {
     VFS::mount("/", RamFS::instance());
     VFS::mount("/bin", Tar::vfs_instance());
     kprint("[VFS] Mounted root(ramfs) + /bin(tarfs).\n");
+
+    // --- Console font: swap the embedded 8x8 for the PSF2 from the
+    // tarfs (never fatal; falls back silently on any failure). On a
+    // successful swap, restart the console on the new cell grid —
+    // otherwise the 16px glyphs would overwrite the old 8px-spaced
+    // boot text mid-screen. (Serial keeps the full early log.)
+    if (Font::load_from_disk()) {
+        Framebuffer::clear_screen(0x00000000);
+        Framebuffer::reset_cursor();
+    }
 
     // --- VFS self-test: ramfs create/write/read round-trip ---
     {
