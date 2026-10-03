@@ -47,6 +47,19 @@ namespace Sched {
     // Put the current task to sleep until task 'child_id' has exited.
     void block_current(int child_id);
 
+    // Sleep until something explicitly calls wake_task(our id) — used by
+    // IPC recv (and later wait kinds). Unlike block_current() this sets no
+    // waiting-on-task relation, so no exit can wake us as a side effect;
+    // ONLY wake_task does. Caller must cli-guard the check-and-block
+    // window (same discipline as block_on_keyboard).
+    void block_until_woken();
+
+    // Wake a task that is blocked in an explicit-wait (block_until_woken).
+    // Returns true if it was found and woken. Does nothing (and returns
+    // false) for tasks sleeping on the timer, on the keyboard, or that do
+    // not exist — their wakeup belongs to their own mechanism.
+    bool wake_task(int id);
+
     // Sleep the current task for 'ticks' timer ticks (timer IRQ wakes it).
     void sleep_current(uint64_t ticks);
 

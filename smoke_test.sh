@@ -8,6 +8,7 @@
 #   * bare-name program spawn + VFS read (`cat hello.txt`)
 #   * fault contract + stack protector (crash.elf / smash.elf)
 #   * M2 process control: bg spawn (non-blocking), wait, kill (proctest.elf)
+#   * M3 IPC: per-task mailboxes, blocking recv wake, FIFO (msgtest.elf)
 #
 # Artifacts land in test_artifacts/ (serial log + screendump).
 # Run via `ninja test`, or directly after `ninja iso`.
@@ -157,6 +158,13 @@ type_dotted('run proctest.elf')
 key('ret')
 time.sleep(10)
 
+# 7) IPC contract: msgtest spawns msgecho.elf in the background and
+# round-trips messages through it (blocking recv wakes via IPC, FIFO
+# order, poison-exit, send-after-death refusal).
+type_dotted('run msgtest.elf')
+key('ret')
+time.sleep(8)
+
 mon('screendump ' + 'test_artifacts/console.ppm')
 s.close()
 PYEOF
@@ -207,6 +215,12 @@ if ! grep -q 'all process-control checks pass' "$LOG"; then
     fail "proctest failed its process-control contract (M2 broken?)"
 fi
 echo "== spawn_bg/wait/kill contract ok =="
+
+# IPC contract (msgtest.elf + msgecho.elf)
+if ! grep -q 'all ipc checks pass' "$LOG"; then
+    fail "msgtest failed its ipc contract (M3 broken?)"
+fi
+echo "== ipc contract ok (send/recv/fifo/death) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

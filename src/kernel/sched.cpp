@@ -6,6 +6,7 @@
 #include "vmm.h"
 #include "../fs/vfs.h"
 #include "compositor.h"
+#include "ipc.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
 // (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
@@ -165,6 +166,7 @@ namespace Sched {
             if (victim->fds[i] != nullptr) VFS::close_fd_for(victim->fds, i);
         }
         Compositor::surfaces_for_task_gone(victim->id);
+        Ipc::task_gone(victim->id);
         VMM::destroy_user_space(victim->cr3);
         delete[] victim->kstack_mem;
         delete[] victim->fxsave_raw;
@@ -384,6 +386,32 @@ namespace Sched {
         current_task->waiting_on = child_id;
         // Never wake this task by timestamp — only the child's exit wakes us
         current_task->wake_timestamp = (uint64_t)-1;
+    }
+
+    void block_until_woken() {
+        current_task->state = SLEEPING;
+        current_task->waiting_on = -1;   // no exit may wake us as a side effect
+        current_task->wake_timestamp = (uint64_t)-1; // nor the timer
+    }
+
+    bool wake_task(int id) {
+        Task* t = ready_queue;
+        do {
+            if (t->id == id) {
+                // Only tasks blocked in block_until_woken respond here:
+                // timer-sleepers and keyboard-waiters keep their own wake
+                // discipline (and a task blocked on a task exit keeps its
+                // waiting_on contract). 'waiting_on == -1' guards that too.
+                if (t->state == SLEEPING && t->waiting_on == -1 &&
+                    t->wake_timestamp == (uint64_t)-1) {
+                    t->state = READY;
+                    return true;
+                }
+                return false;
+            }
+            t = t->next;
+        } while (t != ready_queue);
+        return false;
     }
 
     void sleep_current(uint64_t ticks) {
@@ -613,6 +641,7 @@ namespace Sched {
                 }
             }
             Compositor::surfaces_for_task_gone(zombie->id);
+            Ipc::task_gone(zombie->id);
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);
             delete[] zombie->kstack_mem;

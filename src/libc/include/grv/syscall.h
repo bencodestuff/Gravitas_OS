@@ -40,6 +40,8 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SPAWN_BG 21
 #define GRV_SYSCALL_WAIT   22
 #define GRV_SYSCALL_KILL   23
+#define GRV_SYSCALL_SEND   24
+#define GRV_SYSCALL_RECV   25
 #define GRV_SYSCALL_OPEN   7
 #define GRV_SYSCALL_READFD  8
 #define GRV_SYSCALL_WRITEFD 9
@@ -100,6 +102,27 @@ static inline long grv_wait(long pid) {
    Returns 0 or -1. */
 static inline long grv_kill(long pid, long code) {
     return syscall2(GRV_SYSCALL_KILL, pid, code);
+}
+
+/* --- IPC (M3): per-task mailboxes --- */
+
+struct grv_msg {
+    unsigned long from;   /* kernel-stamped sender id (-1 = kernel) */
+    unsigned long type;   /* free-form tag, meaning is caller's policy */
+    unsigned long a;      /* payload word 1 */
+    unsigned long b;      /* payload word 2 */
+};
+
+/* Send to task 'dst'. The kernel overwrites m->from with our pid.
+   Returns 0 delivered, -1 no such/dead task, -2 mailbox full. */
+static inline long grv_send(long dst, struct grv_msg* m) {
+    return syscall2(GRV_SYSCALL_SEND, dst, (long)m);
+}
+
+/* Take the next message addressed to us. When 'block' is nonzero, sleep
+   until one arrives. Returns 0 and fills m, or -1 (empty/none). */
+static inline long grv_recv(struct grv_msg* m, long block) {
+    return syscall2(GRV_SYSCALL_RECV, (long)m, block);
 }
 
 static inline __attribute__((__noreturn__)) void grv_exit(int code) {

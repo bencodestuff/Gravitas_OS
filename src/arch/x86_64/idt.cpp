@@ -6,6 +6,7 @@
 
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
+#include "../../kernel/ipc.h"
 #include "../../kernel/mouse.h"
 #include "../../kernel/compositor.h"
 #include "../../drivers/framebuffer.h"
@@ -363,6 +364,47 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         }
         else if (syscall_id == 23) { // KILL: rdi = id, rsi = exit code
              regs->rax = (uint64_t)Sched::kill_task((int)regs->rdi, regs->rsi);
+        }
+        else if (syscall_id == 24) { // SEND: rdi = dst id, rsi = user Msg*
+             // The kernel stamps 'from' with OUR id — senders cannot pose
+             // as someone else, and receivers can trust the field.
+             const Ipc::Msg* um = (const Ipc::Msg*)regs->rsi;
+             if (um == nullptr) { regs->rax = (uint64_t)-1; return; }
+             Ipc::Msg m;
+             m.from  = Sched::current_task_id();
+             m.type  = um->type;   // user-VA reads run on the caller's CR3
+             m.a     = um->a;      // (house pattern: see FBINFO)
+             m.b     = um->b;
+             regs->rax = (uint64_t)Ipc::send((int)regs->rdi, m);
+        }
+        else if (syscall_id == 25) { // RECV: rdi = user Msg*, rsi = block flag
+             // Blocking form: the cli-guarded check-and-block loop is the
+             // standard discipline (spawn/wait use it too). A send between
+             // our check and our waiter registration is impossible with
+             // IF off; one after registration wakes us via wake_task.
+             Ipc::Msg* um = (Ipc::Msg*)regs->rdi;
+             if (um == nullptr) { regs->rax = (uint64_t)-1; return; }
+             while (true) {
+                 asm volatile("cli");
+                 Ipc::Msg m;
+                 int r = Ipc::try_recv(&m);
+                 if (r == 0) {
+                     asm volatile("sti");
+                     um->from = m.from;
+                     um->type = m.type;
+                     um->a    = m.a;
+                     um->b    = m.b;
+                     regs->rax = 0;
+                     return;
+                 }
+                 if (regs->rsi == 0) {
+                     asm volatile("sti");
+                     regs->rax = (uint64_t)-1; // poll found nothing
+                     return;
+                 }
+                 Ipc::recv_wait();   // register + SLEEP (IF still off)
+                 Sched::yield();     // returns when a send wakes us
+             }
         }
         else if (syscall_id == 7) { // OPEN: rdi = path, rsi = flags -> rax = fd
              regs->rax = (uint64_t)VFS::open_fd((const char*)regs->rdi, (int)regs->rsi);
