@@ -59,6 +59,23 @@ namespace Sched {
     // faults pass a distinctive GRV_EXIT_* value).
     void exit_current(uint64_t code);
 
+    // Exit code of the task the current task WAITED on (or 0)
+    uint64_t current_exit_inbox();
+
+    // Consume a recorded recent exit (WAIT for an already-exited task).
+    // Returns false if no exit records this id. The record is consumed —
+    // each id can be waited on once.
+    bool consume_recent_exit(int id, uint64_t* out_code);
+
+    // Terminate ANOTHER task by id (v1: any task may terminate any other).
+    // Refuses the kernel task and self-kill. 'code' becomes the victim's
+    // exit code. Returns 0 or -1.
+    int kill_task(int id, uint64_t code);
+
+    // Does a task with this id exist? (WAIT uses it to decide between
+    // blocking on a live task and failing on an unknown one.)
+    bool task_exists(int id);
+
     // Exit codes with meaning beyond "the program returned N". ASCII
     // spells (FAULT / SMASH) so they read themselves in a hex dump.
     constexpr uint64_t EXIT_FAULT = 0x4641554C54ull;      // "FAULT"

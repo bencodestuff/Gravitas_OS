@@ -22,9 +22,11 @@ static void cmd_help() {
     printf("Gravitas commands (commands are programs from the VFS):\n");
     printf("  ls [path]   - list a directory (default: cwd)\n");
     printf("  cat <file>  - print a file's contents\n");
+    printf("  bg <prog>   - spawn a program in the background\n");
     printf("  cd <dir>    - change directory (builtin)\n");
     printf("  pwd         - print working directory (builtin)\n");
     printf("  run <prog>  - spawn a program by exact name\n");
+    printf("  kill <pid>  - terminate a background task\n");
     printf("  help        - this list\n");
 }
 
@@ -46,6 +48,95 @@ static void cmd_pwd() {
     printf("%s\n", cwd);
 }
 
+/* --- Background job table --- */
+static long g_bg_pid[8];      /* 0 = empty slot */
+static char g_bg_name[8][32]; /* program name of the job */
+
+/* bg <prog> [args...] — spawn in the background, remember the pid. */
+static void cmd_bg(char* line) {
+    while (*line == ' ') line++;
+    if (*line == '\0') { printf("bg: usage: bg <prog> [args...]\n"); return; }
+
+    // Word split (same rules as execute(): max 8 words of max 63 chars)
+    static char* words[8];
+    static char storage[8][64];
+    int nwords = 0;
+    char* p = line;
+    while (*p && nwords < 8) {
+        while (*p == ' ') p++;
+        if (*p == '\0') break;
+        int i = 0;
+        while (*p && *p != ' ' && i < 63) storage[nwords][i++] = *p++;
+        storage[nwords][i] = '\0';
+        words[nwords] = storage[nwords];
+        nwords++;
+    }
+    if (nwords == 0) return;
+
+    // Resolve the program name ('bg plasma' -> 'plasma.elf')
+    const char* prog;
+    static char progbuf[64];
+    if (str_ends_with_elf(words[0])) {
+        prog = words[0];
+    } else {
+        int len = 0;
+        const char* w = words[0];
+        while (*w && len < 58) progbuf[len++] = *w++;
+        progbuf[len++] = '.'; progbuf[len++] = 'e';
+        progbuf[len++] = 'l'; progbuf[len++] = 'f';
+        progbuf[len] = '\0';
+        prog = progbuf;
+    }
+
+    const char* argv[9];
+    int argc = 1;
+    argv[0] = prog;
+    for (int i = 1; i < nwords && argc < 8; i++) argv[argc++] = words[i];
+
+    long pid = grv_spawn_bg(prog, argv, argc);
+    if (pid == -1) { printf("bg: cannot start '%s'\n", prog); return; }
+
+    // Remember it in a free slot (jobs/kill refer to tasks by this pid)
+    for (int i = 0; i < 8; i++) {
+        if (g_bg_pid[i] == 0) {
+            g_bg_pid[i] = pid;
+            const char* s = prog; int c = 0;
+            while (s[c] && c < 31) { g_bg_name[i][c] = s[c]; c++; }
+            g_bg_name[i][c] = '\0';
+            break;
+        }
+    }
+    printf("bg: started '%s' as task %d\n", prog, (int)pid);
+}
+
+/* jobs — list the pids we spawned in the background. */
+static void cmd_jobs() {
+    bool any = false;
+    for (int i = 0; i < 8; i++) {
+        if (g_bg_pid[i] != 0) {
+            printf("  %d  %s\n", (int)g_bg_pid[i], g_bg_name[i]);
+            any = true;
+        }
+    }
+    if (!any) printf("no background tasks\n");
+}
+
+/* kill <pid> — forcibly terminate a background task. */
+static void cmd_kill(char* line) {
+    while (*line == ' ') line++;
+    long pid = 0;
+    const char* p = line;
+    while (*p >= '0' && *p <= '9') { pid = pid * 10 + (*p - '0'); p++; }
+    if (p == line || *p != '\0') { printf("kill: usage: kill <pid>\n"); return; }
+
+    long r = grv_kill(pid, 0);
+    if (r != 0) { printf("kill: no such task (or refused)\n"); return; }
+    printf("kill: terminated %d\n", (int)pid);
+    for (int i = 0; i < 8; i++) {
+        if (g_bg_pid[i] == pid) { g_bg_pid[i] = 0; break; }
+    }
+}
+
 // Startup listing: shows the CWD (the shell boots at "/")
 
 static void execute(char* line) {
@@ -57,6 +148,23 @@ static void execute(char* line) {
         cmd_cd(line + 2);
         return;
     }
+
+    // bg <prog> [args...] — spawn in the background, keep the pid so the
+    // prompt stays usable and `jobs`/`kill` can refer to it later.
+    if (line[0] == 'b' && line[1] == 'g' && (line[2] == ' ' || line[2] == '\0')) {
+        cmd_bg(line + 3);
+        return;
+    }
+
+    // kill <pid> — forcibly terminate a spawned background task
+    if (line[0] == 'k' && line[1] == 'i' && line[2] == 'l' && line[3] == 'l' &&
+        (line[4] == ' ' || line[4] == '\0')) {
+        cmd_kill(line + 5);
+        return;
+    }
+
+    // jobs — list spawned background tasks
+    if (str_eq(line, "jobs")) { cmd_jobs(); return; }
 
     // Split into words
     static char* words[8];

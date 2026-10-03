@@ -10,7 +10,7 @@ int main(int argc, char** argv) {
     (void)argc; (void)argv;
 
     for (int i = 1; i <= 5; i++) {
-        printf("[sleeper] tick %d\n", i);
+        printf("[sleeper] tick %d at %d\n", i, (int)grv_ticks());
         grv_sleep(500); // 500ms blocked
     }
     printf("[sleeper] done\n");

@@ -6,6 +6,8 @@
 #   * keyboard -> shell echo -> command execution (via the QEMU monitor)
 #   * backspace erase (raw hex scancodes: QEMU silently drops `sendkey bspc`)
 #   * bare-name program spawn + VFS read (`cat hello.txt`)
+#   * fault contract + stack protector (crash.elf / smash.elf)
+#   * M2 process control: bg spawn (non-blocking), wait, kill (proctest.elf)
 #
 # Artifacts land in test_artifacts/ (serial log + screendump).
 # Run via `ninja test`, or directly after `ninja iso`.
@@ -102,6 +104,15 @@ def raw(make, brk):
 def type_str(text):
     for ch in text:
         key('spc' if ch == ' ' else ch)
+        time.sleep(0.08)  # pacing: a busy guest (bg task printing) can reorder keys
+
+def type_dotted(text):
+    # Type a dotted name: split at each dot (the raw hex make/break is the
+    # only reliable way to send '.' — named keys for it get dropped).
+    for i, seg in enumerate(text.split('.')):
+        type_str(seg)
+        if i != len(text.split('.')) - 1:
+            raw('34', 'b4')  # '.'
 
 # 1) Backspace: 'helpq' + BS -> 'help' -> help text proves the erase
 for ch in 'helpq':
@@ -126,6 +137,25 @@ time.sleep(3)
 type_str('run smash')
 key('ret')
 time.sleep(3)
+
+# 5) Process control: background spawn keeps the prompt alive. The
+# sleeper prints ticks + 'done' ~2.5s later (visible in the serial log).
+type_dotted('bg sleeper.elf')
+key('ret')
+time.sleep(0.6)            # sleeper is mid-run NOW
+type_str('jobs')           # prompt must answer while it runs
+key('ret')
+time.sleep(0.5)
+type_str('help')           # interactivity proof
+key('ret')
+time.sleep(4)              # sleeper finishes in the background
+
+# 6) Process-control contract: proctest checks spawn_bg/wait/kill
+# (incl. double-wait failure and kill mid-flight) and exits nonzero
+# on ANY violation.
+type_dotted('run proctest.elf')
+key('ret')
+time.sleep(10)
 
 mon('screendump ' + 'test_artifacts/console.ppm')
 s.close()
@@ -163,6 +193,20 @@ sed -n '/stack smashing detected/,$p' "$LOG" \
     | grep -q 'program finished' \
     || fail "shell did not survive the stack smash"
 echo "== stack protector ok (smash detected, shell survived) =="
+
+# Process control: bg spawn must not block the shell, and reports the pid
+if ! grep -qE "bg: started 'sleeper[.]elf' as task [0-9]+" "$LOG"; then
+    fail "bg spawn marker missing (spawn_bg broken?)"
+fi
+sed -n "/bg: started/,\$p" "$LOG" | grep -q '^  [0-9]\+  sleeper.elf' \
+    || fail "jobs did not list the background task (while it was running)"
+echo "== background spawn non-blocking ok =="
+
+# Process-control contract regression (proctest.elf)
+if ! grep -q 'all process-control checks pass' "$LOG"; then
+    fail "proctest failed its process-control contract (M2 broken?)"
+fi
+echo "== spawn_bg/wait/kill contract ok =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

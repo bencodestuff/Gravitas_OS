@@ -37,6 +37,9 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SPAWN  4
 #define GRV_SYSCALL_EXIT   5
 #define GRV_SYSCALL_BRK    6
+#define GRV_SYSCALL_SPAWN_BG 21
+#define GRV_SYSCALL_WAIT   22
+#define GRV_SYSCALL_KILL   23
 #define GRV_SYSCALL_OPEN   7
 #define GRV_SYSCALL_READFD  8
 #define GRV_SYSCALL_WRITEFD 9
@@ -78,6 +81,25 @@ static inline void grv_readdir(const char* path, char* buf, unsigned long max) {
    Returns child pid, or -1. */
 static inline long grv_spawn(const char* name, const char* const* argv, int argc) {
     return syscall3(GRV_SYSCALL_SPAWN, (long)name, (long)argv, (long)argc);
+}
+
+/* Spawn in the background: returns immediately with the child pid (blocks
+   nothing). Child exit is observable via grv_wait(pid). */
+static inline long grv_spawn_bg(const char* name, const char* const* argv, int argc) {
+    return syscall3(GRV_SYSCALL_SPAWN_BG, (long)name, (long)argv, (long)argc);
+}
+
+/* Wait for the task to exit; returns its exit code, or -1 if it never
+   existed or was already reaped (each pid can be waited on ONCE — like
+   Unix waitpid once the child is reaped). */
+static inline long grv_wait(long pid) {
+    return syscall1(GRV_SYSCALL_WAIT, pid);
+}
+
+/* Forcibly terminate another task; its exit code becomes 'code'.
+   Returns 0 or -1. */
+static inline long grv_kill(long pid, long code) {
+    return syscall2(GRV_SYSCALL_KILL, pid, code);
 }
 
 static inline __attribute__((__noreturn__)) void grv_exit(int code) {

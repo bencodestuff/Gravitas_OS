@@ -65,6 +65,8 @@ namespace Sched {
         char cwd[64];           // current working directory (starts "/")
         uint64_t exit_code;     // value passed to exit(), or a fault code
                                 // if the task died from an exception
+        uint64_t exit_code_inbox;   // exit code of the task this task WAITED
+                                    // on (written by exit_current at kill time)
     };
 
     static uint8_t fpu_template[512] __attribute__((aligned(64)));
@@ -73,6 +75,107 @@ namespace Sched {
     Task* ready_queue = nullptr; // A simple linked list (Round Robin)
     int task_counter = 0;
     static Task* zombie = nullptr; // exited task awaiting cleanup by the next switch
+
+    // --- WAIT for already-exited tasks ---
+    // WAIT is advisory (a parent may wait late or never), so every exit
+    // lands in a small ring that WAIT consumes. Bounded: once 8 newer
+    // exits push an id out, an unwatched late WAIT returns -1 (Unix
+    // waitpid has the same behavior once the child is reaped).
+    constexpr int RECENT_EXITS = 8;
+    struct RecentExit { int id; uint64_t code; };
+    static RecentExit recent_exits[RECENT_EXITS];
+    static uint64_t exit_head = 0;
+
+    bool task_exists(int id) {
+        if (current_task == nullptr) return false;
+        Task* t = ready_queue;
+        do {
+            if (t->id == id) return true;
+            t = t->next;
+        } while (t != ready_queue);
+        return false;
+    }
+
+    // WAIT step 1: consume a matching recent exit. Returns false (with
+    // out_code untouched) when no entry matches this id — the caller next
+    // checks task_exists() and finally fails with -1.
+    bool consume_recent_exit(int id, uint64_t* out_code) {
+        for (int i = 0; i < RECENT_EXITS; i++) {
+            if (recent_exits[i].id == id) {
+                if (out_code != nullptr) *out_code = recent_exits[i].code;
+                recent_exits[i].id = -1;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    uint64_t current_exit_inbox() {
+        return current_task->exit_code_inbox;
+    }
+
+    // Terminate ANOTHER task. The target is not running (single CPU:
+    // only current_task executes), so its kernel stack is abandoned and
+    // we can tear everything down synchronously — address space, fds,
+    // surfaces, stacks — no zombie hop needed.
+    //   code: what its exit_code becomes (callers blocked on it receive it)
+    //   Returns 0, or -1 for unknown/kernel-self/self-kill.
+    int kill_task(int id, uint64_t code) {
+        if (id <= 0) return -1;                       // kernel task / invalid
+        if (current_task != nullptr && id == current_task->id)
+            return -1;                                // use exit(), not kill()
+
+        asm volatile("cli");  // list surgery must not interleave with the timer's yield
+        Task* victim = nullptr;
+        Task* prev = ready_queue;
+        do {
+            if (prev->next != nullptr && prev->next->id == id) { victim = prev->next; break; }
+            prev = prev->next;
+        } while (prev != ready_queue);
+
+        if (victim == nullptr) { asm volatile("sti"); return -1; }
+        victim->exit_code = code;
+
+        char namebuf[16];
+        strcpy(namebuf, victim->name);
+
+        // Same bookkeeping as a normal exit: ring + waiter wakeups
+        recent_exits[exit_head % RECENT_EXITS].id = victim->id;
+        recent_exits[exit_head % RECENT_EXITS].code = victim->exit_code;
+        exit_head++;
+        Task* t = ready_queue;
+        do {
+            if (t->waiting_on == victim->id) {
+                t->exit_code_inbox = victim->exit_code;
+                t->state = READY;
+                t->waiting_on = -1;
+                consume_recent_exit(victim->id, nullptr);
+            }
+            t = t->next;
+        } while (t != ready_queue);
+
+        // Unlink (the caller itself stays in the queue).
+        Task* before = victim;
+        while (before->next != victim) before = before->next;
+        before->next = victim->next;
+        if (ready_queue == victim) ready_queue = victim->next;
+
+        // Synchronous teardown: the victim's stack is not in use.
+        for (int i = 0; i < VFS::MAX_FDS; i++) {
+            if (victim->fds[i] != nullptr) VFS::close_fd_for(victim->fds, i);
+        }
+        Compositor::surfaces_for_task_gone(victim->id);
+        VMM::destroy_user_space(victim->cr3);
+        delete[] victim->kstack_mem;
+        delete[] victim->fxsave_raw;
+        delete victim;
+
+        kprint("[Sched] Task '");
+        kprint(namebuf);
+        kprint("' terminated (killed).\n");
+        asm volatile("sti");
+        return 0;
+    }
 
     void sleep(uint64_t ms) {
         // 1. Calculate target time
@@ -397,29 +500,39 @@ namespace Sched {
         kprint(dead->name);
         kprint("' exited.\n");
 
-        // 1. Wake anyone blocked on this task
+        // 1. Record this exit for WAIT: append to the recent-exits ring
+        //    (waiters that call WAIT after the fact scan this).
+        recent_exits[exit_head % RECENT_EXITS].id = dead->id;
+        recent_exits[exit_head % RECENT_EXITS].code = dead->exit_code;
+        exit_head++;
+
+        // 2. Wake anyone blocked on this task (and give them the code).
+        //    A waking waiter consumes the ring entry — the deliverable is
+        //    the inbox now, and WAIT on this id must not resolve twice.
         Task* t = ready_queue;
         do {
             if (t->waiting_on == dead->id) {
+                t->exit_code_inbox = dead->exit_code;
                 t->state = READY;
                 t->waiting_on = -1;
+                consume_recent_exit(dead->id, nullptr);
             }
             t = t->next;
         } while (t != ready_queue);
 
-        // 2. Last task standing? Nothing to switch to — halt forever.
+        // 3. Last task standing? Nothing to switch to — halt forever.
         if (dead->next == dead) {
             kprint("[Sched] No tasks left. Halting.\n");
             while (1) asm("hlt");
         }
 
-        // 3. Unlink from the circular list
+        // 4. Unlink from the circular list
         Task* prev = dead;
         while (prev->next != dead) prev = prev->next;
         prev->next = dead->next;
         if (ready_queue == dead) ready_queue = dead->next;
 
-        // 4. Pick the next ready task (single CPU: no SMP races here)
+        // 5. Pick the next ready task (single CPU: no SMP races here)
         Task* next = dead->next;
         while (next->state != READY) {
             if (next->state == SLEEPING &&
@@ -430,7 +543,7 @@ namespace Sched {
             next = next->next;
         }
 
-        // 5. Free the Task struct AFTER the next switch (we are standing on
+        // 6. Free the Task struct AFTER the next switch (we are standing on
         // the dying kernel stack, so we can't free it here).
         zombie = dead;
 
@@ -480,9 +593,18 @@ namespace Sched {
         switch_context(&old_task->rsp, next_task->rsp,
                        old_task->fxsave_area, next_task->fxsave_area);
 
-        // We only get here when this task is scheduled back in.
+        // We only get here when this task is scheduled back in. CALLERS may
+        // have interrupted-off around the block (spawn/wait do cli before
+        // blocking) — if we leaked IF=0 into another task's kernel context,
+        // the PIT would count on OUR time budget and sleeping everywhere
+        // would freeze. Re-enable always: every resume path returns through
+        // a trap/I RET whose saved user flags carry IF=1 anyway.
+        asm volatile("sti");
         // Reap any task that exited since the last switch (its old kernel
-        // stack is definitely abandoned by now).
+        // stack is definitely abandoned by now). CLI guards 'zombie': a
+        // nested PIT yield could otherwise reap on our behalf and null the
+        // pointer mid-loop.
+        asm volatile("cli");
         if (zombie != nullptr) {
             // Close any fds the task leaked, then free its address space
             for (int i = 0; i < VFS::MAX_FDS; i++) {
@@ -498,5 +620,6 @@ namespace Sched {
             delete zombie;
             zombie = nullptr;
         }
+        asm volatile("sti");
     }
 }

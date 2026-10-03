@@ -40,6 +40,10 @@ static void print_hex64(uint64_t value) {
     }
 }
 
+// Kernel-side staging buffer for spawned program names (switching CR3
+// invalidates user pointers, so the name is copied before any load).
+static char spawn_namebuf[64];
+
 static char input_buffer[256];
 static int buffer_index = 0;
 
@@ -120,6 +124,72 @@ namespace IDT {
 
 static uint64_t ticks = 0;
 
+// Stages a spawn: kernel-side copies of argv, VFS read of the ELF image,
+// child address-space clone + load + task creation. Returns the child id,
+// or -1. Shared by SPAWN (4, foreground) and SPAWN_BG (21, immediate).
+static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
+    // Stage argv into kernel memory: the kernel is about to switch CR3,
+    // so user pointers may not survive the swap.
+    static char argv_stage[8][64];
+    const char* argv_copy[8];
+    uint64_t user_argc = regs->rdx;
+    if (user_argc > 8) user_argc = 8;
+    const char** user_argv = (const char**)regs->rsi;
+    int argc = 0;
+    for (uint64_t i = 0; i < user_argc; i++) {
+        const char* us = user_argv[i];
+        if (us == nullptr) break;
+        int ci = 0;
+        while (ci < 63 && us[ci] != '\0') {
+            argv_stage[i][ci] = us[ci];
+            ci++;
+        }
+        argv_stage[i][ci] = '\0';
+        argv_copy[i] = argv_stage[i];
+        argc = i + 1;
+    }
+
+    // Read the program's ELF image through the VFS (bare names resolve
+    // through /bin). Heap buffer, freed after the load.
+    int fd = VFS::open_fd(staged_name, VFS::O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    uint64_t fsize = VFS::fd_size(fd);
+    char* data = new char[fsize];
+    long got = VFS::read_fd(fd, data, fsize);
+    VFS::close_fd(fd);
+    if (got != (long)fsize) {
+        delete[] data;
+        return -1;
+    }
+
+    // Build the child in its OWN address space: clone, switch, load the
+    // ELF there, create the task, switch back.
+    uint64_t old_cr3 = VMM::current_pml4();
+    uint64_t child_cr3 = VMM::clone_kernel_space();
+    VMM::switch_pml4(child_cr3);
+
+    uint64_t entry = ELF::load_elf((uint8_t*)data);
+    delete[] data;
+    if (entry == 0) {
+        VMM::switch_pml4(old_cr3);
+        VMM::destroy_user_space(child_cr3);
+        return -1;
+    }
+
+    // create_user_task switches to the child space itself and stages the
+    // kernel-side argv strings onto the child's initial user stack.
+    int child = Sched::create_user_task(entry, staged_name, argc, argv_copy, child_cr3);
+    VMM::switch_pml4(old_cr3);
+    if (child < 0) {
+        VMM::destroy_user_space(child_cr3);
+        return -1;
+    }
+    return child;
+}
+
 // --- THE C++ HANDLER ---
 // This is called by Assembly
 extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
@@ -185,6 +255,11 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              uint64_t ms = regs->rdi;
              uint64_t ticks = (ms + 19) / 20;
              Sched::sleep_current(ticks);
+             // Record the sleep intent NOW and switch away at once: without
+             // the yield, this task would keep running (with its repeat
+             // syscall returns) until some later PIT tick bounces it off.
+             asm volatile("cli");
+             Sched::yield();
         }
         else if (syscall_id == 15) { // MOUSE READ: rdi = struct* {dx,dy,buttons}
              // Non-blocking. rax = 1 if a packet was drained, 0 if none.
@@ -238,74 +313,56 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              Compositor::surface_move((int)regs->rdi, (int)regs->rsi, (int)regs->rdx);
              regs->rax = 0;
         }
-        else if (syscall_id == 4) { // SPAWN: rdi = name, rsi = argv array, rdx = argc.
-             // Blocks until the spawned program exits; rax = child task id.
-             asm volatile("cli"); // no timer nesting mid-spawn
-             // Copy the name AND argv strings into kernel memory BEFORE the
-             // ELF load — loading a program overwrites userland memory
-             // (everything shares one address space for now).
-             char namebuf[16];
+        else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
+             // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
+             // which returns immediately. rax = child task id, or -1.
              const char* user_name = (const char*)regs->rdi;
+             if (user_name == nullptr) { regs->rax = (uint64_t)-1; return; }
+
+             // Stage the name into kernel memory: the kernel is about to
+             // switch CR3, so user pointers may not survive the swap.
+             // (Terminate at the true end: the buffer is reused across
+             // spawns, and stale chars from longer names could leak.)
              int ni = 0;
-             while (ni < 15 && user_name[ni] != '\0') {
-                 namebuf[ni] = user_name[ni];
+             while (ni < 63 && user_name[ni] != '\0') {
+                 spawn_namebuf[ni] = user_name[ni];
                  ni++;
              }
-             namebuf[ni] = '\0';
+             spawn_namebuf[ni] = '\0';
 
-             static char argv_stage[8][64];
-             const char* argv_copy[8];
-             uint64_t user_argc = regs->rdx;
-             if (user_argc > 8) user_argc = 8;
-             const char** user_argv = (const char**)regs->rsi;
-             int argc = 0;
-             for (uint64_t i = 0; i < user_argc; i++) {
-                 const char* us = user_argv[i];
-                 int ci = 0;
-                 while (ci < 63 && us[ci] != '\0') {
-                     argv_stage[i][ci] = us[ci];
-                     ci++;
-                 }
-                 argv_stage[i][ci] = '\0';
-                 argv_copy[i] = argv_stage[i];
-                 argc = i + 1;
+             int child = stage_spawn(regs, spawn_namebuf);
+             if (child < 0) { regs->rax = (uint64_t)-1; return; }
+
+             if (syscall_id == 4) {
+                 // Foreground: wait for the child
+                 asm volatile("cli");
+                 Sched::block_current(child);
+                 Sched::yield(); // returns when the child wakes us
              }
-
-             // Read the program's ELF image through the VFS (bare names
-             // resolve through /bin). Heap buffer, freed after the load.
-             int fd = VFS::open_fd(namebuf, VFS::O_RDONLY);
-             if (fd < 0) {
-                 regs->rax = (uint64_t)-1;
-             } else {
-                 uint64_t fsize = VFS::fd_size(fd);
-                 char* data = new char[fsize];
-                 VFS::read_fd(fd, data, fsize);
-                 VFS::close_fd(fd);
-
-                 // Build the child in its OWN address space: clone, switch,
-                 // load the ELF there, create the task, switch back.
-                 uint64_t old_cr3 = VMM::current_pml4();
-                 uint64_t child_cr3 = VMM::clone_kernel_space();
-                 VMM::switch_pml4(child_cr3);
-
-                 uint64_t entry = ELF::load_elf((uint8_t*)data);
-                 delete[] data;
-                 if (entry == 0) {
-                     VMM::switch_pml4(old_cr3);
-                     VMM::destroy_user_space(child_cr3);
-                     regs->rax = (uint64_t)-1;
-                 } else {
-                     int child = Sched::create_user_task(entry, namebuf, argc, argv_copy, child_cr3);
-                     VMM::switch_pml4(old_cr3);
-                     Sched::block_current(child);
-                     Sched::yield(); // returns when the child wakes us
-                     regs->rax = (uint64_t)child;
-                 }
-             }
+             regs->rax = (uint64_t)child;
         }
         else if (syscall_id == 5) { // EXIT: kill the calling task. Never returns.
              asm volatile("cli");
              Sched::exit_current(regs->rdi); // code from RDI — stored for waitpid
+        }
+        else if (syscall_id == 22) { // WAIT: rdi = task id -> rax = exit code
+             long id = (long)regs->rdi;
+             uint64_t code = 0;
+             if (id <= 0) { regs->rax = (uint64_t)-1; }
+             else if (Sched::consume_recent_exit((int)id, &code)) {
+                 regs->rax = code;
+             } else if (Sched::task_exists((int)id)) {
+                 // live task: block until it exits (exit_current fills our inbox)
+                 asm volatile("cli");
+                 Sched::block_current((int)id);
+                 Sched::yield();
+                 regs->rax = Sched::current_exit_inbox();
+             } else {
+                 regs->rax = (uint64_t)-1; // unknown task (never existed / ring overflow)
+             }
+        }
+        else if (syscall_id == 23) { // KILL: rdi = id, rsi = exit code
+             regs->rax = (uint64_t)Sched::kill_task((int)regs->rdi, regs->rsi);
         }
         else if (syscall_id == 7) { // OPEN: rdi = path, rsi = flags -> rax = fd
              regs->rax = (uint64_t)VFS::open_fd((const char*)regs->rdi, (int)regs->rsi);
