@@ -2,6 +2,7 @@
 #include "pic.h"
 #include "../../kernel/io.h"
 #include "../../kernel/keyboard.h"
+#include "../../kernel/fault.h"
 
 #include "../../kernel/timer.h"
 #include "../../kernel/sched.h"
@@ -58,25 +59,7 @@ static inline bool streq(const char* str1, const char* str2) {
 
 namespace IDT {
 
-    // This struct matches exactly what is pushed in Assembly
-    struct Registers {
-        // Pushed manually in common stub
-        uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-        uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
-        
-        // Pushed by the specific ISR macro
-        uint64_t interrupt_number;
-        uint64_t error_code;
-        
-        // Pushed by the CPU automatically
-        uint64_t rip;
-        uint64_t cs;
-        uint64_t rflags;
-        uint64_t rsp;
-        uint64_t ss;
-    } __attribute__((packed));
-
-    __attribute__((aligned(0x10))) 
+    __attribute__((aligned(0x10)))
     static IDTEntry idt[256];
     static IDTR idtr;
 
@@ -322,7 +305,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         }
         else if (syscall_id == 5) { // EXIT: kill the calling task. Never returns.
              asm volatile("cli");
-             Sched::exit_current();
+             Sched::exit_current(regs->rdi); // code from RDI — stored for waitpid
         }
         else if (syscall_id == 7) { // OPEN: rdi = path, rsi = flags -> rax = fd
              regs->rax = (uint64_t)VFS::open_fd((const char*)regs->rdi, (int)regs->rsi);
@@ -366,25 +349,15 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         return;
     }
 
-    if (num == 14) {
-        uint64_t cr2;
-        asm volatile("mov %%cr2, %0" : "=r"(cr2));
-
-        kprint("\n!!! PAGE FAULT !!!\n");
-
-        kprint("Faulting Address (CR2): ");
-        print_hex64(cr2);
-        kprint("\n");
-
-        kprint("Faulting Instruction (RIP): ");
-        print_hex64(regs->rip);
-        kprint("\n");
-
-        kprint("Error Code: ");
-        if (regs->error_code & 1) kprint("Present "); else kprint("Not-Present ");
-        if (regs->error_code & 2) kprint("Write "); else kprint("Read ");
-        if (regs->error_code & 4) kprint("User "); else kprint("Kernel ");
-        kprint("\n");
+    // --- CPU exceptions (vectors 0..31): the fault contract ---
+    // Ring 3 -> kill the offending task, the system carries on.
+    // Ring 0 -> full dump, then halt (a kernel bug is not recoverable).
+    if (num <= 31) {
+        uint64_t cr2 = 0;
+        if (num == 14) {
+            asm volatile("mov %%cr2, %0" : "=r"(cr2));
+        }
+        Fault::handle_cpu_exception(regs, cr2); // noreturn
     }
 
     // --- IRQ 0: Timer (Interrupt 32) ---
@@ -412,22 +385,23 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         return;
     }
 
-    kprint("\n!!! INTERRUPT RECEIVED !!!\n");
-    kprint("Number: "); 
-    // Print the numeric interrupt/exception vector
+    // --- Unhandled IRQ vectors (34..47 minus the ones handled above) ---
+    // EOI them and carry on: a stray event from an unconfigured IRQ line
+    // must NOT halt the machine. (We don't kprint — a flapping line would
+    // flood the log. Hot-add here when a device needs servicing.)
+    if (num >= 32 && num <= 47) {
+        PIC::send_eoi(num - 32);
+        return;
+    }
+
+    kprint("\n!!! UNEXPECTED INTERRUPT !!!\n");
+    kprint("Number: ");
+    // Print the numeric interrupt vector
     kprint_uint(regs->interrupt_number);
     kprint("\n");
     kprint("Faulting Instruction (RIP): ");
     print_hex64(regs->rip);
     kprint("\n");
-
-    // Human-friendly names for common exceptions
-    if (regs->interrupt_number == 14) {
-        kprint("PAGE FAULT (Bad Memory Access)\n");
-    } else if (regs->interrupt_number == 13) {
-        kprint("GPF (General Protection Fault)\n");
-    }
-
     kprint("Halting CPU.\n");
     while(1) asm("hlt");
 }

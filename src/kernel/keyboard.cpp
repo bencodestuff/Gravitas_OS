@@ -1,8 +1,11 @@
 #include "keyboard.h"
 #include "io.h"
+#include "sched.h"   // F12 debug dump
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value);
+
+constexpr uint8_t SC_DEBUG_DUMP = 0x58; // F12 (make code, set 1)
 
 namespace Keyboard {
 
@@ -58,6 +61,13 @@ namespace Keyboard {
 
     void handle_interrupt() {
         uint8_t scancode = inb(0x60);
+
+        // Magic debug key (F12): dump the scheduler state and stop. Not
+        // enqueued — it's a kernel console command, not a keystroke.
+        if (scancode == SC_DEBUG_DUMP) {
+            Sched::debug_dump();
+            return;
+        }
 
         // 0xE0 prefix: extended keys (arrows, right ctrl/alt) — skip the
         // followup byte entirely for now

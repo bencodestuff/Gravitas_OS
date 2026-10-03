@@ -20,6 +20,7 @@ CFLAGS = [
     "-fno-stack-protector",
     "-fno-rtti",
     "-fno-exceptions",
+    "-fstack-protector-strong",
     "-mno-red-zone",
     "-mno-mmx", "-mno-sse", "-mno-sse2",
     "-Wall", "-Wextra",
@@ -37,7 +38,7 @@ CFLAGS = [
 USER_CFLAGS = [
     "-target x86_64-unknown-none-elf",
     "-ffreestanding",
-    "-fno-stack-protector",
+    "-fstack-protector-strong",
     "-fno-pie", "-fno-pic",
     "-mno-red-zone",
     "-mno-mmx", "-mno-sse", "-mno-sse2",

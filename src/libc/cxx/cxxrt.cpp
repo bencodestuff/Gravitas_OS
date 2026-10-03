@@ -4,8 +4,29 @@
 
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <grv/syscall.h>
+
+/* --- Stack smash protector ---
+   Clang references the global __stack_chk_guard on ELF (not the TLS form).
+   crt0 seeds it once with boot-time entropy before main() runs. Any fixed
+   nonzero seed is fine — each process lives in its own address space, so
+   guards are private and there's nothing to guess across processes. */
+extern "C" __attribute__((visibility("hidden")))
+uint64_t __stack_chk_guard = 0x00C0FFEE00000000ull;
+
+static void grv_print(const char* s) {
+    while (*s) grv_putc(*s++);
+}
+
+extern "C" [[noreturn]] void __stack_chk_fail(void) {
+    grv_print("\n!! stack smashing detected — aborting\n");
+    // Straight to the exit syscall: grv_exit() would truncate the code to
+    // int, and the SMASH marker is only meaningful at full width.
+    syscall1(GRV_SYSCALL_EXIT, (long)0x534D415348ull /* "SMASH" */);
+    __builtin_unreachable();
+}
 
 // Provided by crt0.c after walking .init_array
 extern "C" void __cxa_finalize(void* dso);

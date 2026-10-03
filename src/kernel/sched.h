@@ -15,6 +15,11 @@ namespace Sched {
     const char* current_task_cwd();  // read the current task's CWD
     void current_task_set_cwd(const char* path); // store a canonical path
     int current_task_id();
+    const char* current_task_name();
+
+    // Kernel debugger: print the task table to the console (serial + fb).
+    // Read-only walk; safe from IRQ context.
+    void debug_dump();
 
     // --- Process lifecycle ---
     // Build a ring-3 task: 'rip' is the userland entry point (from the ELF
@@ -49,6 +54,13 @@ namespace Sched {
     uint64_t current_task_cr3();
 
     // Tear down the current task, wake whoever was waiting on it, and
-    // switch to the next ready task. Never returns.
-    void exit_current();
+    // switch to the next ready task. Never returns. 'code' is stored as
+    // the task's exit code (readable by the parent once waitpid exists;
+    // faults pass a distinctive GRV_EXIT_* value).
+    void exit_current(uint64_t code);
+
+    // Exit codes with meaning beyond "the program returned N". ASCII
+    // spells (FAULT / SMASH) so they read themselves in a hex dump.
+    constexpr uint64_t EXIT_FAULT = 0x4641554C54ull;      // "FAULT"
+    constexpr uint64_t EXIT_STACK_SMASH = 0x534D415348ull; // "SMASH"
 }

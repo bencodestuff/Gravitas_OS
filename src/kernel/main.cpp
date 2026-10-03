@@ -14,6 +14,7 @@
 #include "mouse.h"
 #include "timer.h"
 #include "font.h"
+#include "fault.h"
 #include "../drivers/framebuffer.h"
 #include "../fs/elf.h"
 #include "../fs/tar.h"
@@ -81,7 +82,29 @@ extern "C" void kprint_uint(uint64_t value) {
 
 // --- KERNEL MAIN ---
 extern "C" void kmain(void) {
+    // --- kernel_early: the C++ runtime bootstrap ---
+    // 1. Global constructors. Runs before ANY kernel subsystem — the
+    //    contract is that ctors are self-contained (no allocation, no
+    //    printing, no hardware assumptions; they run in a bare C++
+    //    environment and must only touch their own static data).
+    //    The array bounds come from linker.ld's .init_array markers.
+    int ctor_count = 0;
+    {
+        extern void (*__init_array_start[])();
+        extern void (*__init_array_end[])();
+        for (void (**ctor)() = __init_array_start; ctor < __init_array_end; ctor++) {
+            (*ctor)();
+            ctor_count++;
+        }
+    }
+
+    // 2. Seed the stack-protector canary before any protected frame runs.
+    Fault::init();
+
     kprint("\n\n=== GRAVITAS OS KERNEL BOOTED ===\n");
+    kprint("[init] global ctors run: ");
+    kprint_uint(ctor_count);
+    kprint("\n");
     kprint("If you can read this, the kernel is alive!\n");
 
     // Check Memory Map

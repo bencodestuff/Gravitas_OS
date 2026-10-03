@@ -117,6 +117,16 @@ type_str('txt')
 key('ret')
 time.sleep(2)
 
+# 3) Fault contract: crash.elf faults -> task dies, OS survives
+type_str('run crash')
+key('ret')
+time.sleep(3)
+
+# 4) Stack protector: smash.elf overruns a buffer -> detected, exits
+type_str('run smash')
+key('ret')
+time.sleep(3)
+
 mon('screendump ' + 'test_artifacts/console.ppm')
 s.close()
 PYEOF
@@ -131,6 +141,28 @@ if ! grep -q 'Hello from the Gravitas tar' "$LOG"; then
     fail "cat hello.txt output missing (spawn/VFS/read broken?)"
 fi
 echo "== cat hello.txt ok =="
+
+# Fault contract: crash.elf must fault loudly and die cleanly — and the
+# shell must come back afterward (assert on output AFTER the kill line)
+if ! grep -q "FAULT: USERLAND in task 'crash.elf'" "$LOG"; then
+    fail "crash.elf fault dump missing (fault contract broken?)"
+fi
+if ! grep -q 'terminating task per the fault contract' "$LOG"; then
+    fail "crash.elf was not terminated cleanly"
+fi
+sed -n '/terminating task per the fault contract/,$p' "$LOG" \
+    | grep -q 'program finished' \
+    || fail "shell did not survive the crash (spawn-wait never returned)"
+echo "== fault contract ok (crash killed, shell survived) =="
+
+# Stack protector: smash.elf must be caught by the canary
+if ! grep -q 'stack smashing detected' "$LOG"; then
+    fail "stack smash not detected (SSP wiring broken?)"
+fi
+sed -n '/stack smashing detected/,$p' "$LOG" \
+    | grep -q 'program finished' \
+    || fail "shell did not survive the stack smash"
+echo "== stack protector ok (smash detected, shell survived) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

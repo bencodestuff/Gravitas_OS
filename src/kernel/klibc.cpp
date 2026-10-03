@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// kprint_hex prints through the kernel console (kprint lives in
+// framebuffer.cpp, kprint_uint in main.cpp)
+extern "C" void kprint(const char* str);
+
 extern "C" {
 
 void* memset(void* dest, int value, size_t n) {
@@ -40,6 +44,18 @@ int memcmp(const void* a, const void* b, size_t n) {
         if (x[i] != y[i]) return (int)x[i] - (int)y[i];
     }
     return 0;
+}
+
+// Hex printer shared by the fault reporter and the task debugger.
+// (kprint_uint is decimal-only; faults and CR3s want hex.)
+void kprint_hex(uint64_t value) {
+    kprint("0x");
+    for (int i = 60; i >= 0; i -= 4) {
+        uint64_t n = (value >> i) & 0xF;
+        char c = (n < 10) ? '0' + n : 'A' + (n - 10);
+        char s[2] = {c, '\0'};
+        kprint(s);
+    }
 }
 
 } // extern "C"

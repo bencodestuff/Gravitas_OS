@@ -21,6 +21,8 @@ extern "C" char* strcpy(char* dest, const char* src) {
 }
 
 extern "C" void kprint(const char* str);
+extern "C" void kprint_uint(uint64_t value);
+extern "C" void kprint_hex(uint64_t value);   // klibc.cpp — shared hex printer
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
                                void* old_fxsave, void* new_fxsave);
 
@@ -61,6 +63,8 @@ namespace Sched {
         uint64_t brk_limit;     // end of the MAPPED brk region (page-aligned)
         VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
         char cwd[64];           // current working directory (starts "/")
+        uint64_t exit_code;     // value passed to exit(), or a fault code
+                                // if the task died from an exception
     };
 
     static uint8_t fpu_template[512] __attribute__((aligned(64)));
@@ -118,6 +122,7 @@ namespace Sched {
         // broke in ways that took a scancode trace to find)
         current_task->brk = 0;
         current_task->brk_limit = 0;
+        current_task->exit_code = 0;
         current_task->waiting_on = -1;
         current_task->user_rip = 0;
         current_task->user_rsp = 0;
@@ -159,6 +164,7 @@ namespace Sched {
         new_task->rsp = (uint64_t)stack_top;
         new_task->kstack_mem = stack_bottom;
         new_task->waiting_on = -1;
+        new_task->exit_code = 0;
 
         // 4. Add to the circular linked list
         new_task->next = ready_queue->next;
@@ -174,6 +180,7 @@ namespace Sched {
         new_task->state = READY;
         new_task->wake_timestamp = 0;
         new_task->waiting_on = -1;
+        new_task->exit_code = 0;
         new_task->cr3 = cr3;
         strcpy(new_task->name, name);
 
@@ -314,6 +321,42 @@ namespace Sched {
         return current_task->id;
     }
 
+    const char* current_task_name() {
+        return current_task->name;
+    }
+
+    // Kernel debugger: dump the task table (F12 / fault diagnostics).
+    // Walks the ready queue; safe from IRQ context because it only READS
+    // scheduler state (no allocation, no blocking, no list mutation).
+    void debug_dump() {
+        kprint("[dbg] tasks (ticks=");
+        kprint_uint(Timer::get_ticks());
+        kprint("):\n");
+        Task* t = ready_queue;
+        if (t == nullptr) { kprint("[dbg]   (none)\n"); return; }
+        do {
+            kprint("[dbg]   #");
+            kprint_uint(t->id);
+            kprint(" '");
+            kprint(t->name);
+            kprint("' ");
+            if (t->state == SLEEPING) {
+                if (t->waiting_on >= 0) {
+                    kprint("blocked-on-task-");
+                    kprint_uint(t->waiting_on);
+                } else {
+                    kprint("sleeping");
+                }
+            } else {
+                kprint(t == current_task ? "RUNNING" : "ready");
+            }
+            kprint(" cr3=");
+            kprint_hex(t->cr3);
+            kprint("\n");
+            t = t->next;
+        } while (t != ready_queue);
+    }
+
     const char* current_task_cwd() {
         return current_task->cwd;
     }
@@ -347,8 +390,9 @@ namespace Sched {
         }
     }
 
-    void exit_current() {
+    void exit_current(uint64_t code) {
         Task* dead = current_task;
+        dead->exit_code = code;
         kprint("[Sched] Task '");
         kprint(dead->name);
         kprint("' exited.\n");

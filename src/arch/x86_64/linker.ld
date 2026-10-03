@@ -31,9 +31,18 @@ SECTIONS
     /* READ-WRITE DATA SECTION */
     .data : {
         *(.data .data.*)
-        
+
+        /* Global constructors: kmain walks this before anything else runs.
+           KEEP prevents gc-sections from ever dropping them; SORT keeps
+           init priority ordering (.init_array.00101 before .init_array). */
+        . = ALIGN(8);
+        __init_array_start = .;
+        KEEP(*(.init_array))
+        KEEP(*(SORT(.init_array.*)))
+        __init_array_end = .;
+
         /* Keep requests inside .data but distinct */
-        . = ALIGN(0x1000); 
+        . = ALIGN(0x1000);
         KEEP(*(.requests_start_marker))
         KEEP(*(.requests))
         KEEP(*(.requests_end_marker))
