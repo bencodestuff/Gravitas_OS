@@ -182,14 +182,15 @@ extern "C" void kmain(void) {
     kprint(" (want 0)\n");
 
     // --- Filesystem layer ---
-    // 1. Locate the tar module (becomes the read-only /bin)
+    // 1. Locate the tar module (the file tree: /bin, /fonts, /Pictures, /tmp)
     Tar::init();
-    // 2. Root = ramfs (writable); 3. tarfs at /bin
+    // 2. Tar at "/" (read-only, layout = the tar itself); ramfs at /tmp
+    //    (writable scratch — the only writable paths in the system).
     VFS::init();
     RamFS::init();
-    VFS::mount("/", RamFS::instance());
-    VFS::mount("/bin", Tar::vfs_instance());
-    kprint("[VFS] Mounted root(ramfs) + /bin(tarfs).\n");
+    VFS::mount("/", Tar::vfs_instance());
+    VFS::mount("/tmp", RamFS::instance());
+    kprint("[VFS] Mounted /(tarfs) + /tmp(ramfs).\n");
 
     // --- Console font: swap the embedded 8x8 for the PSF2 from the
     // tarfs (never fatal; falls back silently on any failure). On a

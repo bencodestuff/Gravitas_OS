@@ -7,15 +7,21 @@ mkdir -p iso_root
 # We copy 'gravitas.elf' to the root of the ISO
 cp bin/gravitas.elf iso_root/gravitas.elf
 
-# 2. Pack the tarfs: data files + userland programs
-# (Clean tar_root first: it must mirror files/ exactly, with no stale
-# entries from previous builds.)
+# 2. Pack the tarfs. THE TAR LAYOUT IS THE FILESYSTEM TREE: the tar is
+#   mounted at "/" and its contents appear 1:1 as paths.
+#     bin/       userland programs (grv_spawn resolves bare names here)
+#     fonts/     console font (PSF2, loaded by Font::load_from_disk)
+#     Pictures/  demo images
+#     tmp/       EMPTY dir: mountpoint placeholder for the writable
+#                ramfs (mounted over it at boot) so `ls /` shows /tmp
+#   (Clean tar_root first: it must mirror files/ exactly, and /tmp is
+#   regenerated fresh each build since the tar is read-only.)
 rm -rf tar_root
-mkdir -p tar_root
+mkdir -p tar_root/bin tar_root/tmp
 cp -r files/* tar_root/
 for f in bin/*.elf; do
     [ "$(basename "$f")" = "gravitas.elf" ] && continue
-    cp "$f" tar_root/
+    cp "$f" tar_root/bin/
 done
 tar --format=ustar -cf iso_root/files.tar -C tar_root .
 

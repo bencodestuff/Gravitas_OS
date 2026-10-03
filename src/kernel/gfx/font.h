@@ -33,7 +33,7 @@ namespace Font {
     // Boot-time load: read a PSF2 font from the tarfs (via the VFS) and
     // install it. Never fatal — on any failure it logs and keeps the
     // embedded 8x8. Returns true if a PSF2 font is now active.
-    bool load_from_disk(const char* path = "/bin/fonts/bizcat.psf");
+    bool load_from_disk(const char* path = "/fonts/bizcat.psf");
 
     // True if a PSF2 font is active (diagnostics only).
     bool psf2_active();
