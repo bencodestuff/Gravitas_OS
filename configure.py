@@ -25,10 +25,6 @@ CFLAGS = [
     "-mno-mmx", "-mno-sse", "-mno-sse2",
     "-Wall", "-Wextra",
     "-Isrc",
-    "-Isrc/kernel",
-    "-Isrc/drivers",
-    "-Isrc/fs",
-    "-Isrc/arch/x86_64",
     "-std=c++20",
     "-g",
 ]

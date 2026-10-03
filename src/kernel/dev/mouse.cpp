@@ -1,9 +1,8 @@
-#include "mouse.h"
-#include "io.h"
-#include "pic.h"
+#include "kernel/dev/mouse.h"
+#include "kernel/klib/klib.h"
+#include "kernel/io.h"
+#include "arch/x86_64/pic.h"
 
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
 
 // --- PS/2 controller (8042) ports ---
 constexpr uint8_t PS2_DATA    = 0x60;

@@ -1,8 +1,8 @@
-#include "vmm.h"
-#include "pmm.h"
+#include "kernel/core/vmm.h"
+#include "kernel/klib/klib.h"
+#include "kernel/core/pmm.h"
 #include <limine.h>
 
-extern "C" void kprint(const char* str);
 
 // --- EXTERNAL REQUESTS ---
 extern volatile struct limine_hhdm_request hhdm_request;

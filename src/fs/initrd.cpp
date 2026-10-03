@@ -1,6 +1,6 @@
 #include <limine.h>
-#include "initrd.h"
-#include "../drivers/framebuffer.h"
+#include "fs/initrd.h"
+#include "kernel/gfx/framebuffer.h"
 
 __attribute__((used, section(".requests")))
 volatile struct limine_module_request module_request = {

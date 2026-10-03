@@ -5,7 +5,7 @@
 // Owns the ACTIVE console font and the low-level glyph renderer.
 //
 // Two sources:
-//   * an embedded 8x8 VGA-style font (src/drivers/font.h) — the default,
+//   * an embedded 8x8 VGA-style font (font8x8.h) — the default,
 //     so early-boot kprint output works before the filesystem exists;
 //   * a PSF2 font loaded from the tarfs at boot (load_from_disk), which
 //     replaces it mid-boot (8x16 Bizcat today).

@@ -1,8 +1,7 @@
-#include "ipc.h"
-#include "sched.h"
+#include "kernel/core/ipc.h"
+#include "kernel/klib/klib.h"
+#include "kernel/core/sched.h"
 
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
 
 // IPC implementation — see ipc.h for the contract.
 //

@@ -1,10 +1,11 @@
-#include "font.h"
+#include "kernel/gfx/font.h"
+#include "kernel/klib/klib.h"
 
 #include <limine.h>
-#include "io.h"
-#include "heap.h"
-#include "../fs/vfs.h"
-#include "../drivers/font.h"   // font8x8_basic — the embedded fallback
+#include "kernel/io.h"
+#include "kernel/core/heap.h"
+#include "fs/vfs.h"
+#include "kernel/gfx/font8x8.h" // font8x8_basic — the embedded fallback
 
 // --- Font module ---
 // Mirrors the fb-access pattern of compositor.cpp: extern the limine
@@ -15,8 +16,6 @@ extern volatile struct limine_framebuffer_request framebuffer_request;
 
 // (declared in main.cpp / framebuffer.cpp; local externs per the
 //  established pattern in vfs.cpp, tar.cpp, etc.)
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
 
 // --- PSF2 (Linux console font) parsing ---
 // The authoritative magic. A PSF2 file is: 32-byte header, then

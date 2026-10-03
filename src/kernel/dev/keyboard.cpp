@@ -1,9 +1,8 @@
-#include "keyboard.h"
-#include "io.h"
-#include "sched.h"   // F12 debug dump
+#include "kernel/dev/keyboard.h"
+#include "kernel/klib/klib.h"
+#include "kernel/io.h"
+#include "kernel/core/sched.h"   // F12 debug dump
 
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
 
 constexpr uint8_t SC_DEBUG_DUMP = 0x58; // F12 (make code, set 1)
 

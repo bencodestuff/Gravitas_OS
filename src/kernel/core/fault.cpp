@@ -1,10 +1,8 @@
-#include "fault.h"
-#include "sched.h"
-#include "io.h"
+#include "kernel/core/fault.h"
+#include "kernel/klib/klib.h"
+#include "kernel/core/sched.h"
+#include "kernel/io.h"
 
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
-extern "C" void kprint_hex(uint64_t value);   // klibc.cpp
 
 // --- Fault reporter + contract implementation ---
 

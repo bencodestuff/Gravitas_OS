@@ -1,6 +1,6 @@
-#include "heap.h"
+#include "kernel/core/heap.h"
+#include "kernel/klib/klib.h"
 
-extern "C" void kprint(const char* str); // Use our printer
 
 namespace Heap {
 

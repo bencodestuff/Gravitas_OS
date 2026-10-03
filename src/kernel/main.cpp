@@ -2,24 +2,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "pmm.h"
-#include "vmm.h"
+#include "kernel/core/pmm.h"
+#include "kernel/core/vmm.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"
-#include "io.h"
-#include "heap.h"
-#include "shell.h"
-#include "sched.h"
-#include "mouse.h"
-#include "timer.h"
-#include "font.h"
-#include "fault.h"
-#include "../drivers/framebuffer.h"
-#include "../fs/elf.h"
-#include "../fs/tar.h"
-#include "../fs/vfs.h"
-#include "../fs/ramfs.h"
+#include "kernel/io.h"
+#include "kernel/core/heap.h"
+#include "kernel/core/sched.h"
+#include "kernel/klib/klib.h"
+#include "kernel/dev/mouse.h"
+#include "kernel/core/timer.h"
+#include "kernel/gfx/font.h"
+#include "kernel/core/fault.h"
+#include "kernel/gfx/framebuffer.h"
+#include "fs/elf.h"
+#include "fs/tar.h"
+#include "fs/vfs.h"
+#include "fs/ramfs.h"
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
@@ -57,28 +57,6 @@ extern volatile struct limine_module_request module_request;
 // no per-space mapping needed and no clone-time surprises.
 #define HEAP_PHYS_BASE  0x08000000
 #define HEAP_SIZE       0x400000 // 4MB
-
-// --- Helper: Print Numbers to Serial ---
-extern "C" void kprint_uint(uint64_t value) {
-    if (value == 0) {
-        kprint("0");
-        return;
-    }
-    char buffer[21];
-    int pos = 20;
-    buffer[pos] = '\0';
-    while (value > 0) {
-        buffer[--pos] = (value % 10) + '0';
-        value /= 10;
-    }
-    kprint(&buffer[pos]);
-}
-
-// A simple function for our second thread
-// ... includes ...
-
-
-
 
 // --- KERNEL MAIN ---
 extern "C" void kmain(void) {

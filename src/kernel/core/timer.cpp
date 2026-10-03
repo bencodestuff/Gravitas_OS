@@ -1,7 +1,7 @@
-#include "timer.h"
-#include "io.h"
+#include "kernel/core/timer.h"
+#include "kernel/klib/klib.h"
+#include "kernel/io.h"
 
-extern "C" void kprint(const char* str);
 
 namespace Timer {
     uint64_t ticks = 0;

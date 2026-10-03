@@ -1,7 +1,7 @@
 #include <limine.h>
-#include "tar.h"
-#include "vfs.h"
-#include "../drivers/framebuffer.h"
+#include "fs/tar.h"
+#include "fs/vfs.h"
+#include "kernel/gfx/framebuffer.h"
 
 // Defined in initrd.cpp
 extern volatile struct limine_module_request module_request;

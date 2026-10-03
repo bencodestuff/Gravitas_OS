@@ -1,7 +1,7 @@
-#include "vfs.h"
-#include "../drivers/framebuffer.h"
-#include "../kernel/heap.h"
-#include "../kernel/sched.h"
+#include "fs/vfs.h"
+#include "kernel/gfx/framebuffer.h"
+#include "kernel/core/heap.h"
+#include "kernel/core/sched.h"
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value);
@@ -106,7 +106,7 @@ Filesystem* resolve(const char* path, const char** rel_path) {
 
 // --- CWD-aware path building ---
 // Relative paths (no leading '/') resolve against the current task's CWD.
-// strlen for internal use (kernel libc lives in klibc.cpp)
+// strlen for internal use
 static uint64_t strlen_(const char* s) {
     uint64_t n = 0;
     while (s[n]) n++;

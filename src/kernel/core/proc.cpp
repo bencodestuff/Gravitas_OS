@@ -1,81 +1,35 @@
+// proc.cpp — task LIFECYCLE, split from sched.cpp (which owns the run
+// queue and context switching): creation (kernel thread / userland task),
+// exit, kill, the WAIT bookkeeping, and the per-task accessors the
+// syscall layer uses. Both files share Task through core/task.h.
+
+#include "task.h"
+
 #include "sched.h"
-#include "heap.h"
-#include "timer.h"
+#include "kernel/klib/klib.h"
+#include "kernel/core/heap.h"
+#include "kernel/core/pmm.h"
+#include "kernel/core/vmm.h"
+#include "kernel/core/timer.h"
+#include "kernel/gfx/compositor.h"
+#include "fs/vfs.h"
+#include "kernel/core/ipc.h"
 #include "arch/x86_64/gdt.h"
-#include "pmm.h"
-#include "vmm.h"
-#include "../fs/vfs.h"
-#include "compositor.h"
-#include "ipc.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
 // (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
 extern "C" void user_entry_trampoline();
 
-// Minimal freestanding strcpy implementation for the kernel (C linkage)
-extern "C" char* strcpy(char* dest, const char* src) {
-    char* ret = dest;
-    while ((*dest++ = *src++) != '\0') {
-        // copy
-    }
-    return ret;
-}
-
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
-extern "C" void kprint_hex(uint64_t value);   // klibc.cpp — shared hex printer
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
                                void* old_fxsave, void* new_fxsave);
 
+// task_counter lives in sched.cpp (init() starts it at zero)
+extern int task_counter;
 
+// fpu_template lives in sched.cpp (init() snapshots the boot-clean FPU)
+extern uint8_t fpu_template[512];
 
 namespace Sched {
-    enum TaskState {
-        READY,
-        SLEEPING
-    };
-
-    struct Task {
-        uint64_t rsp;
-        Task* next;
-        int id;
-        TaskState state;
-        uint64_t wake_timestamp;
-        char name[16];
-
-        // --- MISSING FIELD ---
-        uint64_t kstack_top; // We need this for the TSS!
-        uint64_t* kstack_mem; // Base of the heap-allocated kernel stack (for freeing)
-
-        // --- FPU/SSE context ---
-        // Eager save/restore in switch_context. The area needs 16-byte
-        // alignment for fxsave, but the kernel heap only guarantees 8 —
-        // so it's a separate aligned allocation (fxsave_raw is the
-        // unaligned base kept for delete[]).
-        uint8_t* fxsave_area;    // 512 bytes, 16+ aligned
-        uint8_t* fxsave_raw;     // allocation base
-
-        // --- Process lifecycle ---
-        int waiting_on;         // task id this task is blocked on (-1 = none)
-        uint64_t user_rip;      // for the userland trampoline
-        uint64_t user_rsp;
-        uint64_t cr3;           // this task's address space
-        uint64_t brk;           // program break (malloc arena top), 0 = unset
-        uint64_t brk_limit;     // end of the MAPPED brk region (page-aligned)
-        VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
-        char cwd[64];           // current working directory (starts "/")
-        uint64_t exit_code;     // value passed to exit(), or a fault code
-                                // if the task died from an exception
-        uint64_t exit_code_inbox;   // exit code of the task this task WAITED
-                                    // on (written by exit_current at kill time)
-    };
-
-    static uint8_t fpu_template[512] __attribute__((aligned(64)));
-
-    Task* current_task = nullptr;
-    Task* ready_queue = nullptr; // A simple linked list (Round Robin)
-    int task_counter = 0;
-    static Task* zombie = nullptr; // exited task awaiting cleanup by the next switch
 
     // --- WAIT for already-exited tasks ---
     // WAIT is advisory (a parent may wait late or never), so every exit
@@ -86,7 +40,6 @@ namespace Sched {
     struct RecentExit { int id; uint64_t code; };
     static RecentExit recent_exits[RECENT_EXITS];
     static uint64_t exit_head = 0;
-
     bool task_exists(int id) {
         if (current_task == nullptr) return false;
         Task* t = ready_queue;
@@ -115,7 +68,7 @@ namespace Sched {
         return current_task->exit_code_inbox;
     }
 
-    // Terminate ANOTHER task. The target is not running (single CPU:
+
     // only current_task executes), so its kernel stack is abandoned and
     // we can tear everything down synchronously — address space, fds,
     // surfaces, stacks — no zombie hop needed.
@@ -179,68 +132,6 @@ namespace Sched {
         return 0;
     }
 
-    void sleep(uint64_t ms) {
-        // 1. Calculate target time
-        // Assuming 50Hz (20ms per tick)
-        uint64_t ticks_needed = ms / 20;
-        current_task->wake_timestamp = Timer::get_ticks() + ticks_needed;
-
-        // 2. Mark as SLEEPING
-        current_task->state = SLEEPING;
-
-        // 3. Give up the CPU immediately
-        yield();
-    }
-
-    void init() {
-        // ... previous setup ...
-        current_task = new Task;
-        current_task->id = 0;
-        current_task->state = READY;
-        strcpy(current_task->name, "Kernel Shell");
-
-        // --- FPU: snapshot the boot-clean state as the template for all
-        // future tasks. Limine leaves the FPU enabled + initialized; a
-        // task whose fxsave_area was never saved would otherwise fxrstor
-        // heap garbage (-> #GP on first float use).
-        for (int i = 0; i < 512; i++) fpu_template[i] = 0;
-        asm volatile("fxsave %0" : : "m"(fpu_template) : "memory");
-
-        // The kernel-main task gets an fxsave area too (timer switch saves it)
-        current_task->fxsave_raw = new uint8_t[512 + 63];
-        current_task->fxsave_area = (uint8_t*)(((uint64_t)current_task->fxsave_raw + 63) & ~(uint64_t)63);
-        for (int i = 0; i < 512; i++) current_task->fxsave_area[i] = fpu_template[i];
-        
-        // --- THE FIX ---
-        // Capture the current stack pointer so the TSS knows where to land
-        // when we return to this task from User Mode.
-        uint64_t current_rsp;
-        asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
-        current_task->kstack_top = current_rsp;
-        current_task->rsp = current_rsp; // valid for self-switches
-        current_task->cr3 = VMM::get_kernel_pml4_phys();
-
-        // Initialize ALL per-task state the spawn path normally sets —
-        // the kernel task is hand-built here, and uninitialized fields
-        // get INHERITED by the first userland process (the shell's CWD
-        // used to be boot garbage: prompts printed 0x01 bytes and "cd"
-        // broke in ways that took a scancode trace to find)
-        current_task->brk = 0;
-        current_task->brk_limit = 0;
-        current_task->exit_code = 0;
-        current_task->waiting_on = -1;
-        current_task->user_rip = 0;
-        current_task->user_rsp = 0;
-        current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
-        for (int i = 0; i < VFS::MAX_FDS; i++) current_task->fds[i] = nullptr;
-        // ----------------
-        
-        ready_queue = current_task;
-        current_task->next = current_task;
-        
-        kprint("[Sched] Initialized.\n");
-    }
-
     void create_task(void(*entry_point)()) {
         // 1. Allocate a new Task struct
         Task* new_task = new Task;
@@ -277,6 +168,7 @@ namespace Sched {
         
         kprint("[Sched] Task Created.\n");
     }
+
 
     int create_user_task(uint64_t rip, const char* name, int argc,
                          const char* const* argv, uint64_t cr3) {
@@ -381,48 +273,6 @@ namespace Sched {
         return new_task->id;
     }
 
-    void block_current(int child_id) {
-        current_task->state = SLEEPING;
-        current_task->waiting_on = child_id;
-        // Never wake this task by timestamp — only the child's exit wakes us
-        current_task->wake_timestamp = (uint64_t)-1;
-    }
-
-    void block_until_woken() {
-        current_task->state = SLEEPING;
-        current_task->waiting_on = -1;   // no exit may wake us as a side effect
-        current_task->wake_timestamp = (uint64_t)-1; // nor the timer
-    }
-
-    bool wake_task(int id) {
-        Task* t = ready_queue;
-        do {
-            if (t->id == id) {
-                // Only tasks blocked in block_until_woken respond here:
-                // timer-sleepers and keyboard-waiters keep their own wake
-                // discipline (and a task blocked on a task exit keeps its
-                // waiting_on contract). 'waiting_on == -1' guards that too.
-                if (t->state == SLEEPING && t->waiting_on == -1 &&
-                    t->wake_timestamp == (uint64_t)-1) {
-                    t->state = READY;
-                    return true;
-                }
-                return false;
-            }
-            t = t->next;
-        } while (t != ready_queue);
-        return false;
-    }
-
-    void sleep_current(uint64_t ticks) {
-        // Timestamp-based: yield()'s wake loop flips us back to READY when
-        // Timer::get_ticks() passes the target. waiting_on stays -1 (no
-        // process should wake us early).
-        if (ticks == 0) return;
-        current_task->state = SLEEPING;
-        current_task->waiting_on = -1;
-        current_task->wake_timestamp = Timer::get_ticks() + ticks;
-    }
 
     uint64_t current_task_brk() {
         return current_task->brk;
@@ -457,36 +307,6 @@ namespace Sched {
     }
 
     // Kernel debugger: dump the task table (F12 / fault diagnostics).
-    // Walks the ready queue; safe from IRQ context because it only READS
-    // scheduler state (no allocation, no blocking, no list mutation).
-    void debug_dump() {
-        kprint("[dbg] tasks (ticks=");
-        kprint_uint(Timer::get_ticks());
-        kprint("):\n");
-        Task* t = ready_queue;
-        if (t == nullptr) { kprint("[dbg]   (none)\n"); return; }
-        do {
-            kprint("[dbg]   #");
-            kprint_uint(t->id);
-            kprint(" '");
-            kprint(t->name);
-            kprint("' ");
-            if (t->state == SLEEPING) {
-                if (t->waiting_on >= 0) {
-                    kprint("blocked-on-task-");
-                    kprint_uint(t->waiting_on);
-                } else {
-                    kprint("sleeping");
-                }
-            } else {
-                kprint(t == current_task ? "RUNNING" : "ready");
-            }
-            kprint(" cr3=");
-            kprint_hex(t->cr3);
-            kprint("\n");
-            t = t->next;
-        } while (t != ready_queue);
-    }
 
     const char* current_task_cwd() {
         return current_task->cwd;
@@ -498,27 +318,6 @@ namespace Sched {
         int i = 0;
         while (path[i] && i < 63) { current_task->cwd[i] = path[i]; i++; }
         current_task->cwd[i] = '\0';
-    }
-
-    static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall
-
-    void block_on_keyboard() {
-        current_task->state = SLEEPING;
-        current_task->wake_timestamp = (uint64_t)-1; // only the IRQ wakes us
-        keyboard_waiter = current_task;
-    }
-
-    void wake_keyboard_waiter() {
-        if (keyboard_waiter != nullptr) {
-            keyboard_waiter->state = READY;
-            keyboard_waiter = nullptr;
-        }
-    }
-
-    static void switch_to_task_cr3(Task* task) {
-        if (task->cr3 != VMM::current_pml4()) {
-            VMM::switch_pml4(task->cr3);
-        }
     }
 
     void exit_current(uint64_t code) {
@@ -584,71 +383,4 @@ namespace Sched {
         while (1) asm("hlt");
     }
 
-    void yield() {
-
-        if (current_task == nullptr) return;
-
-        Task* old_task = current_task;
-        Task* next_task = current_task->next;
-        
-        // --- LOOP UNTIL WE FIND A READY TASK ---
-        // If everyone is sleeping, we just spin (idle loop)
-        while (true) {
-            // 1. Check if a sleeping task is done sleeping
-            if (next_task->state == SLEEPING) {
-                if (Timer::get_ticks() >= next_task->wake_timestamp) {
-                    next_task->state = READY; // Wakey wakey!
-                }
-            }
-
-            // 2. Is this task ready to run?
-            if (next_task->state == READY) {
-                break; // Found one!
-            }
-
-            // 3. Move to next
-            next_task = next_task->next;
-        }
-
-        // Only one runnable task (or we looped back to ourselves)?
-        // Then there is nothing to switch — just keep running.
-        if (old_task == next_task) return;
-
-        // Switch to the found task
-        current_task = next_task;
-        GDT::tss.rsp0 = current_task->kstack_top;
-        switch_to_task_cr3(next_task);
-        switch_context(&old_task->rsp, next_task->rsp,
-                       old_task->fxsave_area, next_task->fxsave_area);
-
-        // We only get here when this task is scheduled back in. CALLERS may
-        // have interrupted-off around the block (spawn/wait do cli before
-        // blocking) — if we leaked IF=0 into another task's kernel context,
-        // the PIT would count on OUR time budget and sleeping everywhere
-        // would freeze. Re-enable always: every resume path returns through
-        // a trap/I RET whose saved user flags carry IF=1 anyway.
-        asm volatile("sti");
-        // Reap any task that exited since the last switch (its old kernel
-        // stack is definitely abandoned by now). CLI guards 'zombie': a
-        // nested PIT yield could otherwise reap on our behalf and null the
-        // pointer mid-loop.
-        asm volatile("cli");
-        if (zombie != nullptr) {
-            // Close any fds the task leaked, then free its address space
-            for (int i = 0; i < VFS::MAX_FDS; i++) {
-                if (zombie->fds[i] != nullptr) {
-                    VFS::close_fd_for(zombie->fds, i);
-                }
-            }
-            Compositor::surfaces_for_task_gone(zombie->id);
-            Ipc::task_gone(zombie->id);
-            // Free the exited task's address space (its user frames + tables)
-            VMM::destroy_user_space(zombie->cr3);
-            delete[] zombie->kstack_mem;
-            delete[] zombie->fxsave_raw;
-            delete zombie;
-            zombie = nullptr;
-        }
-        asm volatile("sti");
-    }
-}
+} // namespace Sched

@@ -1,5 +1,5 @@
 #include "pic.h"
-#include "../../kernel/io.h" // Note the path!
+#include "kernel/io.h" // Note the path!
 
 // PIC Ports
 #define PIC1_COMMAND 0x20

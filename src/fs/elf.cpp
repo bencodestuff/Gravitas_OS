@@ -1,6 +1,6 @@
-#include "elf.h"
-#include "../kernel/pmm.h" // We need to alloc RAM
-#include "../kernel/vmm.h" // We need to map RAM
+#include "fs/elf.h"
+#include "kernel/core/pmm.h" // We need to alloc RAM
+#include "kernel/core/vmm.h" // We need to map RAM
 #include <limine.h>        // For HHDM request
 
 extern "C" void kprint(const char* str);

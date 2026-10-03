@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include "../arch/x86_64/idt.h"
+#include "arch/x86_64/idt.h"
 
 // --- Fault reporter + the "userland cannot hang the machine" contract ---
 //

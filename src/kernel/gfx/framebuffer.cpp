@@ -1,9 +1,9 @@
 #include <limine.h>
 
-#include "framebuffer.h"
-#include "../kernel/font.h"
+#include "kernel/gfx/framebuffer.h"
+#include "kernel/gfx/font.h"
 #include "kernel/io.h"
-#include "kernel/vmm.h"
+#include "kernel/core/vmm.h"
 
 // Defined in main.cpp — global (NOT in this namespace!)
 extern volatile struct limine_hhdm_request hhdm_request;
@@ -15,20 +15,6 @@ volatile struct limine_framebuffer_request framebuffer_request = {
 };
 
 namespace Framebuffer {
-
-    // Forward declare screen_print so `kprint` can call it.
-    void screen_print(const char* str);
-
-    extern "C" void kprint(const char* str) {
-        // 1. Print to Host Terminal (Serial)
-        // We recreate the serial logic here briefly or call a helper
-        for (int i = 0; str[i] != '\0'; i++) {
-            outb(0x3f8, str[i]); 
-        }
-
-        // 2. Print to QEMU Window (Screen)
-        screen_print(str);
-    }
 
     // Cursor position
     static int cursor_x = 0;

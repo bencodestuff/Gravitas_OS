@@ -1,14 +1,14 @@
-#include "compositor.h"
-#include "mouse.h"
-#include "sched.h"
-#include "pmm.h"
-#include "vmm.h"
-#include "heap.h"
-#include "../drivers/cursor.h"
+#include "kernel/gfx/compositor.h"
+#include "kernel/klib/klib.h"
+#include "kernel/dev/mouse.h"
+#include "kernel/core/sched.h"
+#include "kernel/core/pmm.h"
+#include "kernel/core/vmm.h"
+#include "kernel/core/heap.h"
+#include "kernel/gfx/cursor.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile struct limine_hhdm_request hhdm_request;
-extern "C" void kprint(const char* str);
 
 // --- Basic compositor ---
 // Z-order = creation order (later surfaces draw on top). Move-to-front

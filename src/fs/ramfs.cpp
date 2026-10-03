@@ -1,6 +1,6 @@
-#include "ramfs.h"
-#include "vfs.h"
-#include "../kernel/heap.h"
+#include "fs/ramfs.h"
+#include "fs/vfs.h"
+#include "kernel/core/heap.h"
 
 extern "C" void kprint(const char* str);
 

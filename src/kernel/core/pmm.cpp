@@ -1,7 +1,7 @@
-#include "pmm.h"
+#include "kernel/core/pmm.h"
+#include "kernel/klib/klib.h"
 
 // Allow this file to use the serial printer from main.cpp
-extern "C" void kprint(const char* str);
 
 extern volatile struct limine_hhdm_request hhdm_request;
 
