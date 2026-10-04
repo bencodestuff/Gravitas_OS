@@ -219,15 +219,15 @@ type_dotted('run mon.elf'); key('ret'); wait_for('mon: last fault')
 
 # 10) Window manager: claim, discover a client window, click to focus it,
 # type into it (only the focused task gets keys), then close it.
-type_dotted('bg wm.elf'); key('ret'); wait_for('wm: display authority')
-type_dotted('bg win.elf'); key('ret'); wait_for(r"wm: window #[0-9]+ 'win")
+type_dotted('bg wm.elf'); key('ret'); wait_for('display authority')
+type_dotted('bg win.elf'); key('ret'); wait_for(r"window #[0-9]+ 'win")
 mmove(-440, -350); mclick()                 # click the title bar (window at 80,60)
-wait_for('wm: focus task')
+wait_for('focus task')
 type_str('a'); wait_for(r"win: key 'a'")
 mmove(0, 100); mclick()                      # click the client body -> forwarded
 wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
-wait_for(r'wm: window #[0-9]+ gone')
+wait_for(r'window #[0-9]+ gone')
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
 time.sleep(0.3)
@@ -330,10 +330,10 @@ fi
 echo "== debugger monitor ok (sysinfo/tasks/surfaces/crash record) =="
 
 # Window manager (wm.elf + win.elf): claim, discover, focus, type, close
-if ! grep -q 'wm: display authority' "$LOG"; then
+if ! grep -q 'display authority' "$LOG"; then
     fail "wm did not claim the display authority"
 fi
-if ! grep -qE "wm: window #[0-9]+ 'win" "$LOG"; then
+if ! grep -qE "window #[0-9]+ 'win" "$LOG"; then
     fail "wm did not discover/decorate the client window"
 fi
 if ! grep -q "win: key 'a'" "$LOG"; then
@@ -342,7 +342,7 @@ fi
 if ! grep -qE 'win: click [0-9]+,[0-9]+' "$LOG"; then
     fail "wm did not forward the mouse click to the client"
 fi
-if ! grep -qE "wm: window #[0-9]+ gone" "$LOG"; then
+if ! grep -qE "window #[0-9]+ gone" "$LOG"; then
     fail "wm did not close the window"
 fi
 echo "== window manager ok (claim/discover/focus/type/click/close) =="

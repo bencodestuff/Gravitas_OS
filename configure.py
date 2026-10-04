@@ -41,6 +41,9 @@ USER_CFLAGS = [
     "-Wall", "-Wextra",
     "-Isrc/libc/include",
     "-g",
+    # One function/data item per section, so the link can drop everything a
+    # program does not use (Gravity and libc pieces it never calls).
+    "-ffunction-sections", "-fdata-sections",
 ]
 
 # libc C sources compile as C11. libm files get SSE enabled (they return
@@ -130,7 +133,7 @@ def main():
         user_link_flags = " ".join([
             "-nostdlib", "-static", "-Wl,--build-id=none",
             "-Wl,-Ttext=$base", "-Wl,-z,max-page-size=0x1000",
-            "-Wl,-e,_start",
+            "-Wl,-e,_start", "-Wl,--gc-sections",
         ])
         ninja.write(f"rule userelf\n")
         ninja.write(f"  command = {COMPILER} {' '.join(USER_CFLAGS + ['-std=c++20', '-fno-rtti', '-fno-exceptions'])} {user_link_flags} $in -o $out\n")
