@@ -74,6 +74,22 @@ namespace Sched {
     void set_event_input(bool on);
     bool task_event_input(int task_id);
 
+    // --- Console endpoint (per-task stdio, M12) ---
+    // A task may bind another task's console to itself: the bound task's
+    // PUTC bytes land in the owner's out ring, and the owner injects input
+    // into the bound task's GETC ring. This is how a userland terminal
+    // hosts a real shell without the kernel knowing what a terminal is.
+    // The default owner is -1 (the kernel console), and children inherit
+    // their parent's owner.
+    int  console_owner_of_current();             // -1 = kernel console
+    bool console_attach(int task_id);            // become its owner
+    bool console_detach(int task_id);            // caller must be the owner
+    int  console_read(char* buf, int max);       // owner: drain the out ring
+    int  console_write(int task_id, const char* buf, int n); // owner -> in ring
+    int  console_ring_getc();                    // owned GETC: one byte, or -1
+    void console_emit(char c);                   // PUTC: route or kprint
+    void console_owner_gone(int owner_id);       // detach for a dying owner
+
     // Put the current task to sleep until task 'child_id' has exited.
     void block_current(int child_id);
 

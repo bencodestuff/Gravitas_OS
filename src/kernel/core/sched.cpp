@@ -15,6 +15,7 @@
 #include "kernel/gfx/compositor.h"
 #include "fs/vfs.h"
 #include "kernel/core/ipc.h"
+#include "kernel/core/input.h"
 
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
                                void* old_fxsave, void* new_fxsave);
@@ -71,6 +72,10 @@ namespace Sched {
         current_task->waiting_on = -1;
         current_task->getc_waiting = false;
         current_task->event_input = false;
+        current_task->console_owner = -1;
+        current_task->con_in_head = current_task->con_in_tail = 0;
+        current_task->con_out_head = current_task->con_out_tail = 0;
+        current_task->con_notified = false;
         current_task->user_rip = 0;
         current_task->user_rsp = 0;
         current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
@@ -254,6 +259,149 @@ namespace Sched {
         return false;
     }
 
+    // --- Console endpoint (M12) ---
+    //
+    // A bound task's PUTC bytes go to its owner's out ring; the owner's
+    // CONSOLE_WRITE bytes go to the bound task's in ring (its GETC). Both
+    // sides touch the rings from syscall context, so every mutation is
+    // guarded with cli (save/restore, not a bare sti — GETC holds IF off
+    // across its loop).
+
+    static inline uint64_t irq_save() {
+        uint64_t f;
+        asm volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
+        return f;
+    }
+    static inline void irq_restore(uint64_t f) {
+        if (f & (1ull << 9)) asm volatile("sti"); else asm volatile("cli");
+    }
+
+    static Task* find_task(int id) {
+        if (ready_queue == nullptr) return nullptr;
+        Task* t = ready_queue;
+        do {
+            if (t->id == id) return t;
+            t = t->next;
+        } while (t != ready_queue);
+        return nullptr;
+    }
+
+    int console_owner_of_current() {
+        return current_task ? current_task->console_owner : -1;
+    }
+
+    bool console_attach(int task_id) {
+        if (task_id <= 0 || task_id == current_task->id) return false;
+        Task* t = find_task(task_id);
+        if (t == nullptr || t->console_owner != -1) return false;
+        t->console_owner = current_task->id;
+        return true;
+    }
+
+    bool console_detach(int task_id) {
+        Task* t = find_task(task_id);
+        if (t == nullptr || t->console_owner != current_task->id) return false;
+        t->console_owner = -1;
+        return true;
+    }
+
+    void console_owner_gone(int owner_id) {
+        if (ready_queue == nullptr) return;
+        Task* t = ready_queue;
+        do {
+            if (t->console_owner == owner_id) t->console_owner = -1;
+            t = t->next;
+        } while (t != ready_queue);
+    }
+
+    // One coalesced wakeup so a terminal blocked in RECV learns output
+    // arrived. The message carries no payload: the byte stream lives in the
+    // ring, this is only the nudge (and one at a time — see con_notified).
+    static void console_notify(Task* owner) {
+        if (owner->con_notified) return;
+        Ipc::Msg m;
+        m.from = (uint64_t)-1;
+        m.type = Input::EV_CONSOLE_OUT;
+        m.a = 0;
+        m.b = 0;
+        if (Ipc::send(owner->id, m) == 0) owner->con_notified = true;
+    }
+
+    static void console_out_push(Task* owner, char c) {
+        int next = (owner->con_out_head + 1) % CONSOLE_RING;
+        if (next == owner->con_out_tail) return; // full: drop (a full tty)
+        owner->con_out[owner->con_out_head] = c;
+        owner->con_out_head = next;
+        console_notify(owner);
+    }
+
+    void console_emit(char c) {
+        int owner_id = current_task->console_owner;
+        if (owner_id == -1) {
+            char s[2] = { c, 0 };
+            kprint(s);
+            return;
+        }
+        uint64_t f = irq_save();
+        Task* owner = find_task(owner_id);
+        if (owner != nullptr) {
+            console_out_push(owner, c);
+            irq_restore(f);
+            return;
+        }
+        current_task->console_owner = -1; // owner died: fall back to kprint
+        irq_restore(f);
+        char s[2] = { c, 0 };
+        kprint(s);
+    }
+
+    int console_read(char* buf, int max) {
+        if (buf == nullptr || max <= 0) return 0;
+        Task* me = current_task;
+        int n = 0;
+        uint64_t f = irq_save();
+        while (n < max && me->con_out_tail != me->con_out_head) {
+            buf[n++] = me->con_out[me->con_out_tail];
+            me->con_out_tail = (me->con_out_tail + 1) % CONSOLE_RING;
+        }
+        me->con_notified = false; // the queued wakeup is spent
+        bool more = (me->con_out_tail != me->con_out_head);
+        if (more) console_notify(me); // keep one armed while data remains
+        irq_restore(f);
+        return n;
+    }
+
+    int console_write(int task_id, const char* buf, int n) {
+        if (buf == nullptr || n <= 0) return 0;
+        Task* t = find_task(task_id);
+        if (t == nullptr || t->console_owner != current_task->id) return -1;
+        int written = 0;
+        uint64_t f = irq_save();
+        for (int i = 0; i < n; i++) {
+            int next = (t->con_in_head + 1) % CONSOLE_RING;
+            if (next == t->con_in_tail) break; // full: stop
+            t->con_in[t->con_in_head] = buf[i];
+            t->con_in_head = next;
+            written++;
+        }
+        if (written > 0 && t->getc_waiting) t->state = READY;
+        irq_restore(f);
+        return written;
+    }
+
+    int console_ring_getc() {
+        Task* me = current_task;
+        uint64_t f = irq_save();
+        if (me->con_in_tail == me->con_in_head) {
+            irq_restore(f);
+            return -1;
+        }
+        int c = (unsigned char)me->con_in[me->con_in_tail];
+        me->con_in_tail = (me->con_in_tail + 1) % CONSOLE_RING;
+        irq_restore(f);
+        return c;
+    }
+
     void switch_to_task_cr3(Task* task) {
         if (task->cr3 != VMM::current_pml4()) {
             VMM::switch_pml4(task->cr3);
@@ -319,6 +467,7 @@ namespace Sched {
             Compositor::surfaces_for_task_gone(zombie->id);
             Compositor::authority_gone(zombie->id);
             input_focus_gone(zombie->id);
+            console_owner_gone(zombie->id);
             Ipc::task_gone(zombie->id);
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);

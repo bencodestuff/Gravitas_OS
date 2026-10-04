@@ -56,6 +56,10 @@ surface is a "window", and what is drawn are all userland policy.
 | 32 | `WM_CLAIM` | — | 0 if the caller is/becomes the display authority, else −1 |
 | 33 | `INPUT_FOCUS` | `task_id` | 0 or −1 (authority only); −1 clears focus |
 | 34 | `INPUT_MODE` | `events` | 0 (opt into message-delivered input) |
+| 35 | `CONSOLE_ATTACH` | `task_id` | 0 or −1 (become its console owner) |
+| 36 | `CONSOLE_DETACH` | `task_id` | 0 or −1 (owner only) |
+| 37 | `CONSOLE_READ` | `buf, max` | bytes drained (owner; non-blocking) |
+| 38 | `CONSOLE_WRITE` | `task_id, buf, n` | bytes accepted, or −1 (owner only) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).
@@ -212,6 +216,30 @@ The keyboard IRQ delivers keys to the **focused** event-mode task. Mouse
 events are produced by the WM (it alone has the pointer): it hit-tests the
 window under the cursor and sends `GRV_EV_MOUSE` with coordinates relative
 to that window's surface.
+
+## Console endpoint (per-task stdio)
+
+How a userland terminal hosts a real program without the kernel knowing
+what a terminal is. A task may bind another task's console to itself; the
+bound task's `PUTC` bytes then land in the owner's ring, and the owner
+injects the bound task's input with `CONSOLE_WRITE`.
+
+- **`CONSOLE_ATTACH` (35)** makes the caller the **console owner** of
+  `task_id` (a live task, not the caller, not already owned). Children
+  **inherit** the owner, so a hosted shell's own children report to the
+  same terminal. Returns 0 or −1.
+- **`CONSOLE_READ` (37)**, owner-only, drains pending output into `buf`.
+  Non-blocking; 0 means nothing is pending. When output arrives the kernel
+  posts a coalesced `GRV_EVT_CONSOLE_OUT` message (no payload) to the
+  owner's mailbox, so a terminal blocked in `RECV` wakes to drain it.
+- **`CONSOLE_WRITE` (38)**, owner-only, injects bytes into `task_id`'s
+  `GETC` ring (as if typed). Returns the bytes accepted (a full ring takes
+  fewer) or −1 if the caller is not the owner.
+- **`CONSOLE_DETACH` (36)** unbinds (owner only). The binding also clears
+  itself if the owner dies; a ring that fills simply drops (a full tty).
+
+With no owner (the default, `-1`) `PUTC`/`GETC` keep using the kernel
+console exactly as before, so nothing changes for tasks that never opt in.
 
 ## Related kernel debug keys
 

@@ -187,24 +187,31 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         uint64_t syscall_id = regs->rax;
         uint64_t arg1 = regs->rdi;
 
-        if (syscall_id == 0) { // WRITE (raw char to screen + serial)
-             char c = (char)arg1;
-             char str[2] = {c, 0};
-             kprint(str);
+        if (syscall_id == 0) { // PUTC: one byte to our console
+             // Routed to the console owner if one is bound (a terminal),
+             // else the kernel console. See Sched::console_emit.
+             Sched::console_emit((char)arg1);
         }
         else if (syscall_id == 1) { // READ (Keyboard) — blocks until a key
              // Interrupts off around the check-and-block so a key arriving
-             // in between can't be missed (the IRQ will wake us instead).
+             // in between can't be missed (the IRQ/write will wake us).
+             // The owner is re-read each pass: a task that gets bound to a
+             // terminal while already blocked switches to its console ring.
              asm volatile("cli");
-             char c = 0;
+             int b = -1;
              while (true) {
-                 c = Keyboard::get_queued_key();
-                 if (c != 0) break;
+                 if (Sched::console_owner_of_current() != -1) {
+                     b = Sched::console_ring_getc();
+                     if (b >= 0) break;
+                 } else {
+                     char kc = Keyboard::get_queued_key();
+                     if (kc != 0) { b = (int)kc; break; }
+                 }
                  Sched::block_on_keyboard();
-                 Sched::yield(); // returns when the keyboard IRQ wakes us
+                 Sched::yield(); // returns when a key/write wakes us
              }
              Sched::clear_keyboard_waiting();
-             regs->rax = (uint64_t)c;
+             regs->rax = (uint64_t)b;
         }
         /* Syscall 2 (list tarfs) and 3 (read by name) RETIRED — superseded by
    the VFS: open/read/close fds (7-10) and readdir (11). The numbers are
@@ -343,6 +350,20 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 34) { // INPUT MODE: rdi != 0 -> events, else GETC
              Sched::set_event_input(regs->rdi != 0);
              regs->rax = 0;
+        }
+        else if (syscall_id == 35) { // CONSOLE ATTACH: rdi = task id -> 0 / -1
+             regs->rax = Sched::console_attach((int)regs->rdi) ? 0 : (uint64_t)-1;
+        }
+        else if (syscall_id == 36) { // CONSOLE DETACH: rdi = task id -> 0 / -1
+             regs->rax = Sched::console_detach((int)regs->rdi) ? 0 : (uint64_t)-1;
+        }
+        else if (syscall_id == 37) { // CONSOLE READ: rdi = buf, rsi = max -> count
+             regs->rax = (uint64_t)(long)Sched::console_read(
+                 (char*)regs->rdi, (int)regs->rsi);
+        }
+        else if (syscall_id == 38) { // CONSOLE WRITE: rdi = id, rsi = buf, rdx = n
+             regs->rax = (uint64_t)(long)Sched::console_write(
+                 (int)regs->rdi, (const char*)regs->rsi, (int)regs->rdx);
         }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)

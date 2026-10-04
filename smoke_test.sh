@@ -17,6 +17,8 @@
 #   * M7 debugger: introspection syscalls + recorded crash (mon.elf)
 #   * M9 window manager: display authority, decisions, focus + close
 #     (wm.elf + win.elf, driven with injected mouse events)
+#   * M12 console endpoint: a task binds a child's console, sends it a line
+#     and captures the reply (consoletest.elf + echoprog.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -220,6 +222,10 @@ type_dotted('run proctest.elf'); key('ret'); wait_for('all process-control check
 # 7) IPC contract: msgtest spawns msgecho.elf and round-trips messages
 type_dotted('run msgtest.elf'); key('ret'); wait_for('all ipc checks pass')
 
+# 7b) Console endpoint: consoletest binds a child's console, sends it a line
+# and captures the reply — both stdio directions through the kernel.
+type_dotted('run consoletest.elf'); key('ret'); wait_for('consoletest: PASS')
+
 # 8) Surface contract: surfacetest exercises the whole surface lifecycle
 type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 
@@ -300,6 +306,16 @@ if ! grep -q 'all ipc checks pass' "$LOG"; then
     fail "msgtest failed its ipc contract (M3 broken?)"
 fi
 echo "== ipc contract ok (send/recv/fifo/death) =="
+
+# Console endpoint (consoletest.elf + echoprog.elf): the child's output must
+# be captured by its owner, NOT leak to the kernel console.
+if ! grep -q 'consoletest: PASS' "$LOG"; then
+    fail "consoletest failed the console endpoint contract (M12 broken?)"
+fi
+if grep -q 'echo:ping' "$LOG"; then
+    fail "hosted program output leaked to the kernel console"
+fi
+echo "== console endpoint ok (attach/write/read round-trip) =="
 
 # Surface contract (surfacetest.elf + surfhelper.elf)
 if ! grep -q 'surface contract ok' "$LOG"; then

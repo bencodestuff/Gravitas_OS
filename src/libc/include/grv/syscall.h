@@ -67,11 +67,19 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_WM_CLAIM       32
 #define GRV_SYSCALL_INPUT_FOCUS    33
 #define GRV_SYSCALL_INPUT_MODE     34
+#define GRV_SYSCALL_CONSOLE_ATTACH 35
+#define GRV_SYSCALL_CONSOLE_DETACH 36
+#define GRV_SYSCALL_CONSOLE_READ   37
+#define GRV_SYSCALL_CONSOLE_WRITE  38
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. */
 #define GRV_EVT_SURFACE_ADDED   1
 #define GRV_EVT_SURFACE_REMOVED 2
+
+/* Kernel post to a console owner when the tasks it hosts have output
+   waiting. Mirrors Input::EV_CONSOLE_OUT; the message carries no payload. */
+#define GRV_EVT_CONSOLE_OUT     3
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -343,6 +351,32 @@ static inline int grv_wm_claim(void) {
    receives keys; -1 clears focus (back to "any waiter"). Returns 0 or -1. */
 static inline int grv_input_focus(long task_id) {
     return (int)syscall1(GRV_SYSCALL_INPUT_FOCUS, task_id);
+}
+
+/* --- Console endpoint (per-task stdio) --- */
+/* Bind another task's console to this task: its output arrives in our
+   console ring, and we inject its input with grv_console_write(). Children
+   inherit the binding. This is how a userland terminal hosts a shell.
+   attach/detach return 0 or -1. */
+static inline int grv_console_attach(long task_id) {
+    return (int)syscall1(GRV_SYSCALL_CONSOLE_ATTACH, task_id);
+}
+
+static inline int grv_console_detach(long task_id) {
+    return (int)syscall1(GRV_SYSCALL_CONSOLE_DETACH, task_id);
+}
+
+/* Owner: drain pending output from the hosted tasks into buf. Non-blocking;
+   returns the byte count (0 when nothing is pending). */
+static inline long grv_console_read(char* buf, unsigned long max) {
+    return syscall2(GRV_SYSCALL_CONSOLE_READ, (long)buf, (long)max);
+}
+
+/* Owner: inject input bytes into task 'task_id' (as if typed). Returns the
+   bytes accepted (the ring may be full), or -1 if we are not its owner. */
+static inline long grv_console_write(long task_id, const char* buf,
+                                     unsigned long n) {
+    return syscall3(GRV_SYSCALL_CONSOLE_WRITE, task_id, (long)buf, (long)n);
 }
 
 __END_DECLS

@@ -15,6 +15,12 @@ namespace Sched {
         SLEEPING
     };
 
+    // Per-task console rings: how a task's stdio is moved to another task
+    // (the terminal). Bytes, not messages — a byte stream needs no framing,
+    // and a full ring simply drops (a tty with a full buffer), which is
+    // gentler than failing the writer.
+    constexpr int CONSOLE_RING = 256;
+
     struct Task {
         uint64_t rsp;
         Task* next;
@@ -49,6 +55,19 @@ namespace Sched {
                                 // if the task died from an exception
         uint64_t exit_code_inbox;   // exit code of the task this task WAITED
                                     // on (written by exit_current at kill time)
+
+        // --- Console endpoint (M12) ---
+        // When console_owner != -1 this task's PUTC is delivered to that
+        // task's out ring, and its GETC drains its own in ring (which the
+        // owner fills). -1 = the kernel console, the default. Children
+        // inherit the owner, so a hosted shell's children report to the
+        // same terminal.
+        int console_owner;
+        char con_in[CONSOLE_RING];   // bytes this task's GETC drains
+        int  con_in_head, con_in_tail;
+        char con_out[CONSOLE_RING];  // bytes this task's children wrote
+        int  con_out_head, con_out_tail;
+        bool con_notified;           // a console-out wakeup is already queued
     };
 
     // Shared scheduler state. Storage lives in sched.cpp; proc.cpp
