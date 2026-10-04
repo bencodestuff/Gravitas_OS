@@ -1,0 +1,8 @@
+# The launcher menu (read by the WM at startup). One app per line:
+#   <program in /bin>   <label shown in the menu>
+# Add a line (and the program) and it appears in the Apps menu — no WM
+# change needed. Lines starting with '#' are ignored.
+term.elf        Terminal
+files.elf       Files
+imageview.elf   Image viewer
+win.elf         Demo window

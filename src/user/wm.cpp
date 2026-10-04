@@ -254,14 +254,61 @@ static void full_redraw() { redraw(0, 0, overlay_w, overlay_h); }
 // Layout is computed once into tbtns so drawing and hit-testing cannot
 // drift apart.
 
-struct AppItem { const char* label; const char* prog; };
-static const AppItem apps[] = {
-    { "Terminal",    "term.elf"      },
-    { "Files",       "files.elf"     },
-    { "Images",      "imageview.elf" },
-    { "Demo window", "win.elf"       },
-};
-static const int napps = (int)(sizeof(apps) / sizeof(apps[0]));
+// The launcher lists programs from /apps ("prog.elf  Label" per line), so a
+// new app needs no WM change — just an entry and its ELF in the tar. Falls
+// back to a couple of defaults if /apps is missing.
+#define MAXAPPS 32
+struct AppItem { char label[24]; char prog[32]; };
+static AppItem apps[MAXAPPS];
+static int napps = 0;
+
+static void add_app(const char* prog, const char* label) {
+    if (napps >= MAXAPPS) return;
+    int i = 0;
+    while (label[i] && i < 23) { apps[napps].label[i] = label[i]; i++; }
+    apps[napps].label[i] = '\0';
+    i = 0;
+    while (prog[i] && i < 31) { apps[napps].prog[i] = prog[i]; i++; }
+    apps[napps].prog[i] = '\0';
+    napps++;
+}
+
+static void load_apps(void) {
+    napps = 0;
+    static char buf[1024];
+    int fd = grv_open("/apps", GRV_O_RDONLY);
+    long n = -1;
+    if (fd >= 0) { n = grv_read_fd(fd, buf, sizeof(buf) - 1); grv_close(fd); }
+
+    if (n > 0) {
+        buf[n] = '\0';
+        char* p = buf;
+        while (*p && napps < MAXAPPS) {
+            char* nl = p;
+            while (*nl && *nl != '\n') nl++;
+            char* q = p;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q && *q != '#') {
+                char prog[32], label[24];
+                int pi = 0;
+                while (*q && *q != ' ' && *q != '\t' && pi < 31) prog[pi++] = *q++;
+                prog[pi] = '\0';
+                while (*q == ' ' || *q == '\t') q++;
+                int li = 0;
+                while (*q && *q != '\n' && li < 23) label[li++] = *q++;
+                while (li > 0 && (label[li - 1] == ' ' || label[li - 1] == '\t')) li--;
+                label[li] = '\0';
+                if (pi && li) add_app(prog, label);
+            }
+            p = *nl ? nl + 1 : nl;
+        }
+    }
+
+    if (napps == 0) { // no manifest: a minimal fallback
+        add_app("term.elf", "Terminal");
+        add_app("files.elf", "Files");
+    }
+}
 
 static const int MENU_W      = 150;
 static const int MENU_ITEM_H = 22;
@@ -668,6 +715,8 @@ int main(int argc, char** argv) {
     console_task = find_task_by_name("shell");
     grv_input_focus(console_task);
     grv_wm_hotkey(GRV_MOD_ALT); // Alt chords (Alt+Tab) come to us
+
+    load_apps(); // the launcher menu's contents (from /apps)
 
     font_ok = grv_font_load(&font, "/fonts/bizcat.psf");
 
