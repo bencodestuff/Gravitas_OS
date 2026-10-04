@@ -72,6 +72,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_CONSOLE_READ   37
 #define GRV_SYSCALL_CONSOLE_WRITE  38
 #define GRV_SYSCALL_WM_HOTKEY      39
+#define GRV_SYSCALL_PUTS           40
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -93,6 +94,13 @@ static inline long syscall3(long n, long a, long b, long c) {
 
 static inline void grv_putc(char c) {
     syscall1(GRV_SYSCALL_PUTC, (unsigned char)c);
+}
+
+/* Write a NUL-terminated string to the caller's console in one call. The
+   kernel emits it atomically, so a task switch cannot interleave another
+   task's output into the middle of it — printf uses this. */
+static inline void grv_puts(const char* s) {
+    syscall1(GRV_SYSCALL_PUTS, (long)s);
 }
 
 static inline char grv_getc(void) {

@@ -61,6 +61,7 @@ surface is a "window", and what is drawn are all userland policy.
 | 37 | `CONSOLE_READ` | `buf, max` | bytes drained (owner; non-blocking) |
 | 38 | `CONSOLE_WRITE` | `task_id, buf, n` | bytes accepted, or −1 (owner only) |
 | 39 | `WM_HOTKEY` | `modifier mask` | 0 or −1 (`INPUT_FOCUS`-style authority check) |
+| 40 | `PUTS` | `str` | length written (whole string emitted atomically) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).

@@ -355,6 +355,27 @@ namespace Sched {
         kprint(s);
     }
 
+    // A whole string under the same routing: into the owner's ring if bound,
+    // else one atomic kprint. 's' must be NUL-terminated (the PUTS syscall
+    // stages it in kernel memory), 'n' its length.
+    void console_emit_str(const char* s, int n) {
+        int owner_id = current_task->console_owner;
+        if (owner_id == -1) {
+            kprint(s);
+            return;
+        }
+        uint64_t f = irq_save();
+        Task* owner = find_task(owner_id);
+        if (owner != nullptr) {
+            for (int i = 0; i < n; i++) console_out_push(owner, s[i]);
+            irq_restore(f);
+            return;
+        }
+        current_task->console_owner = -1;
+        irq_restore(f);
+        kprint(s);
+    }
+
     int console_read(char* buf, int max) {
         if (buf == nullptr || max <= 0) return 0;
         Task* me = current_task;

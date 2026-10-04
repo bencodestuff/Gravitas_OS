@@ -3,13 +3,33 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <grv/syscall.h>
 
-static bool print(const char* data, size_t length) {
-	const unsigned char* bytes = (const unsigned char*) data;
-	for (size_t i = 0; i < length; i++)
-		if (putchar(bytes[i]) == EOF)
-			return false;
-	return true;
+// printf accumulates into a chunk buffer and emits it with grv_puts(), which
+// the kernel prints atomically — so a task switch cannot interleave another
+// task's characters into the middle of our line.
+
+#define PBUF 256
+
+struct pout {
+	char b[PBUF];
+	int n;
+};
+
+static void pflush(struct pout* o) {
+	if (o->n == 0)
+		return;
+	o->b[o->n] = '\0';
+	grv_puts(o->b);
+	o->n = 0;
+}
+
+static void pwrite(struct pout* o, const char* data, size_t length) {
+	for (size_t i = 0; i < length; i++) {
+		if (o->n == PBUF - 1)
+			pflush(o);
+		o->b[o->n++] = data[i];
+	}
 }
 
 int printf(const char* restrict format, ...) {
@@ -17,6 +37,8 @@ int printf(const char* restrict format, ...) {
 	va_start(parameters, format);
 
 	int written = 0;
+	struct pout o;
+	o.n = 0;
 
 	while (*format != '\0') {
 		size_t maxrem = INT_MAX - written;
@@ -31,8 +53,7 @@ int printf(const char* restrict format, ...) {
 				// TODO: Set errno to EOVERFLOW.
 				return -1;
 			}
-			if (!print(format, amount))
-				return -1;
+			pwrite(&o, format, amount);
 			format += amount;
 			written += amount;
 			continue;
@@ -54,8 +75,7 @@ int printf(const char* restrict format, ...) {
 				// TODO: Set errno to EOVERFLOW.
 				return -1;
 			}
-			if (!print(&c, sizeof(c)))
-				return -1;
+			pwrite(&o, &c, sizeof(c));
 			written++;
 		} else if (*format == 's') {
 			format++;
@@ -65,8 +85,7 @@ int printf(const char* restrict format, ...) {
 				// TODO: Set errno to EOVERFLOW.
 				return -1;
 			}
-			if (!print(str, len))
-				return -1;
+			pwrite(&o, str, len);
 			written += len;
 		} else if (*format == 'd' || *format == 'i' || *format == 'u') {
 			format++;
@@ -99,10 +118,9 @@ int printf(const char* restrict format, ...) {
 			}
 
 			const char* str = &numbuf[pos];
-			size_t len = 24 - (size_t)pos;
+			size_t len = (size_t)(23 - pos); // digits only (numbuf[23] = NUL)
 			if (maxrem < len) return -1;
-			if (!print(str, len))
-				return -1;
+			pwrite(&o, str, len);
 			written += len;
 		} else if (*format == 'x') {
 			format++;
@@ -121,10 +139,9 @@ int printf(const char* restrict format, ...) {
 			if (pos == 16) numbuf[--pos] = '0';
 
 			const char* str = &numbuf[pos];
-			size_t len = 17 - (size_t)pos;
+			size_t len = (size_t)(16 - pos); // digits only (numbuf[16] = NUL)
 			if (maxrem < len) return -1;
-			if (!print(str, len))
-				return -1;
+			pwrite(&o, str, len);
 			written += len;
 		} else {
 			format = format_begun_at;
@@ -133,13 +150,13 @@ int printf(const char* restrict format, ...) {
 				// TODO: Set errno to EOVERFLOW.
 				return -1;
 			}
-			if (!print(format, len))
-				return -1;
+			pwrite(&o, format, len);
 			written += len;
 			format += len;
 		}
 	}
 
+	pflush(&o);
 	va_end(parameters);
 	return written;
 }

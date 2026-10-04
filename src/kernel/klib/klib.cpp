@@ -17,11 +17,17 @@ namespace Compositor {
 }
 
 extern "C" void kprint(const char* str) {
+    // Atomic: with interrupts off no other task can inject its output
+    // between our characters (kprint is also called from IRQ/fault context,
+    // so save and restore the flag rather than a bare sti).
+    uint64_t flags;
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
     for (int i = 0; str[i] != '\0'; i++) {
         outb(0x3f8, str[i]);    // host terminal (serial)
     }
     Console::print(str);        // kernel text screen (cells)
     Compositor::present();      // repaint whatever changed
+    if (flags & (1ull << 9)) asm volatile("sti");
 }
 
 extern "C" void kprint_uint(uint64_t value) {

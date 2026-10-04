@@ -88,6 +88,7 @@ namespace Sched {
     int  console_write(int task_id, const char* buf, int n); // owner -> in ring
     int  console_ring_getc();                    // owned GETC: one byte, or -1
     void console_emit(char c);                   // PUTC: route or kprint
+    void console_emit_str(const char* s, int n); // a whole string, same rules
     void console_owner_gone(int owner_id);       // detach for a dying owner
 
     // Put the current task to sleep until task 'child_id' has exited.
