@@ -376,13 +376,13 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              }
         }
         else if (syscall_id == 40) { // PUTS: print a NUL-terminated string atomically
-             // Stage the string in kernel memory (bounded) so the whole line
-             // is emitted in one atomic kprint — no cross-task interleaving.
+             // Stage the string in kernel memory so the whole line is emitted
+             // in one atomic kprint — no cross-task interleaving. The cap
+             // matches printf's flush chunk (256).
              const char* us = (const char*)regs->rdi;
-             char buf[512];
+             char buf[256];
              int i = 0;
-             if (us != nullptr)
-                 while (i < 511 && us[i] != '\0') { buf[i] = us[i]; i++; }
+             while (us != nullptr && i < 255 && us[i] != '\0') { buf[i] = us[i]; i++; }
              buf[i] = '\0';
              Sched::console_emit_str(buf, i);
              regs->rax = (uint64_t)i;

@@ -5,18 +5,20 @@
 /* --- Simple first-fit allocator over the program break ---
    Layout: [chunk header][usable bytes][chunk header][usable bytes]...
    The break starts at 0x8000000 (128MB, userland VA space) and grows
-   upwards via the brk syscall. Headers are 16 bytes, allocations are
-   16-byte aligned. Free merges with the next chunk only (backward merge
-   is omitted for now — this is a foundation, not a production malloc). */
+   upwards via the brk syscall. The header is exactly 16 bytes and
+   allocations are 16-byte aligned, so a payload never runs into the next
+   header. Free merges with the next chunk only (backward merge is omitted
+   for now — this is a foundation, not a production malloc). */
 
 typedef struct chunk {
-    size_t size;      // usable bytes in this chunk (not counting header)
-    int    used;
+    size_t size;          // usable bytes (16-aligned); bit 0 = used
     struct chunk* next;
 } chunk_t;
 
-#define CHUNK_HDR_SIZE 16                 // sizeof rounded up to alignment
-#define ALIGN16(x) (((x) + 15) & ~(size_t)15)
+#define CHUNK_HDR_SIZE 16                 // == sizeof(chunk_t)
+#define CHUNK_USED     1ul
+#define CHUNK_SIZE(c)  ((c)->size & ~CHUNK_USED)
+#define ALIGN16(x)     (((x) + 15) & ~(size_t)15)
 
 static chunk_t* first_chunk = NULL;
 static void*    current_brk = NULL;
@@ -27,8 +29,8 @@ void* malloc(size_t size) {
 
     // First-fit walk
     for (chunk_t* c = first_chunk; c; c = c->next) {
-        if (!c->used && c->size >= size) {
-            c->used = 1;
+        if (!(c->size & CHUNK_USED) && CHUNK_SIZE(c) >= size) {
+            c->size |= CHUNK_USED;
             return (void*)(c + 1);
         }
     }
@@ -48,8 +50,7 @@ void* malloc(size_t size) {
     // using it as the chunk base would place the payload past the mapped
     // region)
     chunk_t* c = (chunk_t*)current_brk;
-    c->size = size;
-    c->used = 1;
+    c->size = size | CHUNK_USED;
     c->next = NULL;
 
     if (first_chunk == NULL) {
@@ -67,6 +68,6 @@ void* malloc(size_t size) {
 void free(void* ptr) {
     if (ptr == NULL) return;
     chunk_t* c = (chunk_t*)ptr - 1;
-    c->used = 0;
+    c->size &= ~CHUNK_USED;
     // TODO: merge adjacent free chunks
 }

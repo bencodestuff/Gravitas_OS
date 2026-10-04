@@ -152,7 +152,8 @@ namespace Sched {
         new_task->con_notified = false;
 
         // 2. Allocate a Stack for this thread (4KB)
-        uint64_t* stack_bottom = new uint64_t[512]; // 512 * 8 bytes = 4KB
+        uint64_t* stack_bottom = new uint64_t[4096]; // 32KB: deep syscalls
+                                                     // + nested IRQs live here
         uint64_t* stack_top = stack_bottom + 512;
 
         new_task->kstack_top = (uint64_t)stack_top;
@@ -199,9 +200,11 @@ namespace Sched {
         new_task->cr3 = cr3;
         strcpy(new_task->name, name);
 
-        // Kernel stack (interrupts from ring 3 land here via the TSS)
-        uint64_t* stack_bottom = new uint64_t[512];
-        uint64_t* stack_top = stack_bottom + 512;
+        // Kernel stack (interrupts from ring 3 land here via the TSS). 32KB
+        // so a deep syscall (printf -> PUTS -> kprint -> compositor present)
+        // plus a nested IRQ cannot overrun it.
+        uint64_t* stack_bottom = new uint64_t[4096];
+        uint64_t* stack_top = stack_bottom + 4096;
         new_task->kstack_top = (uint64_t)stack_top;
         new_task->kstack_mem = stack_bottom;
 
