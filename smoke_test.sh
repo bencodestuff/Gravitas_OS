@@ -6,6 +6,7 @@
 #   * keyboard -> shell echo -> command execution (via the QEMU monitor)
 #   * backspace erase (raw hex scancodes: QEMU silently drops `sendkey bspc`)
 #   * bare-name program spawn + VFS read (`cat hello.txt`)
+#   * console cell layer scrolling under load (flood.elf, 150 lines)
 #   * fault contract + stack protector (crash.elf / smash.elf)
 #   * M2 process control: bg spawn (non-blocking), wait, kill (proctest.elf)
 #   * M3 IPC: per-task mailboxes, blocking recv wake, FIFO (msgtest.elf)
@@ -131,6 +132,13 @@ type_str('txt')
 key('ret')
 time.sleep(2)
 
+# 2b) Console scroll: flood prints 150 numbered lines, forcing the cell
+# layer to scroll far past the screen. Regression guard for the console
+# rework (screen scroll + reflow under load).
+type_dotted('run flood.elf')
+key('ret')
+time.sleep(4)
+
 # 3) Fault contract: crash.elf faults -> task dies, OS survives
 type_str('run crash')
 key('ret')
@@ -187,6 +195,12 @@ if ! grep -q 'Hello from the Gravitas tar' "$LOG"; then
     fail "cat hello.txt output missing (spawn/VFS/read broken?)"
 fi
 echo "== cat hello.txt ok =="
+
+# Console scroll (flood.elf): all 150 lines plus the footer made it through
+if ! grep -q 'flood line 150' "$LOG" || ! grep -q 'flood done' "$LOG"; then
+    fail "flood output incomplete (console scroll/reflow broken?)"
+fi
+echo "== console scroll ok (150 lines) =="
 
 # Fault contract: crash.elf must fault loudly and die cleanly — and the
 # shell must come back afterward (assert on output AFTER the kill line)

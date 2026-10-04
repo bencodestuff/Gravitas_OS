@@ -1,9 +1,10 @@
 #include <stdio.h>
 #include <grv/syscall.h>
 
-// flood — prints 150 numbered lines. At 8px per row on a 768px-tall
-// framebuffer (~96 rows), this forces ~55 scroll events. The visual
-// test: the console keeps its last screenful and stays responsive.
+// flood — prints 150 numbered lines, forcing many scroll events on any
+// realistic console (the 8x16 font gives ~50 rows on this framebuffer).
+// The visual test: the console keeps its last screenful and stays
+// responsive; the smoke harness guards that all 150 lines go through.
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
