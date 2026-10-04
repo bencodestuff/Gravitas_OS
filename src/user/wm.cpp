@@ -4,6 +4,7 @@
 #include <grv/text.h>
 #include <grv/input.h>
 #include <grv/wm.h>
+#include <grv/image.h>
 
 // wm — the Gravitas window manager (userland policy).
 //
@@ -220,9 +221,10 @@ static void full_redraw() { redraw(0, 0, overlay_w, overlay_h); }
 
 struct AppItem { const char* label; const char* prog; };
 static const AppItem apps[] = {
-    { "Terminal",    "term.elf"  },
-    { "Files",       "files.elf" },
-    { "Demo window", "win.elf"   },
+    { "Terminal",    "term.elf"      },
+    { "Files",       "files.elf"     },
+    { "Images",      "imageview.elf" },
+    { "Demo window", "win.elf"       },
 };
 static const int napps = (int)(sizeof(apps) / sizeof(apps[0]));
 
@@ -305,81 +307,42 @@ static void launch(const char* prog) {
 }
 
 // --- wallpaper ------------------------------------------------------
-// Load a 24-bit uncompressed BMP and scale it to COVER the screen (crop the
+// Decode a picture (grv_image) and scale it to COVER the screen (crop the
 // overflow) into an opaque full-screen surface at the bottom of the stack.
 
 static int load_wallpaper(const char* path, int sw, int sh) {
-    int fd = grv_open(path, GRV_O_RDONLY);
-    if (fd < 0) return -1;
-
-    unsigned char hdr[64];
-    long got = 0;
-    while (got < 64) {
-        long n = grv_read_fd(fd, hdr + got, 64 - got);
-        if (n <= 0) break;
-        got += n;
-    }
-    if (got < 54 || hdr[0] != 'B' || hdr[1] != 'M') { grv_close(fd); return -1; }
-
-    unsigned long off = (unsigned long)hdr[10] | ((unsigned long)hdr[11] << 8)
-                      | ((unsigned long)hdr[12] << 16) | ((unsigned long)hdr[13] << 24);
-    int iw = (int)(hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24));
-    int ih = (int)(hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24));
-    int bpp = hdr[28] | (hdr[29] << 8);
-    int comp = hdr[30] | (hdr[31] << 8);
-    if (iw <= 0 || ih == 0 || bpp != 24 || comp != 0) { grv_close(fd); return -1; }
-    int topdown = (ih < 0);
-    if (ih < 0) ih = -ih;
-
-    unsigned long stride = (((unsigned long)iw * 3 + 3) & ~3ul);
-    unsigned long total = off + stride * (unsigned long)ih;
-    unsigned char* buf = (unsigned char*)malloc(total);
-    if (!buf) { grv_close(fd); return -1; }
-    for (long i = 0; i < got; i++) buf[i] = hdr[i];
-    unsigned long pos = (unsigned long)got;
-    while (pos < total) {
-        long n = grv_read_fd(fd, buf + pos, total - pos);
-        if (n <= 0) break;
-        pos += (unsigned long)n;
-    }
-    grv_close(fd);
-    if (pos < total) { free(buf); return -1; }
+    struct grv_image img;
+    if (grv_image_load(&img, path) != 0) return -1;
 
     struct grv_surface_info si;
     int sid = grv_surface_create((unsigned long)sw, (unsigned long)sh, &si);
-    if (sid < 0) { free(buf); return -1; }
+    if (sid < 0) { grv_image_free(&img); return -1; }
 
     // Cover: scale by the larger ratio, centre the overflow.
-    unsigned long rx = ((unsigned long)sw << 16) / (unsigned long)iw;
-    unsigned long ry = ((unsigned long)sh << 16) / (unsigned long)ih;
+    unsigned long rx = ((unsigned long)sw << 16) / (unsigned long)img.w;
+    unsigned long ry = ((unsigned long)sh << 16) / (unsigned long)img.h;
     unsigned long scale = rx > ry ? rx : ry;
     if (scale == 0) scale = 1;
-    int offx = (int)((((unsigned long)iw * scale) >> 16) - (unsigned long)sw) / 2;
-    int offy = (int)((((unsigned long)ih * scale) >> 16) - (unsigned long)sh) / 2;
+    int offx = (int)((((unsigned long)img.w * scale) >> 16) - (unsigned long)sw) / 2;
+    int offy = (int)((((unsigned long)img.h * scale) >> 16) - (unsigned long)sh) / 2;
 
     static int colmap[4096], rowmap[4096];
     for (int x = 0; x < sw; x++) {
         int s = (int)(((unsigned long)(x + offx) << 16) / scale);
-        colmap[x] = s < 0 ? 0 : (s >= iw ? iw - 1 : s);
+        colmap[x] = s < 0 ? 0 : (s >= img.w ? img.w - 1 : s);
     }
     for (int y = 0; y < sh; y++) {
         int s = (int)(((unsigned long)(y + offy) << 16) / scale);
-        rowmap[y] = s < 0 ? 0 : (s >= ih ? ih - 1 : s);
+        rowmap[y] = s < 0 ? 0 : (s >= img.h ? img.h - 1 : s);
     }
 
     unsigned int* px = (unsigned int*)si.address;
     for (int y = 0; y < sh; y++) {
-        int sy = rowmap[y];
-        const unsigned char* srow = buf + off
-            + (unsigned long)(topdown ? sy : (ih - 1 - sy)) * stride;
+        const unsigned int* srow = img.px + (unsigned long)rowmap[y] * (unsigned long)img.w;
         unsigned int* drow = px + (unsigned long)y * (unsigned long)sw;
-        for (int x = 0; x < sw; x++) {
-            const unsigned char* p = srow + (unsigned long)colmap[x] * 3;
-            drow[x] = 0xFF000000u | ((unsigned int)p[2] << 16)
-                    | ((unsigned int)p[1] << 8) | (unsigned int)p[0];
-        }
+        for (int x = 0; x < sw; x++) drow[x] = srow[colmap[x]];
     }
-    free(buf);
+    grv_image_free(&img);
     grv_surface_lower(sid); // behind every window
     return sid;
 }

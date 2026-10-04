@@ -23,6 +23,8 @@
 #     and typing (term.elf)
 #   * M13 file browser: a list widget over the VFS, launched from the menu
 #     (files.elf)
+#   * M13 image viewer + image library: decodes a picture and displays it
+#     (imageview.elf, grv_image)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -250,10 +252,10 @@ wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'window #[0-9]+ gone')
 
-# 10b) Launcher menu + Alt+Tab (cursor now ~426,45). Three menu items:
-# Terminal (y~721), Files (~743), Demo (~765).
+# 10b) Launcher menu + Alt+Tab (cursor now ~426,45). Four menu items:
+# Terminal (y~699), Files (~721), Images (~743), Demo (~765).
 mmove(-386, 743); mclick()                   # the "Apps" button (~40,788)
-mmove(0, -67); mclick()                       # the "Terminal" item (~40,721)
+mmove(0, -89); mclick()                       # the "Terminal" item (~40,699)
 wait_for("wm: launch 'term.elf'")
 wait_count(r"wm: window #[0-9]+ 'term", 2)    # the launched terminal
 cmd('sendkey alt-tab')
@@ -269,11 +271,20 @@ cmd('screendump test_artifacts/term_after.ppm')
 wait_for(r"User task 'ls.elf' created")
 
 # 12) File browser: launch it from the menu and confirm its window/title.
-mmove(0, 67); mclick()                        # the "Apps" button (~40,788)
-mmove(0, -45); mclick()                        # the "Files" item (~40,743)
+mmove(0, 89); mclick()                        # the "Apps" button (~40,788)
+mmove(0, -67); mclick()                        # the "Files" item (~40,721)
 wait_for("wm: launch 'files.elf'")
 wait_count(r"wm: window #[0-9]+ 'files", 1)
 wait_for(r"wm: title #[0-9]+ 'Files'")
+
+# 13) Image viewer: launch it; it decodes a picture from /Pictures with the
+# shared grv_image library.
+mmove(0, 67); mclick()                        # the "Apps" button (~40,788)
+mmove(0, -45); mclick()                        # the "Images" item (~40,743)
+wait_for("wm: launch 'imageview.elf'")
+wait_count(r"wm: window #[0-9]+ 'imageview", 1)
+wait_for(r"wm: title #[0-9]+ 'Images'")
+wait_for(r"imageview: /Pictures/")
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
 time.sleep(0.3)
@@ -461,6 +472,16 @@ if ! grep -qE "wm: title #[0-9]+ 'Files'" "$LOG"; then
     fail "file browser window/title missing"
 fi
 echo "== file browser ok (launched, titled, lists directories) =="
+
+# Image viewer (imageview.elf): decodes a picture via the shared grv_image
+# library and shows it.
+if ! grep -q "wm: launch 'imageview.elf'" "$LOG"; then
+    fail "image viewer did not launch from the menu"
+fi
+if ! grep -q "imageview: /Pictures/" "$LOG"; then
+    fail "image viewer loaded no picture (image library broken?)"
+fi
+echo "== image viewer ok (decodes and displays a picture) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

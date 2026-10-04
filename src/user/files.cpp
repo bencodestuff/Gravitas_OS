@@ -2,6 +2,7 @@
 #include <gravity/gravity.h>
 #include <grv/syscall.h>
 #include <grv/input.h>
+#include <grv/image.h>
 
 // files — a file browser built on Gravity.
 //
@@ -118,8 +119,13 @@ static void enter(const char* name) {
 static void open_file(const char* name) {
     char path[160];
     child_path(path, sizeof(path), name);
-    const char* argv[4] = { "term.elf", "cat", path, 0 };
-    grv_spawn_bg("term.elf", argv, 3);
+    if (grv_image_supported(path)) {
+        const char* argv[2] = { "imageview.elf", path };
+        grv_spawn_bg("imageview.elf", argv, 2);
+    } else {
+        const char* argv[4] = { "term.elf", "cat", path, 0 };
+        grv_spawn_bg("term.elf", argv, 3);
+    }
     printf("files: open %s\n", path);
 }
 
