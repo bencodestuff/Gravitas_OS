@@ -153,8 +153,13 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
         return -1;
     }
 
-    // Build the child in its OWN address space: clone, switch, load the
-    // ELF there, create the task, switch back.
+    // Build the child in its OWN address space. This switches CR3 by hand,
+    // so interrupts are turned off and LEFT off: a timer preemption would
+    // restore the caller's recorded CR3 and the stack build in
+    // create_user_task would fault. The caller re-enables interrupts at the
+    // right point — for a foreground spawn, only after the parent has
+    // blocked on the child, so the child cannot run first.
+    asm volatile("cli");
     uint64_t old_cr3 = VMM::current_pml4();
     uint64_t child_cr3 = VMM::clone_kernel_space();
     VMM::switch_pml4(child_cr3);
@@ -404,14 +409,19 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              }
              spawn_namebuf[ni] = '\0';
 
-             int child = stage_spawn(regs, spawn_namebuf);
-             if (child < 0) { regs->rax = (uint64_t)-1; return; }
+             int child = stage_spawn(regs, spawn_namebuf); // returns IRQs off
+             if (child < 0) { asm volatile("sti"); regs->rax = (uint64_t)-1; return; }
 
              if (syscall_id == 4) {
-                 // Foreground: wait for the child
-                 asm volatile("cli");
+                 // Foreground: block on the child BEFORE it can run. IRQs are
+                 // still off from stage_spawn, so no timer can switch to the
+                 // new task until yield(); yield re-enables interrupts once we
+                 // are resumed by the child's exit.
                  Sched::block_current(child);
                  Sched::yield(); // returns when the child wakes us
+                 asm volatile("sti");
+             } else {
+                 asm volatile("sti");
              }
              regs->rax = (uint64_t)child;
         }

@@ -71,6 +71,11 @@ static int spawn_program(const char* path, const char* name) {
     VFS::read_fd(fd, data, size);
     VFS::close_fd(fd);
 
+    // Build the child in its own address space. Interrupts MUST stay off
+    // across this: the code switches CR3 by hand (the scheduler does not know
+    // about child_cr3 yet), so a timer preemption here would restore the
+    // kernel task's recorded CR3 and the stack-build below would fault.
+    asm volatile("cli");
     uint64_t old_cr3 = VMM::current_pml4();
     uint64_t child_cr3 = VMM::clone_kernel_space();
     VMM::switch_pml4(child_cr3);
@@ -79,11 +84,13 @@ static int spawn_program(const char* path, const char* name) {
 
     if (entry == 0) {
         VMM::switch_pml4(old_cr3);
+        asm volatile("sti");
         VMM::destroy_user_space(child_cr3);
         return -1;
     }
     int id = Sched::create_user_task(entry, name, 0, nullptr, child_cr3);
     VMM::switch_pml4(old_cr3);
+    asm volatile("sti");
     return id;
 }
 
