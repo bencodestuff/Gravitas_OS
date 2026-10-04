@@ -67,6 +67,13 @@ namespace Sched {
     int input_focus();
     void input_focus_gone(int task_id);
 
+    // --- Event-mode input (mechanism) ---
+    // When enabled, the keyboard delivers key events as messages to this
+    // task's mailbox instead of the GETC character ring. The console never
+    // opts in, so its blocking GETC keeps working.
+    void set_event_input(bool on);
+    bool task_event_input(int task_id);
+
     // Put the current task to sleep until task 'child_id' has exited.
     void block_current(int child_id);
 

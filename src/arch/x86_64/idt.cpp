@@ -340,6 +340,10 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  regs->rax = (uint64_t)-1;
              }
         }
+        else if (syscall_id == 34) { // INPUT MODE: rdi != 0 -> events, else GETC
+             Sched::set_event_input(regs->rdi != 0);
+             regs->rax = 0;
+        }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
              // which returns immediately. rax = child task id, or -1.

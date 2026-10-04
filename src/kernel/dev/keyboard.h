@@ -2,12 +2,6 @@
 #include <stdint.h>
 
 namespace Keyboard {
-    // Defines
-    struct KeyEvent {
-        char character;
-        bool is_pressed;
-    };
-
     // Called by the hardware interrupt
     void handle_interrupt();
 

@@ -70,6 +70,7 @@ namespace Sched {
         current_task->exit_code = 0;
         current_task->waiting_on = -1;
         current_task->getc_waiting = false;
+        current_task->event_input = false;
         current_task->user_rip = 0;
         current_task->user_rsp = 0;
         current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
@@ -239,6 +240,18 @@ namespace Sched {
             focus_task = -1;
             wake_keyboard_waiter();
         }
+    }
+
+    void set_event_input(bool on) { current_task->event_input = on; }
+
+    bool task_event_input(int task_id) {
+        Task* t = ready_queue;
+        if (t == nullptr) return false;
+        do {
+            if (t->id == task_id) return t->event_input;
+            t = t->next;
+        } while (t != ready_queue);
+        return false;
     }
 
     void switch_to_task_cr3(Task* task) {

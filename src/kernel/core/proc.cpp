@@ -141,6 +141,7 @@ namespace Sched {
         new_task->state = READY;
         new_task->wake_timestamp = 0;
         new_task->getc_waiting = false;
+        new_task->event_input = false;
 
         // 2. Allocate a Stack for this thread (4KB)
         uint64_t* stack_bottom = new uint64_t[512]; // 512 * 8 bytes = 4KB
@@ -181,6 +182,7 @@ namespace Sched {
         new_task->wake_timestamp = 0;
         new_task->waiting_on = -1;
         new_task->getc_waiting = false;
+        new_task->event_input = false;
         new_task->exit_code = 0;
         new_task->cr3 = cr3;
         strcpy(new_task->name, name);

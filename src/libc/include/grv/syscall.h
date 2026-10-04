@@ -66,6 +66,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_FAULT_LAST     31
 #define GRV_SYSCALL_WM_CLAIM       32
 #define GRV_SYSCALL_INPUT_FOCUS    33
+#define GRV_SYSCALL_INPUT_MODE     34
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. */

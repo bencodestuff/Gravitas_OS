@@ -55,6 +55,7 @@ surface is a "window", and what is drawn are all userland policy.
 | 31 | `FAULT_LAST` | `out*` | 1 if a fault was recorded, else 0 |
 | 32 | `WM_CLAIM` | — | 0 if the caller is/becomes the display authority, else −1 |
 | 33 | `INPUT_FOCUS` | `task_id` | 0 or −1 (authority only); −1 clears focus |
+| 34 | `INPUT_MODE` | `events` | 0 (opt into message-delivered input) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).
@@ -187,6 +188,30 @@ struct grv_rect { long x, y, w, h; };   // surface-local; top-left = 0,0
 Closing a window is `KILL`ing its owner — the kernel's teardown removes the
 surface (the authority cannot `SURFACE_DESTROY` another task's surface,
 since that would unmap memory the owner still holds).
+
+## Input events
+
+A task that calls **`INPUT_MODE(1)`** receives input as messages in its
+mailbox instead of the blocking `GETC` character ring. Read them with
+`SEND`/`RECV`; the two event `type` values are reserved, so an app can mix
+input with its own IPC traffic. The console never opts in, so `GETC` keeps
+working for it.
+
+| event | `type` | `a` | `b` |
+|---|---|---|---|
+| key | `GRV_EV_KEY` (1) | key value | modifier bits |
+| mouse | `GRV_EV_MOUSE` (2) | button bits | `(x<<32) \| y`, window-local |
+
+- **Key values**: printable ASCII as-is; specials above ASCII
+  (`GRV_KEY_ESCAPE` 0x100, `GRV_KEY_UP/DOWN/LEFT/RIGHT` 0x101–0x104).
+  Ctrl+letter arrives as its control code (^C = 3) with `GRV_MOD_CTRL` set.
+- **Modifiers**: `GRV_MOD_SHIFT/CTRL/ALT/CAPS` (1/2/4/8).
+- **Buttons**: `GRV_BTN_LEFT/RIGHT/MIDDLE` (1/2/4).
+
+The keyboard IRQ delivers keys to the **focused** event-mode task. Mouse
+events are produced by the WM (it alone has the pointer): it hit-tests the
+window under the cursor and sends `GRV_EV_MOUSE` with coordinates relative
+to that window's surface.
 
 ## Related kernel debug keys
 
