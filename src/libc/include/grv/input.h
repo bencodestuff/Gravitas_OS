@@ -55,6 +55,10 @@ static inline long grv_mouse_pack(int x, int y) {
 static inline int grv_mouse_x(long b) { return (int)(b >> 32); }
 static inline int grv_mouse_y(long b) { return (int)(unsigned int)b; }
 
+/* A mouse event carries the target surface id in the high 16 bits of 'a',
+   with the button mask (GRV_BTN_*) in the low bits. */
+static inline int grv_mouse_surface(long a) { return (int)(a >> 16); }
+
 __END_DECLS
 
 #endif

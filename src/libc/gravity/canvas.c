@@ -110,8 +110,9 @@ void gravity_cell(struct gravity_canvas* c, int x, int y, unsigned char ch,
 
 void gravity_present(struct gravity_canvas* c) {
     if (c->dx1 <= c->dx0 || c->dy1 <= c->dy0) return;
-    // The commit is per calling task: it repaints the task's surface(s)
-    // clipped to this rectangle. Gravity assumes one canvas per app.
-    grv_surface_commit_rect(c->dx0, c->dy0, c->dx1 - c->dx0, c->dy1 - c->dy0);
+    // The commit is per calling task; commit just this canvas's surface so a
+    // task with more than one surface (a popup) doesn't repaint the other.
+    grv_surface_commit_rect_id(c->surface_id, c->dx0, c->dy0,
+                               c->dx1 - c->dx0, c->dy1 - c->dy0);
     c->dx0 = c->dy0 = c->dx1 = c->dy1 = 0; // clean
 }

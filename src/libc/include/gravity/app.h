@@ -21,8 +21,14 @@ struct gravity_event {
    it does not care about) costs nothing. */
 struct gravity_app {
     struct gravity_canvas canvas;
+    struct gravity_canvas popup;   /* second surface, valid while popup_open */
+    int popup_open;
+    int popup_x, popup_y;          /* where the popup should sit on screen */
     void (*on_event)(struct gravity_app* app, const struct gravity_event* ev);
     void (*on_draw)(struct gravity_app* app);
+    /* Optional: draw the popup's contents (into app->popup); Gravity presents
+       it. Called on redraw while a popup is open. */
+    void (*on_popup_draw)(struct gravity_app* app);
     /* Optional: run once per loop, before blocking for the next event. For
        work that arrives outside the input mailbox — e.g. a terminal
        draining the output of the programs it hosts. */
@@ -43,6 +49,14 @@ static inline void gravity_timer(struct gravity_app* app, unsigned long ms) {
 }
 
 void gravity_run(struct gravity_app* app, int w, int h);
+
+/* Popups: a second, undecorated surface the WM places at (x,y) and raises
+   above the main window. Open one and draw into app->popup via
+   on_popup_draw; the WM asks the app to close it (GRV_WM_DISMISS) when the
+   user clicks away. */
+int  gravity_popup_open(struct gravity_app* app, int x, int y, int w, int h);
+void gravity_popup_present(struct gravity_app* app);
+void gravity_popup_close(struct gravity_app* app);
 
 __END_DECLS
 

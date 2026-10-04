@@ -42,6 +42,7 @@ struct Win {
     int  owner;        // owning task id
     int  x, y;         // surface top-left on screen
     int  w, h;         // surface size
+    int  role;         // GRV_WM_ROLE_NORMAL or _POPUP
     char title[16];
 };
 
@@ -58,6 +59,7 @@ static int   nwin = 0;
 static int   focused = -1;       // focused task id, or -1
 static int   console_task = -1;  // the shell: focus returns here on desktop clicks
 static int   click_sid = -1;     // window that received the button-down (for release)
+static int   grab_owner = -1;    // task the pointer is captured to (drag inside a window)
 static int   last_fx = -1, last_fy = -1; // last forwarded pointer position
 static int   dragging = 0;
 static int   drag_sid = -1;
@@ -177,6 +179,7 @@ static int in_close(const Win* w, int px, int py) {
 }
 
 static void draw_window(const Win* w) {
+    if (w->role == GRV_WM_ROLE_POPUP) return; // popups have no decoration
     unsigned int bar = (w->owner == focused) ? FOCUS_BAR : UNFOCUS_BAR;
     int tx = w->x - BORDER, ty = w->y - TITLE_H;
 
@@ -282,6 +285,7 @@ static void taskbar_layout() {
     ntbtn++;
     x += tbtns[0].w + 10;
     for (int i = 0; i < nwin && ntbtn < MAXWIN + 4; i++) {
+        if (wins[i].role == GRV_WM_ROLE_POPUP) continue; // no button for popups
         int w = 8 * slen(wins[i].title) + 14;
         if (w < 84) w = 84;
         tbtns[ntbtn].x = x; tbtns[ntbtn].w = w;
@@ -442,6 +446,7 @@ static void add_window(int sid) {
     w->owner = (int)si->owner;
     w->w = (int)si->width;
     w->h = (int)si->height;
+    w->role = GRV_WM_ROLE_NORMAL;
     owner_name(w->owner, w->title);
 
     // Cascade new windows so they do not pile up at (0,0).
@@ -509,7 +514,8 @@ static void forward_mouse(Win* w, int buttons, int cx, int cy) {
     struct grv_msg m;
     m.from = 0;
     m.type = GRV_EV_MOUSE;
-    m.a = (unsigned long)buttons;
+    // High 16 bits: target surface id; low bits: button mask.
+    m.a = ((unsigned long)w->sid << 16) | (unsigned long)(buttons & 0xFFFF);
     m.b = grv_mouse_pack(cx - w->x, cy - w->y);
     grv_send(w->owner, &m);
 }
@@ -520,6 +526,26 @@ static Win* window_body_at(int cx, int cy) {
         if (in_body(&wins[i], cx, cy)) return &wins[i];
     }
     return 0;
+}
+
+// Popups: a click anywhere outside every popup dismisses them all.
+static int popup_at(int cx, int cy) {
+    for (int i = 0; i < nwin; i++)
+        if (wins[i].role == GRV_WM_ROLE_POPUP && in_body(&wins[i], cx, cy))
+            return i;
+    return -1;
+}
+
+static void dismiss_popups() {
+    for (int i = 0; i < nwin; i++) {
+        if (wins[i].role != GRV_WM_ROLE_POPUP) continue;
+        struct grv_msg m;
+        m.from = 0;
+        m.type = GRV_WM_DISMISS;
+        m.a = (unsigned long)wins[i].sid;
+        m.b = 0;
+        grv_send(wins[i].owner, &m);
+    }
 }
 
 static void on_press(int cx, int cy) {
@@ -534,6 +560,17 @@ static void on_press(int cx, int cy) {
         menu_open = 0;
         redraw_menu();
         return;
+    }
+
+    // A click outside every popup dismisses the open popups (and is taken).
+    {
+        int has_popup = 0;
+        for (int i = 0; i < nwin; i++)
+            if (wins[i].role == GRV_WM_ROLE_POPUP) { has_popup = 1; break; }
+        if (has_popup && popup_at(cx, cy) < 0) {
+            dismiss_popups();
+            return;
+        }
     }
 
     // The taskbar is above every window: it takes the click next.
@@ -569,6 +606,7 @@ static void on_press(int cx, int cy) {
             focus_window(w);
             forward_mouse(w, GRV_BTN_LEFT, cx, cy); // deliver the click
             click_sid = w->sid;
+            grab_owner = w->owner; // capture the pointer for the drag
             return;
         }
     }
@@ -584,6 +622,7 @@ static void on_release(int cx, int cy) {
         if (w != 0) forward_mouse(w, 0, cx, cy);
         click_sid = -1;
     }
+    grab_owner = -1; // pointer capture ends with the button
     dragging = 0;
     drag_sid = -1;
 }
@@ -690,6 +729,21 @@ int main(int argc, char** argv) {
                     full_redraw();
                 }
             }
+            else if (m.type == GRV_WM_SET_ROLE) {
+                Win* w = find_sid((int)m.a);
+                if (w) {
+                    w->role = (int)m.b;
+                    if (w->role == GRV_WM_ROLE_POPUP) {
+                        grv_surface_raise(w->sid); // above normal windows
+                        int idx = (int)(w - wins);
+                        Win tmp = *w;
+                        for (int k = idx; k < nwin - 1; k++) wins[k] = wins[k + 1];
+                        wins[nwin - 1] = tmp;
+                        printf("wm: popup #%d\n", tmp.sid);
+                    }
+                    full_redraw();
+                }
+            }
         }
 
         grv_sysinfo(&si);
@@ -707,8 +761,14 @@ int main(int argc, char** argv) {
 
         if (pressed) on_press(cx, cy);
         if (released) on_release(cx, cy);
+
         if (dragging) {
-            drag_to(cx, cy);
+            drag_to(cx, cy); // WM-driven title-bar drag
+        } else if (!pressed && grab_owner >= 0 && (btn_prev & 1)) {
+            // Pointer captured by a window: motion goes to it wherever the
+            // cursor is, so the app can track a drag past its own edges.
+            Win* w = find_owner(grab_owner);
+            if (w) forward_mouse(w, btn_prev, cx, cy);
         } else if (!pressed && !released) {
             // Hover motion goes to the window under the pointer.
             Win* w = window_body_at(cx, cy);

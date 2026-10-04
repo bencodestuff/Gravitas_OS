@@ -310,10 +310,11 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              // surface) — lets a full-screen overlay commit only its change.
              struct RectPkt { int64_t x, y, w, h; };
              RectPkt* r = (RectPkt*)regs->rdi;
+             int cid = (int)regs->rsi; // 0 = all of the caller's surfaces
              if (r != nullptr)
-                 Compositor::surface_commit((int)r->x, (int)r->y, (int)r->w, (int)r->h);
+                 Compositor::surface_commit(cid, (int)r->x, (int)r->y, (int)r->w, (int)r->h);
              else
-                 Compositor::surface_commit(0, 0, -1, -1);
+                 Compositor::surface_commit(cid, 0, 0, -1, -1);
              regs->rax = 0;
         }
         else if (syscall_id == 20) { // SURFACE MOVE: rdi=id, rsi=x, rdx=y

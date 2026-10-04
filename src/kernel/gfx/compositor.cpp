@@ -610,11 +610,12 @@ void present() {
     irq_restore(flags);
 }
 
-void surface_commit(int rx, int ry, int rw, int rh) {
+void surface_commit(int id, int rx, int ry, int rw, int rh) {
     int me = Sched::current_task_id();
     bool whole = (rw <= 0 || rh <= 0);
     for (int i = 0; i < MAX_SURFACES; i++) {
         if (!surfaces[i].used || surfaces[i].task_id != me) continue;
+        if (id != 0 && surfaces[i].id != id) continue; // commit one surface
         if (whole) {
             damage_surface(&surfaces[i]);
         } else {

@@ -28,6 +28,7 @@
 #   * libc basics: string/formatted output/allocator/parse/sort (libctest.elf)
 #   * file API: seek/stat/truncate/create/remove (filetest.elf)
 #   * timed wakeup: one-shot EV_TIMER with no other input (timertest.elf)
+#   * popups: undecorated on-top second surface + WM dismissal (popuptest.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -298,6 +299,15 @@ wait_count(r"wm: window #[0-9]+ 'imageview", 1)
 wait_for(r"wm: title #[0-9]+ 'Images'")
 wait_for(r"imageview: /Pictures/")
 
+# 14) Popup: a second, undecorated, on-top surface the WM dismisses when the
+# user clicks away from it.
+mmove(-5000, -5000); mclick()                  # desktop click: focus the console shell
+type_dotted('bg popuptest.elf'); key('ret')
+wait_for('popuptest: popup open')
+wait_for(r"wm: popup #[0-9]+")
+mmove(-5000, -5000); mclick()                  # click the desktop -> dismiss
+wait_for('popuptest: popup closed')
+
 cmd('screendump ' + 'test_artifacts/console.ppm')
 time.sleep(0.3)
 s.close()
@@ -512,6 +522,19 @@ if ! grep -q "imageview: /Pictures/" "$LOG"; then
     fail "image viewer loaded no picture (image library broken?)"
 fi
 echo "== image viewer ok (decodes and displays a picture) =="
+
+# Popup (popuptest.elf): an undecorated, on-top second surface, dismissed by
+# a click outside it.
+if ! grep -q 'popuptest: popup open' "$LOG"; then
+    fail "popup did not open (multi-surface / role broken?)"
+fi
+if ! grep -qE "wm: popup #[0-9]+" "$LOG"; then
+    fail "wm did not register the popup surface"
+fi
+if ! grep -q 'popuptest: popup closed' "$LOG"; then
+    fail "popup was not dismissed on an outside click"
+fi
+echo "== popup ok (undecorated on-top surface; dismiss on outside click) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

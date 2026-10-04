@@ -14,6 +14,11 @@ __BEGIN_DECLS
 
 #define GRV_WM_HELLO     0x10 /* WM -> client: a = surface id              */
 #define GRV_WM_SET_TITLE 0x11 /* client -> WM: a, b = 8 title bytes each   */
+#define GRV_WM_SET_ROLE  0x12 /* client -> WM: a = surface id, b = role    */
+#define GRV_WM_DISMISS   0x13 /* WM -> client: a = surface id (popup away) */
+
+#define GRV_WM_ROLE_NORMAL 0
+#define GRV_WM_ROLE_POPUP  1 /* undecorated, on top, client-positioned      */
 
 /* Pack up to 16 title bytes into the two payload words (NUL-terminated, so
    a shorter title unpacks cleanly). */

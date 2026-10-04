@@ -306,6 +306,14 @@ static inline void grv_surface_commit_rect(long x, long y, long w, long h) {
     syscall1(GRV_SYSCALL_SURFACE_COMMIT, (long)&r);
 }
 
+/* Commit one owned surface (by id) with a surface-local rectangle. Needed
+   when a task owns more than one surface (e.g. a window and a popup). */
+static inline void grv_surface_commit_rect_id(int id, long x, long y,
+                                              long w, long h) {
+    struct grv_rect r = { x, y, w, h };
+    syscall2(GRV_SYSCALL_SURFACE_COMMIT, (long)&r, (long)id);
+}
+
 static inline void grv_surface_move(int id, int x, int y) {
     syscall3(GRV_SYSCALL_SURFACE_MOVE, (long)id, (long)x, (long)y);
 }

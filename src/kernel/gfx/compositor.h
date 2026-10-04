@@ -74,10 +74,11 @@ namespace Compositor {
     // are painted.
     void present();
 
-    // A surface commit: damage every surface owned by the calling task and
-    // flush. When rw > 0 and rh > 0, only the surface-local rectangle
-    // (rx,ry,rw,rh) is damaged — how a full-screen overlay commits cheaply.
-    void surface_commit(int rx, int ry, int rw, int rh);
+    // A surface commit. When 'id' is nonzero only that surface is damaged;
+    // otherwise every surface owned by the calling task. When rw > 0 and
+    // rh > 0, only the surface-local rectangle (rx,ry,rw,rh) is damaged —
+    // how a full-screen overlay (or a second window) commits cheaply.
+    void surface_commit(int id, int rx, int ry, int rw, int rh);
 
     // --- Display authority (mechanism) ---
     // One task may claim authority: it can move/restack any surface, own the
