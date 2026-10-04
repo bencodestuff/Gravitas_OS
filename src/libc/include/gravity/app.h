@@ -27,6 +27,7 @@ struct gravity_app {
        work that arrives outside the input mailbox — e.g. a terminal
        draining the output of the programs it hosts. */
     void (*on_poll)(struct gravity_app* app);
+    const char* title;  /* optional window title (answers the WM's hello) */
     void* user;
     int redraw;   /* set by gravity_refresh; internal */
 };

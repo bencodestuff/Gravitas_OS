@@ -46,7 +46,7 @@ command -v python3 >/dev/null || fail "python3 not installed"
 [ -f gravitas.iso ] || fail "gravitas.iso missing — run 'ninja iso' first"
 
 mkdir -p "$ART"
-rm -f "$LOG" "$SHOT.ppm" "$SHOT.png"
+rm -f "$LOG" "$SHOT.ppm" "$SHOT.png" "$ART/term_before.ppm" "$ART/term_after.ppm"
 TMP="$(mktemp -d)"
 SOCK="$TMP/qmon.sock"
 QPID=""
@@ -239,6 +239,7 @@ type_dotted('run mon.elf'); key('ret'); wait_for('mon: last fault')
 # type into it (only the focused task gets keys), then close it.
 type_dotted('bg wm.elf'); key('ret'); wait_for('display authority')
 type_dotted('bg win.elf'); key('ret'); wait_for(r"window #[0-9]+ 'win")
+wait_for(r"wm: title #[0-9]+ 'Gravity demo'")   # client title over IPC
 mmove(-440, -350); mclick()                 # click the title bar (window at 80,60)
 wait_for('focus task')
 type_str('a'); wait_for(r"win: key 'a'")
@@ -247,15 +248,20 @@ wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'window #[0-9]+ gone')
 
-# 11) Terminal: a Gravity text grid hosting the shell. The boot terminal was
-# stopped; start a fresh one, focus it, and type a command — the hosted shell
-# runs it (the kernel logs the spawned program; the output itself is captured
-# by the terminal, not the console).
-type_dotted('bg term.elf'); key('ret'); wait_for('term: hosting shell as task')
-wait_for(r"window #[0-9]+ 'term")
-mmove(-440, -200); mclick()                  # click the terminal body (~200,200)
-wait_for('focus task')
+# 10b) Taskbar launcher + Alt+Tab (cursor now ~426,45).
+mmove(-386, 743); mclick()                   # the launcher button (~40,788)
+wait_for("wm: launch 'term.elf'")
+wait_count(r"wm: window #[0-9]+ 'term", 2)    # the launched terminal
+cmd('sendkey alt-tab')
+wait_count('wm: focus task', 2)              # Alt+Tab focused it
+
+# 11) Terminal: the focused terminal's window must render the hosted shell's
+# output. Keying 'ls' hits only the focused task, so a change inside the
+# window (and not the console behind it) proves the terminal path works.
+cmd('screendump test_artifacts/term_before.ppm')
 type_str('ls'); key('ret')
+time.sleep(1.0)
+cmd('screendump test_artifacts/term_after.ppm')
 wait_for(r"User task 'ls.elf' created")
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
@@ -384,18 +390,53 @@ if ! grep -qE "window #[0-9]+ gone" "$LOG"; then
 fi
 echo "== window manager ok (claim/discover/focus/type/click/close) =="
 
-# Terminal (term.elf): a Gravity text grid that hosts the shell. Starting it,
-# focusing it and typing must reach the hosted shell.
+# Title protocol: the client answered the WM's hello with its own title
+if ! grep -qE "wm: title #[0-9]+ 'Gravity demo'" "$LOG"; then
+    fail "wm did not receive the client title (title protocol broken?)"
+fi
+# Taskbar launcher: clicking it started a program
+if ! grep -q "wm: launch 'term.elf'" "$LOG"; then
+    fail "wm launcher did not spawn a program"
+fi
+# Alt+Tab: a global hotkey cycled focus (a second 'focus task' line)
+if [ "$(grep -c 'wm: focus task' "$LOG")" -lt 2 ]; then
+    fail "Alt+Tab did not cycle focus (hotkey mechanism broken?)"
+fi
+echo "== desktop ok (title protocol, taskbar launcher, Alt+Tab) =="
+
+# Terminal (term.elf): the launcher-spawned terminal hosts the shell, and when
+# focused and typed into it renders the output INSIDE its own window. Keying
+# 'ls' reaches only the focused task, so a change inside the window (and not
+# the console behind it) proves the terminal input path.
 if ! grep -q 'term: hosting shell as task' "$LOG"; then
     fail "terminal did not start and attach its shell"
-fi
-if ! grep -qE "window #[0-9]+ 'term" "$LOG"; then
-    fail "terminal window was not discovered by the WM"
 fi
 if ! grep -q "User task 'ls.elf' created" "$LOG"; then
     fail "terminal did not deliver input to the hosted shell (M12 UI broken?)"
 fi
-echo "== terminal ok (grid hosts the shell; input reaches it) =="
+if ! python3 - "$ART/term_before.ppm" "$ART/term_after.ppm" <<'PY'
+import sys
+def load(p):
+    d = open(p, 'rb').read()
+    q = d.split(b'\n', 3)
+    w, h = map(int, q[1].split())
+    return w, h, q[3]
+w, h, a = load(sys.argv[1])
+_, _, b = load(sys.argv[2])
+n = 0
+for y in range(62, 458, 2):        # inside the terminal window (80,60)-(726,460)
+    row = y * w
+    for x in range(82, 724, 2):
+        j = (row + x) * 3
+        if a[j:j+3] != b[j:j+3]:
+            n += 1
+print("terminal region changed pixels (sampled):", n)
+sys.exit(0 if n > 200 else 1)
+PY
+then
+    fail "terminal did not render the hosted shell's output (keys missed it?)"
+fi
+echo "== terminal ok (hosts the shell; typing renders in its window) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

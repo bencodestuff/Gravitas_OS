@@ -12,6 +12,7 @@
 #define ROWS   25
 #define CELL_W 8
 #define CELL_H 16
+#define SB_W   6   /* scrollbar strip to the right of the grid */
 
 static const unsigned int FG = 0xFFD0E0F0;
 static const unsigned int BG = 0xFF101418;
@@ -38,12 +39,12 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     long v = ev->a;
 
     if (v == GRV_KEY_PAGEUP) {
-        gravity_term_scrollback(&term, ROWS / 2);
+        gravity_term_scrollback(&term, ROWS - 1);
         gravity_refresh(a);
         return;
     }
     if (v == GRV_KEY_PAGEDOWN) {
-        gravity_term_scrollback(&term, -(ROWS / 2));
+        gravity_term_scrollback(&term, -(ROWS - 1));
         gravity_refresh(a);
         return;
     }
@@ -61,11 +62,26 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     gravity_refresh(a);
 }
 
+static void draw_scrollbar(struct gravity_canvas* c) {
+    int x = COLS * CELL_W;
+    int h = ROWS * CELL_H;
+    gravity_fill(c, x, 0, SB_W, h, 0xFF202428); // track
+    int max = gravity_term_maxview(&term);
+    if (max <= 0) return;
+    int total = max + ROWS;
+    int thumb = h * ROWS / total;
+    if (thumb < 16) thumb = 16;
+    int view = gravity_term_view(&term);        // 0 = bottom, max = top
+    int y = (h - thumb) * (max - view) / max;
+    gravity_fill(c, x, y, SB_W, thumb, 0xFF6A7A8A);
+}
+
 static void on_draw(struct gravity_app* a) {
     // No clear: the grid owns every cell and repaints only the rows that
     // changed, so the surface must persist between frames. The first render
     // (all rows dirty) paints the whole thing.
     gravity_term_render(&term, &a->canvas, 0, 0);
+    draw_scrollbar(&a->canvas); // lives in the strip right of the grid
 }
 
 int main(int argc, char** argv) {
@@ -92,7 +108,8 @@ int main(int argc, char** argv) {
     app.on_event = on_event;
     app.on_draw = on_draw;
     app.on_poll = on_poll;
+    app.title = "Terminal";
     app.user = 0;
-    gravity_run(&app, COLS * CELL_W, ROWS * CELL_H);
+    gravity_run(&app, COLS * CELL_W + SB_W, ROWS * CELL_H);
     return 0;
 }

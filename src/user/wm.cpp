@@ -2,6 +2,7 @@
 #include <grv/syscall.h>
 #include <grv/text.h>
 #include <grv/input.h>
+#include <grv/wm.h>
 
 // wm — the Gravitas window manager (userland policy).
 //
@@ -21,12 +22,15 @@ static const int BORDER  = 2;
 static const int CLOSE_W = 12;
 static const int CLOSE_H = 12;
 static const int MAXWIN  = 32;
+static const int TASKBAR_H = 24;
 
 static const unsigned int FOCUS_BAR   = 0xFF3B5A8C;
 static const unsigned int UNFOCUS_BAR = 0xFF4A4A4A;
 static const unsigned int EDGE        = 0xFF202020;
 static const unsigned int CLOSE_BG    = 0xFFC04040;
 static const unsigned int TITLE_FG    = 0xFFFFFFFF;
+static const unsigned int BAR_BG      = 0xFF17191C;
+static const unsigned int LAUNCH_BG   = 0xFF356B46;
 
 struct Win {
     int  sid;          // surface id
@@ -172,8 +176,15 @@ static Win* find_sid(int sid) {
     return 0;
 }
 
+static Win* find_owner(int owner) {
+    for (int i = 0; i < nwin; i++) if (wins[i].owner == owner) return &wins[i];
+    return 0;
+}
+
 // Repaint a screen rectangle of the overlay: clear it, then redraw every
 // window (bottom-to-top) that overlaps it, clipped to the rectangle.
+static void draw_taskbar(); // defined below; always drawn on top
+
 static void redraw(int x0, int y0, int x1, int y1) {
     x0 = maxi(x0, 0); y0 = maxi(y0, 0);
     x1 = mini(x1, overlay_w); y1 = mini(y1, overlay_h);
@@ -188,10 +199,77 @@ static void redraw(int x0, int y0, int x1, int y1) {
         if (a < x1 && a + c > x0 && b < y1 && b + d > y0) draw_window(&wins[i]);
     }
 
+    draw_taskbar(); // the bar sits above every window
+
     grv_surface_commit_rect(x0, y0, x1 - x0, y1 - y0);
 }
 
 static void full_redraw() { redraw(0, 0, overlay_w, overlay_h); }
+
+// --- taskbar + launcher ---------------------------------------------
+// Drawn into the overlay, above every window: a launcher on the left and a
+// button per open window. Clicking a button starts a program or raises a
+// window. Layout is computed once into tbtns so drawing and hit-testing
+// cannot drift apart.
+
+struct LaunchBtn { const char* label; const char* prog; };
+static const LaunchBtn launchers[] = { { "Terminal", "term.elf" } };
+static const int nlaunch = (int)(sizeof(launchers) / sizeof(launchers[0]));
+
+struct TBtn { int x, w; int kind; int idx; }; // kind 0 = launch, 1 = window
+static TBtn tbtns[MAXWIN + 4];
+static int  ntbtn = 0;
+
+static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
+
+static void taskbar_layout() {
+    ntbtn = 0;
+    int x = 4;
+    for (int i = 0; i < nlaunch; i++) {
+        int w = 8 * slen(launchers[i].label) + 14;
+        tbtns[ntbtn].x = x; tbtns[ntbtn].w = w;
+        tbtns[ntbtn].kind = 0; tbtns[ntbtn].idx = i;
+        ntbtn++;
+        x += w + 6;
+    }
+    x += 8;
+    for (int i = 0; i < nwin && ntbtn < MAXWIN + 4; i++) {
+        int w = 8 * slen(wins[i].title) + 14;
+        if (w < 84) w = 84;
+        tbtns[ntbtn].x = x; tbtns[ntbtn].w = w;
+        tbtns[ntbtn].kind = 1; tbtns[ntbtn].idx = i;
+        ntbtn++;
+        x += w + 6;
+    }
+}
+
+static void draw_taskbar() {
+    int fh = font_ok ? (int)font.height : 8;
+    int y = overlay_h - TASKBAR_H;
+    fill(0, y, overlay_w, TASKBAR_H, BAR_BG);
+
+    taskbar_layout();
+    for (int i = 0; i < ntbtn; i++) {
+        const TBtn* b = &tbtns[i];
+        unsigned int bg;
+        const char* label;
+        if (b->kind == 0) {
+            bg = LAUNCH_BG;
+            label = launchers[b->idx].label;
+        } else {
+            bg = (wins[b->idx].owner == focused) ? FOCUS_BAR : UNFOCUS_BAR;
+            label = wins[b->idx].title;
+        }
+        fill(b->x, y + 3, b->w, TASKBAR_H - 6, bg);
+        text(b->x + 7, y + (TASKBAR_H - fh) / 2, label, TITLE_FG);
+    }
+}
+
+static void launch(const char* prog) {
+    const char* argv[1] = { prog };
+    long pid = grv_spawn_bg(prog, argv, 1);
+    printf("wm: launch '%s' -> %d\n", prog, (int)pid);
+}
 
 // --- window management ----------------------------------------------
 
@@ -213,6 +291,17 @@ static void focus_window(Win* w) {
         printf("wm: focus task %d\n", focused);
     }
     full_redraw();
+}
+
+// Alt+Tab / Alt+Shift+Tab: cycle keyboard focus through the windows.
+static void cycle_focus(int dir) {
+    if (nwin == 0) return;
+    int idx = -1;
+    for (int i = 0; i < nwin; i++)
+        if (wins[i].owner == focused) { idx = i; break; }
+    int next = (idx < 0) ? (dir > 0 ? 0 : nwin - 1)
+                         : (idx + dir + nwin) % nwin;
+    focus_window(&wins[next]);
 }
 
 static void owner_name(int owner, char* out) {
@@ -252,6 +341,9 @@ static void add_window(int sid) {
     w->x = 80 + slot * 32;
     w->y = 60 + slot * 32;
     if (w->x + w->w > overlay_w) w->x = mini(w->x, overlay_w - w->w);
+    if (w->y + w->h > overlay_h - TASKBAR_H)
+        w->y = overlay_h - TASKBAR_H - w->h;
+    if (w->y < TITLE_H) w->y = TITLE_H;
     grv_surface_move(sid, w->x, w->y);
 
     nwin++;
@@ -260,6 +352,16 @@ static void add_window(int sid) {
     // auto-focuses would break the shell the moment a window appears.)
     grv_surface_raise(sid);
     raise_overlay();
+
+    // Ask the owner for its title (pure userland IPC). A client that does
+    // not answer keeps the task name we already set.
+    struct grv_msg hello;
+    hello.from = 0;
+    hello.type = GRV_WM_HELLO;
+    hello.a = (unsigned long)sid;
+    hello.b = 0;
+    grv_send(w->owner, &hello);
+
     printf("wm: window #%d '%s' %dx%d at %d,%d\n", sid, w->title, w->w, w->h, w->x, w->y);
     full_redraw();
 }
@@ -313,6 +415,20 @@ static Win* window_body_at(int cx, int cy) {
 }
 
 static void on_press(int cx, int cy) {
+    // The taskbar is above every window: it takes the click first.
+    if (cy >= overlay_h - TASKBAR_H) {
+        taskbar_layout();
+        for (int i = 0; i < ntbtn; i++) {
+            const TBtn* b = &tbtns[i];
+            if (cx >= b->x && cx < b->x + b->w) {
+                if (b->kind == 0) launch(launchers[b->idx].prog);
+                else focus_window(&wins[b->idx]);
+                return;
+            }
+        }
+        return; // the bar's background swallows the click
+    }
+
     for (int i = nwin - 1; i >= 0; i--) {
         Win* w = &wins[i];
         if (in_close(w, cx, cy)) {
@@ -357,6 +473,10 @@ static void drag_to(int cx, int cy) {
 
     int nx = cx - drag_off_x;
     int ny = cy - drag_off_y;
+    if (nx < BORDER) nx = BORDER;
+    if (nx + w->w > overlay_w - BORDER) nx = overlay_w - BORDER - w->w;
+    if (ny < TITLE_H) ny = TITLE_H;
+    if (ny + w->h > overlay_h - TASKBAR_H) ny = overlay_h - TASKBAR_H - w->h;
     if (nx == w->x && ny == w->y) return;
 
     int oa, ob, oc, od;
@@ -387,6 +507,7 @@ int main(int argc, char** argv) {
     // the user clicks a window.
     console_task = find_task_by_name("shell");
     grv_input_focus(console_task);
+    grv_wm_hotkey(GRV_MOD_ALT); // Alt chords (Alt+Tab) come to us
 
     font_ok = grv_font_load(&font, "/fonts/bizcat.psf");
 
@@ -420,6 +541,19 @@ int main(int argc, char** argv) {
         while (grv_recv(&m, 0) == 0) {
             if (m.type == GRV_EVT_SURFACE_ADDED) add_window((int)m.a);
             else if (m.type == GRV_EVT_SURFACE_REMOVED) remove_window((int)m.a);
+            else if (m.type == GRV_EV_KEY) {
+                // Global hotkeys we reserved: Alt+Tab cycles focus.
+                if ((m.b & GRV_MOD_ALT) && m.a == '\t')
+                    cycle_focus((m.b & GRV_MOD_SHIFT) ? -1 : 1);
+            }
+            else if (m.type == GRV_WM_SET_TITLE) {
+                Win* w = find_owner((int)m.from);
+                if (w) {
+                    grv_wm_title_unpack(m.a, m.b, w->title, (int)sizeof(w->title));
+                    printf("wm: title #%d '%s'\n", w->sid, w->title);
+                    full_redraw();
+                }
+            }
         }
 
         grv_sysinfo(&si);

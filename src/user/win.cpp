@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
     printf("win: window ready\n");
     app.on_event = on_event;
     app.on_draw = on_draw;
+    app.title = "Gravity demo";
     app.user = 0;
     gravity_run(&app, W, H);
     return 0;

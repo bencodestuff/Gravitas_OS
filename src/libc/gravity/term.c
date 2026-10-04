@@ -168,3 +168,10 @@ void gravity_term_snap_bottom(struct gravity_term* t) {
     t->view = 0;
     t->all_dirty = 1;
 }
+
+int gravity_term_view(const struct gravity_term* t) { return t->view; }
+
+int gravity_term_maxview(const struct gravity_term* t) {
+    int m = t->used - t->rows;
+    return m > 0 ? m : 0;
+}
