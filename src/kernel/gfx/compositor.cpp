@@ -442,6 +442,20 @@ static void paint_rect(int x0, int y0, int x1, int y1) {
     x1 = imin(x1, (int)fb_w); y1 = imin(y1, (int)fb_h);
     if (x1 <= x0 || y1 <= y0) return;
 
+    // Snap outward to cell boundaries. paint_cells() draws WHOLE cells, and
+    // a cell that merely intersects the rect extends past it — so the
+    // background fill and the surface stamp below must cover that same
+    // expanded area. Otherwise cell pixels leak past the rect and paint the
+    // console on top of a surface: the cursor-repair rects are not
+    // cell-aligned, so moving the pointer over a window leaves a trail of
+    // console-coloured blocks.
+    int cw = Font::cell_w(), ch = Font::cell_h();
+    x0 = (x0 / cw) * cw;
+    y0 = (y0 / ch) * ch;
+    x1 = imin(((x1 + cw - 1) / cw) * cw, (int)fb_w);
+    y1 = imin(((y1 + ch - 1) / ch) * ch, (int)fb_h);
+    if (x1 <= x0 || y1 <= y0) return;
+
     fill_rect(x0, y0, x1, y1, Console::background());
     if (console_top) {
         stamp_surfaces(x0, y0, x1, y1);
