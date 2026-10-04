@@ -64,6 +64,13 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SYSINFO        29
 #define GRV_SYSCALL_TASK_LIST      30
 #define GRV_SYSCALL_FAULT_LAST     31
+#define GRV_SYSCALL_WM_CLAIM       32
+#define GRV_SYSCALL_INPUT_FOCUS    33
+
+/* Event 'type' values the kernel posts to the display authority's mailbox
+   (from = -1). Mirrors Compositor::EVT_* in the kernel. */
+#define GRV_EVT_SURFACE_ADDED   1
+#define GRV_EVT_SURFACE_REMOVED 2
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -234,6 +241,14 @@ static inline void grv_surface_commit(void) {
     syscall1(GRV_SYSCALL_SURFACE_COMMIT, 0);
 }
 
+/* Commit only a surface-local rectangle (0,0 = the surface's top-left).
+   Lets a full-screen overlay repaint just what changed. */
+struct grv_rect { long x, y, w, h; };
+static inline void grv_surface_commit_rect(long x, long y, long w, long h) {
+    struct grv_rect r = { x, y, w, h };
+    syscall1(GRV_SYSCALL_SURFACE_COMMIT, (long)&r);
+}
+
 static inline void grv_surface_move(int id, int x, int y) {
     syscall3(GRV_SYSCALL_SURFACE_MOVE, (long)id, (long)x, (long)y);
 }
@@ -277,6 +292,8 @@ struct grv_sysinfo {
     unsigned long comp_full;
     unsigned long comp_rects;
     unsigned long comp_pixels;
+    unsigned long screen_w;
+    unsigned long screen_h;
 };
 
 static inline void grv_sysinfo(struct grv_sysinfo* out) {
@@ -310,6 +327,19 @@ struct grv_fault_record {
 
 static inline int grv_fault_last(struct grv_fault_record* out) {
     return (int)syscall1(GRV_SYSCALL_FAULT_LAST, (long)out);
+}
+
+/* --- Display authority (window-manager mechanisms) --- */
+/* Claim the one display-authority role: the first claimant holds it, the
+   same task may re-claim, another task gets -1. Returns 0 or -1. */
+static inline int grv_wm_claim(void) {
+    return (int)syscall1(GRV_SYSCALL_WM_CLAIM, 0);
+}
+
+/* Set the keyboard focus (authority only): only this task's grv_getc()
+   receives keys; -1 clears focus (back to "any waiter"). Returns 0 or -1. */
+static inline int grv_input_focus(long task_id) {
+    return (int)syscall1(GRV_SYSCALL_INPUT_FOCUS, task_id);
 }
 
 __END_DECLS

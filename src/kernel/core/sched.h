@@ -56,6 +56,17 @@ namespace Sched {
     // Wake a task blocked on the keyboard (called from the keyboard IRQ).
     void wake_keyboard_waiter();
 
+    // Clear the caller's GETC-blocked flag (it just took a key).
+    void clear_keyboard_waiting();
+
+    // --- Keyboard focus (mechanism) ---
+    // Only the focused task's GETC receives keys. -1 = no policy: whichever
+    // task waits receives the next key (the pre-WM behavior). The display
+    // authority sets it; it clears if the focused task dies.
+    void set_input_focus(int task_id);
+    int input_focus();
+    void input_focus_gone(int task_id);
+
     // Put the current task to sleep until task 'child_id' has exited.
     void block_current(int child_id);
 

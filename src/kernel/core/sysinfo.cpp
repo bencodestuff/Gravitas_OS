@@ -26,6 +26,9 @@ void get(SysInfo* out) {
     out->comp_full = st.full_paints;
     out->comp_rects = st.rects;
     out->comp_pixels = st.pixels;
+
+    out->screen_w = (uint64_t)Compositor::screen_width();
+    out->screen_h = (uint64_t)Compositor::screen_height();
 }
 
 } // namespace Sysinfo

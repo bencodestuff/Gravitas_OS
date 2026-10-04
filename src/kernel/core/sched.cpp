@@ -69,6 +69,7 @@ namespace Sched {
         current_task->brk_limit = 0;
         current_task->exit_code = 0;
         current_task->waiting_on = -1;
+        current_task->getc_waiting = false;
         current_task->user_rip = 0;
         current_task->user_rsp = 0;
         current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
@@ -104,7 +105,7 @@ namespace Sched {
                 // discipline (and a task blocked on a task exit keeps its
                 // waiting_on contract). 'waiting_on == -1' guards that too.
                 if (t->state == SLEEPING && t->waiting_on == -1 &&
-                    t->wake_timestamp == (uint64_t)-1) {
+                    t->wake_timestamp == (uint64_t)-1 && !t->getc_waiting) {
                     t->state = READY;
                     return true;
                 }
@@ -181,18 +182,49 @@ namespace Sched {
         return n;
     }
 
-    static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall
+    // --- Keyboard focus ---
+    // Which task GETC delivers to. -1 = no focus policy: any waiting task
+    // is eligible (the pre-WM behavior).
+    static int focus_task = -1;
 
     void block_on_keyboard() {
+        current_task->getc_waiting = true;
         current_task->state = SLEEPING;
         current_task->wake_timestamp = (uint64_t)-1; // only the IRQ wakes us
-        keyboard_waiter = current_task;
     }
 
+    void clear_keyboard_waiting() {
+        current_task->getc_waiting = false;
+    }
+
+    // Wake the task a key should go to: the focused one, or (with no focus
+    // set) the first waiting task. getc_waiting is NOT cleared here — the
+    // woken task clears it once it actually drains a key, so a wake with an
+    // empty queue simply re-blocks.
     void wake_keyboard_waiter() {
-        if (keyboard_waiter != nullptr) {
-            keyboard_waiter->state = READY;
-            keyboard_waiter = nullptr;
+        Task* t = ready_queue;
+        if (t == nullptr) return;
+        do {
+            if (t->getc_waiting &&
+                (focus_task == -1 || t->id == focus_task)) {
+                t->state = READY;
+                if (focus_task == -1) return; // legacy: exactly one waiter
+            }
+            t = t->next;
+        } while (t != ready_queue);
+    }
+
+    void set_input_focus(int task_id) {
+        focus_task = task_id;
+        wake_keyboard_waiter(); // a queued key may now reach the new focus
+    }
+
+    int input_focus() { return focus_task; }
+
+    void input_focus_gone(int task_id) {
+        if (focus_task == task_id) {
+            focus_task = -1;
+            wake_keyboard_waiter();
         }
     }
 
@@ -259,6 +291,8 @@ namespace Sched {
                 }
             }
             Compositor::surfaces_for_task_gone(zombie->id);
+            Compositor::authority_gone(zombie->id);
+            input_focus_gone(zombie->id);
             Ipc::task_gone(zombie->id);
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);

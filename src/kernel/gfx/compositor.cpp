@@ -7,6 +7,7 @@
 #include "kernel/core/pmm.h"
 #include "kernel/core/vmm.h"
 #include "kernel/core/heap.h"
+#include "kernel/core/ipc.h"
 #include "kernel/gfx/cursor.h"
 
 extern volatile struct limine_framebuffer_request framebuffer_request;
@@ -58,6 +59,7 @@ static int order[MAX_SURFACES];
 static int order_count = 0;
 
 static int next_surface_id = 1;
+static int authority_task = -1; // display authority (see compositor.h)
 
 // --- the real framebuffer (kernel writes via HHDM) ---
 static uint32_t* fb_base = nullptr;
@@ -153,6 +155,20 @@ static Surface* find_owned(int id) {
     for (int i = 0; i < MAX_SURFACES; i++) {
         if (surfaces[i].used && surfaces[i].id == id && surfaces[i].task_id == me)
             return &surfaces[i];
+    }
+    return nullptr;
+}
+
+// Like find_owned, but the display authority may control any surface (it
+// places and restacks windows it does not own).
+static Surface* find_controllable(int id) {
+    int me = Sched::current_task_id();
+    bool auth = (authority_task != -1 && authority_task == me);
+    for (int i = 0; i < MAX_SURFACES; i++) {
+        if (surfaces[i].used && surfaces[i].id == id &&
+            (surfaces[i].task_id == me || auth)) {
+            return &surfaces[i];
+        }
     }
     return nullptr;
 }
@@ -264,6 +280,11 @@ int surface_create(uint64_t w, uint64_t h) {
 
     order_insert(slot, order_count); // new surfaces start on top
     damage_surface(s);               // it now covers (0,0)-(w,h)
+
+    // Tell the display authority a new window appeared (it owns policy).
+    if (authority_task != -1 && s->task_id != authority_task)
+        Ipc::post_kernel(authority_task, EVT_SURFACE_ADDED, (uint64_t)s->id, 0);
+
     return s->id;
 }
 
@@ -272,6 +293,7 @@ int surface_destroy(int id) {
     if (s == nullptr) return -1;
 
     int slot = slot_of(s);
+    int owner = s->task_id;
     uint64_t owner_cr3 = Sched::current_task_cr3(); // owner == the caller
 
     damage_surface(s); // repaint what it covered, after release
@@ -279,11 +301,15 @@ int surface_destroy(int id) {
     VMM::unmap_user_range(owner_cr3, s->va, s->page_count);
     Heap::free(s->frames);
     release_slot(slot);
+
+    if (authority_task != -1 && owner != authority_task)
+        Ipc::post_kernel(authority_task, EVT_SURFACE_REMOVED, (uint64_t)id, 0);
+
     return 0;
 }
 
 int surface_z(int id, int64_t pos) {
-    Surface* s = find_owned(id);
+    Surface* s = find_controllable(id);
     if (s == nullptr) return -1;
 
     // Precise damage: changing z only changes the picture where the moved
@@ -308,7 +334,7 @@ int surface_z(int id, int64_t pos) {
 }
 
 void surface_move(int id, int x, int y) {
-    Surface* s = find_owned(id);
+    Surface* s = find_controllable(id);
     if (s == nullptr) return;
     damage_surface(s);          // old position
     s->x = x;
@@ -511,13 +537,45 @@ void present() {
     irq_restore(flags);
 }
 
-void surface_commit() {
+void surface_commit(int rx, int ry, int rw, int rh) {
     int me = Sched::current_task_id();
+    bool whole = (rw <= 0 || rh <= 0);
     for (int i = 0; i < MAX_SURFACES; i++) {
-        if (surfaces[i].used && surfaces[i].task_id == me) damage_surface(&surfaces[i]);
+        if (!surfaces[i].used || surfaces[i].task_id != me) continue;
+        if (whole) {
+            damage_surface(&surfaces[i]);
+        } else {
+            damage_add(surfaces[i].x + rx, surfaces[i].y + ry,
+                       surfaces[i].x + rx + rw, surfaces[i].y + ry + rh);
+        }
     }
     present();
 }
+
+// --- display authority ---
+
+bool claim_authority() {
+    uint64_t flags = irq_save();
+    int me = Sched::current_task_id();
+    bool ok = (authority_task == -1 || authority_task == me);
+    if (ok) authority_task = me;
+    irq_restore(flags);
+    return ok;
+}
+
+bool is_authority() {
+    return authority_task != -1 && authority_task == Sched::current_task_id();
+}
+
+bool has_authority() { return authority_task != -1; }
+int  authority_id() { return authority_task; }
+
+void authority_gone(int task_id) {
+    if (authority_task == task_id) authority_task = -1;
+}
+
+int screen_width()  { fb_ready(); return (int)fb_w; }
+int screen_height() { fb_ready(); return (int)fb_h; }
 
 void set_console_on_top(bool on) {
     if (console_top == on) return;
@@ -532,12 +590,15 @@ bool console_on_top() { return console_top; }
 void surfaces_for_task_gone(int task_id) {
     for (int i = 0; i < MAX_SURFACES; i++) {
         if (surfaces[i].used && surfaces[i].task_id == task_id) {
+            int sid = surfaces[i].id;
             damage_surface(&surfaces[i]); // repaint where it was
             // The frames and mappings die with the task's address space
             // (destroy_user_space frees them); only the registry entry and
             // the frame list are ours to release.
             Heap::free(surfaces[i].frames);
             release_slot(i);
+            if (authority_task != -1 && task_id != authority_task)
+                Ipc::post_kernel(authority_task, EVT_SURFACE_REMOVED, (uint64_t)sid, 0);
         }
     }
 }

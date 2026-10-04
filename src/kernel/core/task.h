@@ -36,6 +36,7 @@ namespace Sched {
 
         // --- Process lifecycle ---
         int waiting_on;         // task id this task is blocked on (-1 = none)
+        bool getc_waiting;      // blocked in the GETC syscall (see input focus)
         uint64_t user_rip;      // for the userland trampoline
         uint64_t user_rsp;
         uint64_t cr3;           // this task's address space

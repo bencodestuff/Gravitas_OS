@@ -40,7 +40,7 @@ surface is a "window", and what is drawn are all userland policy.
 | 16 | `FBINFO` | `info*` | 0 on success (maps the framebuffer into the caller), −1 |
 | 17 | `TICKS` | — | timer ticks since boot (50 Hz) |
 | 18 | `SURFACE_CREATE` | `w, h, out*` | surface id, or −1 |
-| 19 | `SURFACE_COMMIT` | — | 0 (repaints the caller's surfaces) |
+| 19 | `SURFACE_COMMIT` | `rect*` (optional) | 0 (repaints the caller's surfaces, or only `rect` if given) |
 | 20 | `SURFACE_MOVE` | `id, x, y` | — |
 | 21 | `SPAWN_BG` | `name, argv, argc` | child id (returns immediately) |
 | 22 | `WAIT` | `pid` | exit code (each id once) |
@@ -53,6 +53,8 @@ surface is a "window", and what is drawn are all userland policy.
 | 29 | `SYSINFO` | `out*` | — |
 | 30 | `TASK_LIST` | `out*, max` | count written |
 | 31 | `FAULT_LAST` | `out*` | 1 if a fault was recorded, else 0 |
+| 32 | `WM_CLAIM` | — | 0 if the caller is/becomes the display authority, else −1 |
+| 33 | `INPUT_FOCUS` | `task_id` | 0 or −1 (authority only); −1 clears focus |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).
@@ -121,6 +123,8 @@ struct grv_sysinfo {
     unsigned long comp_full;   // full-screen paints
     unsigned long comp_rects;  // rectangles painted
     unsigned long comp_pixels; // pixels written
+    unsigned long screen_w;    // framebuffer size (for overlay creation)
+    unsigned long screen_h;
 };
 ```
 
@@ -152,6 +156,35 @@ struct grv_fault_record {
     unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
 };
 ```
+
+## Display authority and input
+
+The mechanisms a window manager needs, without the kernel knowing what a
+"window" is:
+
+- **`WM_CLAIM` (32)** makes the caller the one **display authority**. The
+  authority may `SURFACE_MOVE`/`SURFACE_Z` **any** surface (not just its
+  own) — how a WM places, raises and drags windows it does not own. It also
+  owns the mouse: once an authority exists, `MOUSERD` returns packets to it
+  alone. The authority is cleared automatically if that task dies.
+- **`INPUT_FOCUS` (33)**, authority-only, sets which task's `GETC` receives
+  keys. `-1` clears focus (back to "whichever task waits"). Focus clears if
+  the focused task dies. Clients use `GETC` unchanged.
+- **Window lifecycle events**: when a non-authority task creates or loses a
+  surface, the kernel posts a message to the authority's mailbox
+  (`from == -1`) with `type` = `GRV_EVT_SURFACE_ADDED` /
+  `GRV_EVT_SURFACE_REMOVED` and `a` = the surface id. The authority also
+  scans `SURFACE_LIST` once at startup for pre-existing surfaces.
+- **`SURFACE_COMMIT` with a rect** damages only that surface-local
+  rectangle, so a full-screen overlay can commit just its change:
+
+```
+struct grv_rect { long x, y, w, h; };   // surface-local; top-left = 0,0
+```
+
+Closing a window is `KILL`ing its owner — the kernel's teardown removes the
+surface (the authority cannot `SURFACE_DESTROY` another task's surface,
+since that would unmap memory the owner still holds).
 
 ## Related kernel debug keys
 

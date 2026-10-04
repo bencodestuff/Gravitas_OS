@@ -74,9 +74,30 @@ namespace Compositor {
     // are painted.
     void present();
 
-    // A surface commit: damage every surface owned by the calling task
-    // (its pixels may have changed) and flush.
-    void surface_commit();
+    // A surface commit: damage every surface owned by the calling task and
+    // flush. When rw > 0 and rh > 0, only the surface-local rectangle
+    // (rx,ry,rw,rh) is damaged — how a full-screen overlay commits cheaply.
+    void surface_commit(int rx, int ry, int rw, int rh);
+
+    // --- Display authority (mechanism) ---
+    // One task may claim authority: it can move/restack any surface, own the
+    // mouse, and set keyboard focus — the mechanisms a window manager needs.
+    // The kernel still knows nothing about "windows"; this is control over
+    // surfaces, not window semantics.
+    bool claim_authority();           // true if the caller is (now) the authority
+    bool is_authority();              // is the calling task the authority?
+    bool has_authority();             // is any task the authority?
+    int  authority_id();              // authority task id, or -1
+    void authority_gone(int task_id); // clear authority if it died
+
+    // Screen geometry (a WM needs the canvas size for its overlay).
+    int screen_width();
+    int screen_height();
+
+    // Event 'type' values the kernel posts to the authority's mailbox
+    // (mirrored in libc grv/syscall.h).
+    constexpr uint64_t EVT_SURFACE_ADDED   = 1;
+    constexpr uint64_t EVT_SURFACE_REMOVED = 2;
 
     // Debug overlay: draw the console layer ABOVE the surfaces, so kernel
     // text (faults, F12 dumps, the monitor) stays visible over windows.

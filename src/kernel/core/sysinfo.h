@@ -18,6 +18,8 @@ struct SysInfo {
     uint64_t comp_full;
     uint64_t comp_rects;
     uint64_t comp_pixels;
+    uint64_t screen_w;
+    uint64_t screen_h;
 };
 
 namespace Sysinfo {

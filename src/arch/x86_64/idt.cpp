@@ -203,6 +203,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  Sched::block_on_keyboard();
                  Sched::yield(); // returns when the keyboard IRQ wakes us
              }
+             Sched::clear_keyboard_waiting();
              regs->rax = (uint64_t)c;
         }
         /* Syscall 2 (list tarfs) and 3 (read by name) RETIRED — superseded by
@@ -251,10 +252,14 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         }
         else if (syscall_id == 15) { // MOUSE READ: rdi = struct* {dx,dy,buttons}
              // Non-blocking. rax = 1 if a packet was drained, 0 if none.
+             // Once a display authority exists, the mouse is its alone (the
+             // WM brokers pointer input); other tasks get nothing.
              struct MousePkt { int16_t dx, dy; uint8_t buttons; };
              MousePkt* out = (MousePkt*)regs->rdi;
              int16_t dx, dy; uint8_t buttons;
-             if (Mouse::read_packet(&dx, &dy, &buttons)) {
+             if (Compositor::has_authority() && !Compositor::is_authority()) {
+                 regs->rax = 0;
+             } else if (Mouse::read_packet(&dx, &dy, &buttons)) {
                  out->dx = dx; out->dy = dy; out->buttons = buttons;
                  regs->rax = 1;
              } else {
@@ -289,7 +294,14 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              regs->rax = (uint64_t)id;
         }
         else if (syscall_id == 19) { // SURFACE COMMIT: repaint our surfaces
-             Compositor::surface_commit();
+             // rdi = optional {x,y,w,h}* in surface-local pixels (0 = whole
+             // surface) — lets a full-screen overlay commit only its change.
+             struct RectPkt { int64_t x, y, w, h; };
+             RectPkt* r = (RectPkt*)regs->rdi;
+             if (r != nullptr)
+                 Compositor::surface_commit((int)r->x, (int)r->y, (int)r->w, (int)r->h);
+             else
+                 Compositor::surface_commit(0, 0, -1, -1);
              regs->rax = 0;
         }
         else if (syscall_id == 20) { // SURFACE MOVE: rdi=id, rsi=x, rdx=y
@@ -316,6 +328,17 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         }
         else if (syscall_id == 31) { // FAULT LAST: rdi = Fault::Record* -> 1/0
              regs->rax = Fault::last_fault((Fault::Record*)regs->rdi) ? 1 : 0;
+        }
+        else if (syscall_id == 32) { // WM CLAIM: become the display authority
+             regs->rax = Compositor::claim_authority() ? 0 : (uint64_t)-1;
+        }
+        else if (syscall_id == 33) { // INPUT FOCUS: rdi = task id (-1 = none)
+             if (Compositor::is_authority()) {
+                 Sched::set_input_focus((int)regs->rdi);
+                 regs->rax = 0;
+             } else {
+                 regs->rax = (uint64_t)-1;
+             }
         }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
