@@ -60,6 +60,7 @@ static int order_count = 0;
 
 static int next_surface_id = 1;
 static int authority_task = -1; // display authority (see compositor.h)
+static int hotkey_mod_mask = 0; // modifier chord reserved by the authority
 
 // --- the real framebuffer (kernel writes via HHDM) ---
 static uint32_t* fb_base = nullptr;
@@ -585,8 +586,14 @@ bool has_authority() { return authority_task != -1; }
 int  authority_id() { return authority_task; }
 
 void authority_gone(int task_id) {
-    if (authority_task == task_id) authority_task = -1;
+    if (authority_task == task_id) {
+        authority_task = -1;
+        hotkey_mod_mask = 0; // the chord dies with its owner
+    }
 }
+
+void set_hotkey_mask(int mask) { hotkey_mod_mask = mask; }
+int  hotkey_mask() { return has_authority() ? hotkey_mod_mask : 0; }
 
 int screen_width()  { fb_ready(); return (int)fb_w; }
 int screen_height() { fb_ready(); return (int)fb_h; }

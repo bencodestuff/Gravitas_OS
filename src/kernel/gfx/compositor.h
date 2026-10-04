@@ -90,6 +90,12 @@ namespace Compositor {
     int  authority_id();              // authority task id, or -1
     void authority_gone(int task_id); // clear authority if it died
 
+    // Global hotkey chord: the authority may reserve a modifier mask (e.g.
+    // Alt) so keys pressed with it are delivered to the authority instead
+    // of the focused task — how a WM implements Alt+Tab. 0 clears it.
+    void set_hotkey_mask(int mask);
+    int  hotkey_mask();
+
     // Screen geometry (a WM needs the canvas size for its overlay).
     int screen_width();
     int screen_height();
@@ -100,9 +106,10 @@ namespace Compositor {
     int cursor_y();
 
     // Event 'type' values the kernel posts to the authority's mailbox
-    // (mirrored in libc grv/syscall.h).
-    constexpr uint64_t EVT_SURFACE_ADDED   = 1;
-    constexpr uint64_t EVT_SURFACE_REMOVED = 2;
+    // (mirrored in libc grv/syscall.h). Distinct from the input event
+    // types (1-3) so an authority can receive both without ambiguity.
+    constexpr uint64_t EVT_SURFACE_ADDED   = 0x20;
+    constexpr uint64_t EVT_SURFACE_REMOVED = 0x21;
 
     // Debug overlay: draw the console layer ABOVE the surfaces, so kernel
     // text (faults, F12 dumps, the monitor) stays visible over windows.

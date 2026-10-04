@@ -71,11 +71,13 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_CONSOLE_DETACH 36
 #define GRV_SYSCALL_CONSOLE_READ   37
 #define GRV_SYSCALL_CONSOLE_WRITE  38
+#define GRV_SYSCALL_WM_HOTKEY      39
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
-   (from = -1). Mirrors Compositor::EVT_* in the kernel. */
-#define GRV_EVT_SURFACE_ADDED   1
-#define GRV_EVT_SURFACE_REMOVED 2
+   (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
+   input event types so the authority can receive both. */
+#define GRV_EVT_SURFACE_ADDED   0x20
+#define GRV_EVT_SURFACE_REMOVED 0x21
 
 /* Kernel post to a console owner when the tasks it hosts have output
    waiting. Mirrors Input::EV_CONSOLE_OUT; the message carries no payload. */
@@ -377,6 +379,13 @@ static inline long grv_console_read(char* buf, unsigned long max) {
 static inline long grv_console_write(long task_id, const char* buf,
                                      unsigned long n) {
     return syscall3(GRV_SYSCALL_CONSOLE_WRITE, task_id, (long)buf, (long)n);
+}
+
+/* Authority only: reserve a modifier chord (e.g. GRV_MOD_ALT) so keys with
+   it are delivered to us instead of the focused task — global hotkeys.
+   0 clears it. Returns 0, or -1 if we are not the authority. */
+static inline int grv_wm_hotkey(long mask) {
+    return (int)syscall1(GRV_SYSCALL_WM_HOTKEY, mask);
 }
 
 __END_DECLS

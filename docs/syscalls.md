@@ -60,6 +60,7 @@ surface is a "window", and what is drawn are all userland policy.
 | 36 | `CONSOLE_DETACH` | `task_id` | 0 or −1 (owner only) |
 | 37 | `CONSOLE_READ` | `buf, max` | bytes drained (owner; non-blocking) |
 | 38 | `CONSOLE_WRITE` | `task_id, buf, n` | bytes accepted, or −1 (owner only) |
+| 39 | `WM_HOTKEY` | `modifier mask` | 0 or −1 (`INPUT_FOCUS`-style authority check) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).
@@ -177,6 +178,9 @@ The mechanisms a window manager needs, without the kernel knowing what a
 - **`INPUT_FOCUS` (33)**, authority-only, sets which task's `GETC` receives
   keys. `-1` clears focus (back to "whichever task waits"). Focus clears if
   the focused task dies. Clients use `GETC` unchanged.
+- **`WM_HOTKEY` (39)**, authority-only, reserves a modifier chord (e.g.
+  `GRV_MOD_ALT`): keys pressed with it are posted to the authority as
+  `GRV_EV_KEY` regardless of focus — global hotkeys (Alt+Tab). `0` clears it.
 - **Window lifecycle events**: when a non-authority task creates or loses a
   surface, the kernel posts a message to the authority's mailbox
   (`from == -1`) with `type` = `GRV_EVT_SURFACE_ADDED` /

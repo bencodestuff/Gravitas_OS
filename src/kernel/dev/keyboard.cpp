@@ -57,6 +57,14 @@ namespace Keyboard {
     // Deliver a decoded key: to the focused event-mode task as a message, or
     // (for the console) to the character ring that GETC drains.
     static void deliver(uint64_t value, uint64_t mods, char ring_char) {
+        // A reserved modifier chord goes to the display authority (global
+        // hotkeys — the WM's Alt+Tab), whatever holds focus.
+        uint64_t grab = (uint64_t)Compositor::hotkey_mask();
+        int auth = Compositor::authority_id();
+        if (auth > 0 && grab != 0 && (mods & grab) == grab) {
+            Ipc::post_kernel(auth, Input::EV_KEY, value, mods);
+            return;
+        }
         int target = Sched::input_focus();
         if (target != -1 && Sched::task_event_input(target)) {
             Ipc::post_kernel(target, Input::EV_KEY, value, mods);

@@ -365,6 +365,16 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              regs->rax = (uint64_t)(long)Sched::console_write(
                  (int)regs->rdi, (const char*)regs->rsi, (int)regs->rdx);
         }
+        else if (syscall_id == 39) { // WM HOTKEY: rdi = modifier mask (authority only)
+             // Reserve a chord (e.g. Alt) so those keys reach the authority
+             // instead of the focused task — global hotkeys (Alt+Tab).
+             if (Compositor::is_authority()) {
+                 Compositor::set_hotkey_mask((int)regs->rdi);
+                 regs->rax = 0;
+             } else {
+                 regs->rax = (uint64_t)-1;
+             }
+        }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
              // which returns immediately. rax = child task id, or -1.
