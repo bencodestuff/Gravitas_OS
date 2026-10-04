@@ -60,6 +60,33 @@ volatile struct limine_kernel_address_request kernel_address_request = {
 #define HEAP_PHYS_BASE  0x08000000
 #define HEAP_SIZE       0x400000 // 4MB
 
+// Load a program from the tarfs into a fresh address space and start it as
+// a ring-3 task. Returns the new task id, or -1 on any failure.
+static int spawn_program(const char* path, const char* name) {
+    int fd = VFS::open_fd(path, VFS::O_RDONLY);
+    if (fd < 0) return -1;
+
+    uint64_t size = VFS::fd_size(fd);
+    char* data = new char[size];
+    VFS::read_fd(fd, data, size);
+    VFS::close_fd(fd);
+
+    uint64_t old_cr3 = VMM::current_pml4();
+    uint64_t child_cr3 = VMM::clone_kernel_space();
+    VMM::switch_pml4(child_cr3);
+    uint64_t entry = ELF::load_elf((uint8_t*)data);
+    delete[] data;
+
+    if (entry == 0) {
+        VMM::switch_pml4(old_cr3);
+        VMM::destroy_user_space(child_cr3);
+        return -1;
+    }
+    int id = Sched::create_user_task(entry, name, 0, nullptr, child_cr3);
+    VMM::switch_pml4(old_cr3);
+    return id;
+}
+
 // --- KERNEL MAIN ---
 extern "C" void kmain(void) {
     // --- kernel_early: the C++ runtime bootstrap ---
@@ -250,31 +277,20 @@ extern "C" void kmain(void) {
                                           : "[VFS] /tmp NOT a dir!\n");
     }
 
-    // Spawn the userland shell as a real ring-3 task in its own address space
-    // (bare name resolves through /bin via the VFS PATH fallback)
-    int shell_fd = VFS::open_fd("/bin/shell.elf", VFS::O_RDONLY);
-    if (shell_fd < 0) {
-        kprint("[Kernel] shell.elf not found in tarfs!\n");
+    // Bring up userland: the console shell, then the window manager. The
+    // shell is created first so the WM can find and focus it by name; the
+    // WM runs in the background and owns the display (windows, focus,
+    // pointer) from boot. If it is missing, a plain console still works.
+    if (spawn_program("/bin/shell.elf", "shell") < 0)
+        kprint("[Kernel] shell.elf not found or failed to load!\n");
+
+    int wm_id = spawn_program("/bin/wm.elf", "wm.elf");
+    if (wm_id < 0) {
+        kprint("[Kernel] wm.elf not found — running a plain console.\n");
     } else {
-        uint64_t fsize = VFS::fd_size(shell_fd);
-        char* shell_data = new char[fsize];
-        VFS::read_fd(shell_fd, shell_data, fsize);
-        VFS::close_fd(shell_fd);
-
-        uint64_t old_cr3 = VMM::current_pml4();
-        uint64_t child_cr3 = VMM::clone_kernel_space();
-        VMM::switch_pml4(child_cr3);
-
-        uint64_t entry = ELF::load_elf((uint8_t*)shell_data);
-        delete[] shell_data;
-        if (entry != 0) {
-            Sched::create_user_task(entry, "shell", 0, nullptr, child_cr3);
-            VMM::switch_pml4(old_cr3);
-        } else {
-            VMM::switch_pml4(old_cr3);
-            VMM::destroy_user_space(child_cr3);
-            kprint("[Kernel] shell.elf failed to load!\n");
-        }
+        kprint("[Kernel] window manager as task ");
+        kprint_uint((uint64_t)wm_id);
+        kprint("\n");
     }
 
     while (1) {

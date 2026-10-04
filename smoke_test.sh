@@ -170,6 +170,15 @@ def wait_count(pat, n, timeout=40.0):
 def wait_for(pat, timeout=40.0):
     wait_count(pat, 1, timeout)
 
+# The kernel brings up a window manager at boot. Stop it so the low-level
+# surface/damage tests below run against unmanaged surfaces (as they were
+# written); the WM step at the end starts a fresh one.
+m = re.search(r'window manager as task (\d+)', read_log())
+if m:
+    type_str('kill ' + m.group(1))
+    key('ret')
+    time.sleep(0.4)
+
 # 0) Damage compositor: a small window's lifecycle on a mostly-empty screen
 # must repaint only its rectangles. F12 dumps the compositor counters to
 # serial; the delta across this run is asserted below. First so the screen
