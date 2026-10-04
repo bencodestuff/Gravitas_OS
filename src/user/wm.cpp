@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <grv/syscall.h>
 #include <grv/text.h>
 #include <grv/input.h>
@@ -31,6 +32,9 @@ static const unsigned int CLOSE_BG    = 0xFFC04040;
 static const unsigned int TITLE_FG    = 0xFFFFFFFF;
 static const unsigned int BAR_BG      = 0xFF17191C;
 static const unsigned int LAUNCH_BG   = 0xFF356B46;
+static const unsigned int MENU_BG     = 0xFF24282E;
+static const unsigned int MENU_EDGE   = 0xFF4A5568;
+static const unsigned int MENU_SEP    = 0xFF343A44;
 
 struct Win {
     int  sid;          // surface id
@@ -184,6 +188,7 @@ static Win* find_owner(int owner) {
 // Repaint a screen rectangle of the overlay: clear it, then redraw every
 // window (bottom-to-top) that overlaps it, clipped to the rectangle.
 static void draw_taskbar(); // defined below; always drawn on top
+static void draw_menu();    // launcher popup, above the taskbar
 
 static void redraw(int x0, int y0, int x1, int y1) {
     x0 = maxi(x0, 0); y0 = maxi(y0, 0);
@@ -200,23 +205,35 @@ static void redraw(int x0, int y0, int x1, int y1) {
     }
 
     draw_taskbar(); // the bar sits above every window
+    draw_menu();    // the launcher popup sits above the bar
 
     grv_surface_commit_rect(x0, y0, x1 - x0, y1 - y0);
 }
 
 static void full_redraw() { redraw(0, 0, overlay_w, overlay_h); }
 
-// --- taskbar + launcher ---------------------------------------------
-// Drawn into the overlay, above every window: a launcher on the left and a
-// button per open window. Clicking a button starts a program or raises a
-// window. Layout is computed once into tbtns so drawing and hit-testing
-// cannot drift apart.
+// --- taskbar, app launcher, menu ------------------------------------
+// Drawn into the overlay, above every window. The taskbar holds an "Apps"
+// button (which opens a small program menu) and a button per open window.
+// Layout is computed once into tbtns so drawing and hit-testing cannot
+// drift apart.
 
-struct LaunchBtn { const char* label; const char* prog; };
-static const LaunchBtn launchers[] = { { "Terminal", "term.elf" } };
-static const int nlaunch = (int)(sizeof(launchers) / sizeof(launchers[0]));
+struct AppItem { const char* label; const char* prog; };
+static const AppItem apps[] = {
+    { "Terminal",    "term.elf" },
+    { "Demo window", "win.elf"  },
+};
+static const int napps = (int)(sizeof(apps) / sizeof(apps[0]));
 
-struct TBtn { int x, w; int kind; int idx; }; // kind 0 = launch, 1 = window
+static const int MENU_W      = 150;
+static const int MENU_ITEM_H = 22;
+
+static int menu_open = 0;
+
+static int menu_x() { return 4; }
+static int menu_y() { return (overlay_h - TASKBAR_H) - napps * MENU_ITEM_H; }
+
+struct TBtn { int x, w; int kind; int idx; }; // kind 0 = apps, 1 = window
 static TBtn tbtns[MAXWIN + 4];
 static int  ntbtn = 0;
 
@@ -225,14 +242,10 @@ static int slen(const char* s) { int n = 0; while (s[n]) n++; return n; }
 static void taskbar_layout() {
     ntbtn = 0;
     int x = 4;
-    for (int i = 0; i < nlaunch; i++) {
-        int w = 8 * slen(launchers[i].label) + 14;
-        tbtns[ntbtn].x = x; tbtns[ntbtn].w = w;
-        tbtns[ntbtn].kind = 0; tbtns[ntbtn].idx = i;
-        ntbtn++;
-        x += w + 6;
-    }
-    x += 8;
+    tbtns[ntbtn].x = x; tbtns[ntbtn].w = 8 * 4 + 16; // "Apps"
+    tbtns[ntbtn].kind = 0; tbtns[ntbtn].idx = 0;
+    ntbtn++;
+    x += tbtns[0].w + 10;
     for (int i = 0; i < nwin && ntbtn < MAXWIN + 4; i++) {
         int w = 8 * slen(wins[i].title) + 14;
         if (w < 84) w = 84;
@@ -255,7 +268,7 @@ static void draw_taskbar() {
         const char* label;
         if (b->kind == 0) {
             bg = LAUNCH_BG;
-            label = launchers[b->idx].label;
+            label = "Apps";
         } else {
             bg = (wins[b->idx].owner == focused) ? FOCUS_BAR : UNFOCUS_BAR;
             label = wins[b->idx].title;
@@ -265,10 +278,109 @@ static void draw_taskbar() {
     }
 }
 
+static void draw_menu() {
+    if (!menu_open) return;
+    int fh = font_ok ? (int)font.height : 8;
+    int x = menu_x(), y = menu_y();
+    fill(x, y, MENU_W, napps * MENU_ITEM_H, MENU_BG);
+    fill(x, y, MENU_W, 1, MENU_EDGE);
+    for (int i = 0; i < napps; i++) {
+        int iy = y + i * MENU_ITEM_H;
+        if (i > 0) fill(x + 6, iy, MENU_W - 12, 1, MENU_SEP);
+        text(x + 9, iy + (MENU_ITEM_H - fh) / 2, apps[i].label, TITLE_FG);
+    }
+}
+
+// Repaint just the menu's rectangle (open/close), restoring what it covered.
+static void redraw_menu() {
+    int x = menu_x(), y = menu_y();
+    redraw(x, y, x + MENU_W, y + napps * MENU_ITEM_H);
+}
+
 static void launch(const char* prog) {
     const char* argv[1] = { prog };
     long pid = grv_spawn_bg(prog, argv, 1);
     printf("wm: launch '%s' -> %d\n", prog, (int)pid);
+}
+
+// --- wallpaper ------------------------------------------------------
+// Load a 24-bit uncompressed BMP and scale it to COVER the screen (crop the
+// overflow) into an opaque full-screen surface at the bottom of the stack.
+
+static int load_wallpaper(const char* path, int sw, int sh) {
+    int fd = grv_open(path, GRV_O_RDONLY);
+    if (fd < 0) return -1;
+
+    unsigned char hdr[64];
+    long got = 0;
+    while (got < 64) {
+        long n = grv_read_fd(fd, hdr + got, 64 - got);
+        if (n <= 0) break;
+        got += n;
+    }
+    if (got < 54 || hdr[0] != 'B' || hdr[1] != 'M') { grv_close(fd); return -1; }
+
+    unsigned long off = (unsigned long)hdr[10] | ((unsigned long)hdr[11] << 8)
+                      | ((unsigned long)hdr[12] << 16) | ((unsigned long)hdr[13] << 24);
+    int iw = (int)(hdr[18] | (hdr[19] << 8) | (hdr[20] << 16) | (hdr[21] << 24));
+    int ih = (int)(hdr[22] | (hdr[23] << 8) | (hdr[24] << 16) | (hdr[25] << 24));
+    int bpp = hdr[28] | (hdr[29] << 8);
+    int comp = hdr[30] | (hdr[31] << 8);
+    if (iw <= 0 || ih == 0 || bpp != 24 || comp != 0) { grv_close(fd); return -1; }
+    int topdown = (ih < 0);
+    if (ih < 0) ih = -ih;
+
+    unsigned long stride = (((unsigned long)iw * 3 + 3) & ~3ul);
+    unsigned long total = off + stride * (unsigned long)ih;
+    unsigned char* buf = (unsigned char*)malloc(total);
+    if (!buf) { grv_close(fd); return -1; }
+    for (long i = 0; i < got; i++) buf[i] = hdr[i];
+    unsigned long pos = (unsigned long)got;
+    while (pos < total) {
+        long n = grv_read_fd(fd, buf + pos, total - pos);
+        if (n <= 0) break;
+        pos += (unsigned long)n;
+    }
+    grv_close(fd);
+    if (pos < total) { free(buf); return -1; }
+
+    struct grv_surface_info si;
+    int sid = grv_surface_create((unsigned long)sw, (unsigned long)sh, &si);
+    if (sid < 0) { free(buf); return -1; }
+
+    // Cover: scale by the larger ratio, centre the overflow.
+    unsigned long rx = ((unsigned long)sw << 16) / (unsigned long)iw;
+    unsigned long ry = ((unsigned long)sh << 16) / (unsigned long)ih;
+    unsigned long scale = rx > ry ? rx : ry;
+    if (scale == 0) scale = 1;
+    int offx = (int)((((unsigned long)iw * scale) >> 16) - (unsigned long)sw) / 2;
+    int offy = (int)((((unsigned long)ih * scale) >> 16) - (unsigned long)sh) / 2;
+
+    static int colmap[4096], rowmap[4096];
+    for (int x = 0; x < sw; x++) {
+        int s = (int)(((unsigned long)(x + offx) << 16) / scale);
+        colmap[x] = s < 0 ? 0 : (s >= iw ? iw - 1 : s);
+    }
+    for (int y = 0; y < sh; y++) {
+        int s = (int)(((unsigned long)(y + offy) << 16) / scale);
+        rowmap[y] = s < 0 ? 0 : (s >= ih ? ih - 1 : s);
+    }
+
+    unsigned int* px = (unsigned int*)si.address;
+    for (int y = 0; y < sh; y++) {
+        int sy = rowmap[y];
+        const unsigned char* srow = buf + off
+            + (unsigned long)(topdown ? sy : (ih - 1 - sy)) * stride;
+        unsigned int* drow = px + (unsigned long)y * (unsigned long)sw;
+        for (int x = 0; x < sw; x++) {
+            const unsigned char* p = srow + (unsigned long)colmap[x] * 3;
+            drow[x] = 0xFF000000u | ((unsigned int)p[2] << 16)
+                    | ((unsigned int)p[1] << 8) | (unsigned int)p[0];
+        }
+    }
+    free(buf);
+    grv_surface_lower(sid); // behind every window
+    return sid;
 }
 
 // --- window management ----------------------------------------------
@@ -415,13 +527,26 @@ static Win* window_body_at(int cx, int cy) {
 }
 
 static void on_press(int cx, int cy) {
-    // The taskbar is above every window: it takes the click first.
+    // The launcher menu floats above everything and takes the click first.
+    if (menu_open) {
+        int mx = menu_x(), my = menu_y();
+        if (cx >= mx && cx < mx + MENU_W &&
+            cy >= my && cy < my + napps * MENU_ITEM_H) {
+            int i = (cy - my) / MENU_ITEM_H;
+            if (i >= 0 && i < napps) launch(apps[i].prog);
+        }
+        menu_open = 0;
+        redraw_menu();
+        return;
+    }
+
+    // The taskbar is above every window: it takes the click next.
     if (cy >= overlay_h - TASKBAR_H) {
         taskbar_layout();
         for (int i = 0; i < ntbtn; i++) {
             const TBtn* b = &tbtns[i];
             if (cx >= b->x && cx < b->x + b->w) {
-                if (b->kind == 0) launch(launchers[b->idx].prog);
+                if (b->kind == 0) { menu_open = 1; redraw_menu(); }
                 else focus_window(&wins[b->idx]);
                 return;
             }
@@ -535,6 +660,21 @@ int main(int argc, char** argv) {
            overlay_w, overlay_h, overlay_id, font_ok ? "yes" : "no");
 
     scan_existing();
+
+    // Desktop wallpaper: an opaque full-screen surface at the bottom of the
+    // stack. Try the shipped pictures; if none load, the console background
+    // stays. Created after scan_existing so it is not taken for a window.
+    static const char* walls[] = {
+        "/Pictures/Rainier.bmp", "/Pictures/Earth.bmp",
+        "/Pictures/Sun.bmp",     "/Pictures/lena.bmp",
+    };
+    for (int i = 0; i < (int)(sizeof(walls) / sizeof(walls[0])); i++) {
+        if (load_wallpaper(walls[i], overlay_w, overlay_h) >= 0) {
+            grv_surface_commit(); // paint it
+            printf("wm: wallpaper %s\n", walls[i]);
+            break;
+        }
+    }
 
     while (1) {
         struct grv_msg m;

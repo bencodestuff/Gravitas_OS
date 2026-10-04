@@ -248,8 +248,9 @@ wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'window #[0-9]+ gone')
 
-# 10b) Taskbar launcher + Alt+Tab (cursor now ~426,45).
-mmove(-386, 743); mclick()                   # the launcher button (~40,788)
+# 10b) Launcher menu + Alt+Tab (cursor now ~426,45).
+mmove(-386, 743); mclick()                   # the "Apps" button (~40,788)
+mmove(0, -45); mclick()                       # the "Terminal" item (~40,743)
 wait_for("wm: launch 'term.elf'")
 wait_count(r"wm: window #[0-9]+ 'term", 2)    # the launched terminal
 cmd('sendkey alt-tab')
@@ -397,6 +398,10 @@ fi
 # Taskbar launcher: clicking it started a program
 if ! grep -q "wm: launch 'term.elf'" "$LOG"; then
     fail "wm launcher did not spawn a program"
+fi
+# Desktop wallpaper loaded from a shipped BMP
+if ! grep -q "wm: wallpaper" "$LOG"; then
+    fail "wm did not load a wallpaper"
 fi
 # Alt+Tab: a global hotkey cycled focus (a second 'focus task' line)
 if [ "$(grep -c 'wm: focus task' "$LOG")" -lt 2 ]; then
