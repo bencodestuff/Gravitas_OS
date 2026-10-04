@@ -3,8 +3,15 @@
 #include "fs/vfs.h"
 #include "kernel/gfx/framebuffer.h"
 
-// Defined in initrd.cpp
-extern volatile struct limine_module_request module_request;
+// The tar image arrives as a Limine module (see build_iso.sh).
+__attribute__((used, section(".requests")))
+volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
+    .revision = 0,
+    .response = nullptr,
+    .internal_module_count = 0,
+    .internal_modules = nullptr,
+};
 
 extern "C" void kprint_uint(uint64_t value);
 

@@ -1,2 +1,0 @@
-Hello from the Filesystem!
-This is a file loaded by Limine.

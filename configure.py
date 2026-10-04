@@ -128,7 +128,7 @@ def main():
         # Userland: one freestanding ELF per source, linked at 0x400000
         # (must match USER_CODE_ADDR in the kernel)
         user_link_flags = " ".join([
-            "-nostdlib", "-static", "-no-pie", "-Wl,--build-id=none",
+            "-nostdlib", "-static", "-Wl,--build-id=none",
             "-Wl,-Ttext=$base", "-Wl,-z,max-page-size=0x1000",
             "-Wl,-e,_start",
         ])

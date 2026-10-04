@@ -34,10 +34,6 @@ namespace VMM {
     // guaranteed-unique mapping in that address space.
     uint64_t alloc_user_range(uint64_t pml4_phys, uint64_t pages);
 
-    // Mark a VA range as reserved WITHOUT mapping pages (e.g. the brk
-    // arena start). Subsequent alloc_user_range calls will skip it.
-    bool reserve_user_range(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages);
-
     // Free all user-half frames and tables of an address space (the kernel
     // upper half is shared and left alone). Used at process exit.
     void destroy_user_space(uint64_t pml4_phys);

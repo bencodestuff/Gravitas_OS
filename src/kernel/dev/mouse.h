@@ -16,9 +16,6 @@ namespace Mouse {
     // bit2 middle).
     bool read_packet(int16_t* dx, int16_t* dy, uint8_t* buttons);
 
-    // Non-blocking packet availability peek (for polling loops)
-    bool has_packet();
-
     // Accumulated cursor position (deltas applied as packets arrive,
     // clamped at composite time to the framebuffer bounds)
     int cursor_x();

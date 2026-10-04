@@ -4,7 +4,6 @@
 #include "fs/vfs.h" // fd tables are per-task (Unix style), vfs.h defines MAX_FDS
 
 namespace Sched {
-    void sleep(uint64_t ms);
     void init();
     void create_task(void(*entry_point)());
     void yield(); // Voluntarily give up CPU

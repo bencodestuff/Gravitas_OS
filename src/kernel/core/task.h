@@ -23,7 +23,6 @@ namespace Sched {
         uint64_t wake_timestamp;
         char name[16];
 
-        // --- MISSING FIELD ---
         uint64_t kstack_top; // We need this for the TSS!
         uint64_t* kstack_mem; // Base of the heap-allocated kernel stack (for freeing)
 

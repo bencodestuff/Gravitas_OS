@@ -197,8 +197,8 @@ namespace VMM {
     }
 
     // --- User VA allocator (walk-the-tables, no metadata) ---
-    // Region: 256MB .. 1GB. Below it: code (0x400000+), stacks/brk legacy
-    // (0x500000..0x8000000). Above: kernel space.
+    // Region: 256MB .. 1GB. ELF code loads at 0x400000 below it; the
+    // kernel's upper half is above.
     constexpr uint64_t USER_VA_BASE = 0x10000000; // 256MB
     constexpr uint64_t USER_VA_END  = 0x40000000; // 1GB
 
@@ -247,11 +247,6 @@ namespace VMM {
             candidate += 4096;
         }
         return 0; // region exhausted
-    }
-
-    bool reserve_user_range(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages) {
-        if (!range_free(pml4_phys, vaddr, pages)) return false;
-        return reserve_guard(pml4_phys, vaddr, true);
     }
 
     void unmap_user_range(uint64_t pml4_phys, uint64_t virtual_addr, uint64_t pages) {

@@ -30,8 +30,6 @@ constexpr uint8_t MOUSE_IDENTIFY        = 0xF2;
 constexpr uint8_t PACKET_FLAGS_ALWAYS = 0x08;
 constexpr uint8_t PACKET_X_NEG  = 0x10;
 constexpr uint8_t PACKET_Y_NEG  = 0x20;
-constexpr uint8_t PACKET_X_OVF  = 0x40;
-constexpr uint8_t PACKET_Y_OVF  = 0x80;
 constexpr uint8_t PACKET_BTN_LEFT   = 0x01;
 constexpr uint8_t PACKET_BTN_RIGHT  = 0x02;
 constexpr uint8_t PACKET_BTN_MIDDLE = 0x04;
@@ -206,10 +204,6 @@ namespace Mouse {
         if (dy) *dy = p.dy;
         if (buttons) *buttons = p.buttons;
         return true;
-    }
-
-    bool has_packet() {
-        return read_ptr != write_ptr;
     }
 
     int cursor_x() { return cur_x; }

@@ -34,24 +34,24 @@ static volatile LIMINE_BASE_REVISION(3);
 __attribute__((used, section(".requests")))
 static volatile struct limine_memmap_request memmap_request = {
     .id = LIMINE_MEMMAP_REQUEST,
-    .revision = 0
+    .revision = 0,
+    .response = nullptr,
 };
 
-// MOVED FROM PMM/VMM: The HHDM Request
+// HHDM request: the kernel-wide window onto all physical memory
 __attribute__((used, section(".requests")))
 volatile struct limine_hhdm_request hhdm_request = {
     .id = LIMINE_HHDM_REQUEST,
-    .revision = 0
+    .revision = 0,
+    .response = nullptr,
 };
 
 __attribute__((used, section(".requests")))
 volatile struct limine_kernel_address_request kernel_address_request = {
     .id = LIMINE_KERNEL_ADDRESS_REQUEST,
-    .revision = 0
+    .revision = 0,
+    .response = nullptr,
 };
-
-// Declared in initrd.cpp
-extern volatile struct limine_module_request module_request;
 
 // The kernel heap lives in the HHDM window at physical 0x08000000 (128MB),
 // reserved by the PMM. Every address space shares the HHDM mapping, so the

@@ -1,28 +1,7 @@
 #include "kernel/core/pmm.h"
 #include "kernel/klib/klib.h"
 
-// Allow this file to use the serial printer from main.cpp
-
 extern volatile struct limine_hhdm_request hhdm_request;
-
-// Debug printer
-static void pmm_print_hex(uint64_t value) {
-    char buffer[20];
-    int pos = 0; 
-    buffer[pos++] = '0'; buffer[pos++] = 'x';
-    if (value == 0) {
-        buffer[pos++] = '0';
-    } else {
-        for (int i = 60; i >= 0; i -= 4) {
-            uint8_t nibble = (value >> i) & 0xF;
-            if (nibble == 0 && pos == 2) continue;
-            buffer[pos++] = (nibble < 10) ? (nibble + '0') : (nibble - 10 + 'A');
-        }
-    }
-    buffer[pos++] = '\n';
-    buffer[pos] = '\0';
-    kprint(buffer);
-}
 
 namespace PMM {
     static uint8_t* bitmap = nullptr;
@@ -59,7 +38,9 @@ namespace PMM {
         }
         uint64_t hhdm_offset = hhdm_request.response->offset;
         
-        kprint("[PMM] HHDM Offset: "); pmm_print_hex(hhdm_offset);
+        kprint("[PMM] HHDM Offset: ");
+        kprint_hex(hhdm_offset);
+        kprint("\n");
 
         // Find range
         highest_addr = 0;
@@ -90,7 +71,9 @@ namespace PMM {
             for(;;) asm("hlt");
         }
 
-        kprint("[PMM] Bitmap VIRTUAL Address: "); pmm_print_hex((uint64_t)bitmap);
+        kprint("[PMM] Bitmap VIRTUAL Address: ");
+        kprint_hex((uint64_t)bitmap);
+        kprint("\n");
 
         // Initialize (Mark all used) - This triggered the crash before!
         memory_set(bitmap, 0xFF, bitmap_size); 
@@ -144,8 +127,6 @@ namespace PMM {
             bitmap_set(first_page + i);
         }
     }
-
- // src/kernel/pmm.cpp
 
     uint64_t alloc_page() {
         // --- FIX: Start at 1 to avoid Physical Address 0x0 ---

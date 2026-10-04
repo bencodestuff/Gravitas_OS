@@ -106,7 +106,6 @@ uint64_t readdir(const char* path, char* buf, uint64_t max);
 void      fds_init_current();               // zero the table
 FileHandle** fds_of_current();               // the current task's table
 FileHandle*  fd_slot_get(int fd);
-FileHandle*  fd_get(int fd);                 // syscall-facing alias
 uint64_t     fd_size(int fd);                // bytes reported at open
 int          fd_slot_alloc(Filesystem* fs, void* fs_handle, uint64_t size);
 }

@@ -381,9 +381,4 @@ uint64_t fd_size(int fd) {
     return (h == nullptr) ? 0 : h->size;
 }
 
-// --- fd slot lookup used by syscalls ---
-FileHandle* fd_get(int fd) {
-    return fd_slot_get(fd);
-}
-
 } // namespace VFS
