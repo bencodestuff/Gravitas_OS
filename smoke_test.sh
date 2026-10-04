@@ -15,6 +15,8 @@
 #   * M6 damage compositor: a small window's lifecycle repaints only its
 #     rectangles, not the screen (damagetest.elf + F12 stat deltas)
 #   * M7 debugger: introspection syscalls + recorded crash (mon.elf)
+#   * M9 window manager: display authority, decisions, focus + close
+#     (wm.elf + win.elf, driven with injected mouse events)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -141,6 +143,14 @@ def type_dotted(text):
         if i != len(segs) - 1:
             raw('34', 'b4')
 
+def mmove(dx, dy):
+    cmd('mouse_move %d %d' % (dx, dy))
+    time.sleep(0.25)
+
+def mclick():
+    cmd('mouse_button 1'); time.sleep(0.2)
+    cmd('mouse_button 0'); time.sleep(0.35)
+
 def read_log():
     try:
         with open(LOG, 'r', errors='ignore') as f:
@@ -206,6 +216,16 @@ type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 
 # 9) Debugger: mon reads the introspection syscalls and the crash record
 type_dotted('run mon.elf'); key('ret'); wait_for('mon: last fault')
+
+# 10) Window manager: claim, discover a client window, click to focus it,
+# type into it (only the focused task gets keys), then close it.
+type_dotted('bg wm.elf'); key('ret'); wait_for('wm: display authority')
+type_dotted('bg win.elf'); key('ret'); wait_for(r"wm: window #[0-9]+ 'win")
+mmove(-440, -350); mclick()                 # click the title bar (window at 80,60)
+wait_for('wm: focus task')
+type_str('a'); wait_for(r"win: key 'a'")
+mmove(226, -5); mclick()                     # click the close box (~426,45)
+wait_for(r'wm: window #[0-9]+ gone')
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
 time.sleep(0.3)
@@ -306,6 +326,21 @@ if ! grep -q "mon: last fault: task 'crash.elf'" "$LOG"; then
     fail "mon did not read back the recorded crash (fault record broken?)"
 fi
 echo "== debugger monitor ok (sysinfo/tasks/surfaces/crash record) =="
+
+# Window manager (wm.elf + win.elf): claim, discover, focus, type, close
+if ! grep -q 'wm: display authority' "$LOG"; then
+    fail "wm did not claim the display authority"
+fi
+if ! grep -qE "wm: window #[0-9]+ 'win" "$LOG"; then
+    fail "wm did not discover/decorate the client window"
+fi
+if ! grep -q "win: key 'a'" "$LOG"; then
+    fail "wm did not route the keyboard to the focused window"
+fi
+if ! grep -qE "wm: window #[0-9]+ gone" "$LOG"; then
+    fail "wm did not close the window"
+fi
+echo "== window manager ok (claim/discover/focus/type/close) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then
