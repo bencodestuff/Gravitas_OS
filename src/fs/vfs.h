@@ -22,6 +22,7 @@ constexpr int O_RDONLY   = 0;
 constexpr int O_WRONLY   = 1;
 constexpr int O_RDWR     = 2;
 constexpr int O_CREATE   = 4;     // create if missing (ramfs only)
+constexpr int O_TRUNC    = 8;     // truncate to 0 on open (ramfs only)
 
 // --- Filesystem backend interface ---
 struct Filesystem {
@@ -53,6 +54,13 @@ struct Filesystem {
 
     // Create a directory (ramfs only; used by mount() for mountpoints)
     int (*mkdir)(void* priv, const char* path);
+
+    // Set a file's length via an open handle (ramfs only; nullptr if the
+    // backend cannot). Shrinking discards; growing zero-fills.
+    int (*truncate)(void* priv, void* handle, uint64_t size);
+
+    // Remove a file/dir by path (ramfs only; nullptr if read-only).
+    int (*unlink)(void* priv, const char* path);
 };
 
 // --- An open file (referenced by an fd) ---
@@ -101,6 +109,22 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size);
 
 // Directory listing into a newline-separated, NUL-terminated buffer
 uint64_t readdir(const char* path, char* buf, uint64_t max);
+
+// Seek an fd's read/write offset. 'whence' is 0=SET, 1=CUR, 2=END. Returns
+// the new offset, or -1.
+long lseek_fd(int fd, long offset, int whence);
+
+// Create a directory / remove a file, by path. Return 0 or -1 (read-only fs
+// and missing paths fail).
+int mkdir(const char* path);
+int unlink(const char* path);
+
+// Set a file's length by fd. Returns 0 or -1.
+int ftruncate_fd(int fd, uint64_t size);
+
+// Look up a path's size and type without opening it. Returns 0, or -1 if the
+// path does not exist.
+int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir);
 
 // fd table plumbing (implemented against the current task in sched.cpp)
 void      fds_init_current();               // zero the table

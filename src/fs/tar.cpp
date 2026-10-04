@@ -314,6 +314,8 @@ namespace Tar {
         .readdir  = tarfs_readdir,
         .is_dir   = tarfs_is_dir,
         .mkdir    = nullptr,   // read-only
+        .truncate = nullptr,   // read-only
+        .unlink   = nullptr,   // read-only
     };
 
     VFS::Filesystem* vfs_instance() {

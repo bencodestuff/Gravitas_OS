@@ -26,6 +26,7 @@
 #   * M13 image viewer + image library: decodes a picture and displays it
 #     (imageview.elf, grv_image)
 #   * libc basics: string/formatted output/allocator/parse/sort (libctest.elf)
+#   * file API: seek/stat/truncate/create/remove (filetest.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -237,6 +238,9 @@ type_dotted('run consoletest.elf'); key('ret'); wait_for('consoletest: PASS')
 # 7c) libc basics: string, formatted output, allocator, parsing, sort.
 type_dotted('run libctest.elf'); key('ret'); wait_for('libctest: all checks pass')
 
+# 7d) File API: mkdir/create/write/stat/seek/truncate/unlink on the ramfs.
+type_dotted('run filetest.elf'); key('ret'); wait_for('filetest: all checks pass')
+
 # 8) Surface contract: surfacetest exercises the whole surface lifecycle
 type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 
@@ -368,6 +372,12 @@ if ! grep -q 'libctest: all checks pass' "$LOG"; then
     fail "libctest failed (libc string/stdio/stdlib regression)"
 fi
 echo "== libc basics ok (string/snprintf/alloc/parse/sort) =="
+
+# File API (filetest.elf)
+if ! grep -q 'filetest: all checks pass' "$LOG"; then
+    fail "filetest failed (seek/stat/truncate/create/remove regression)"
+fi
+echo "== file API ok (mkdir/create/write/stat/seek/truncate/unlink) =="
 
 # Surface contract (surfacetest.elf + surfhelper.elf)
 if ! grep -q 'surface contract ok' "$LOG"; then

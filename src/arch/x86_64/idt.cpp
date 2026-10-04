@@ -392,6 +392,29 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              Sched::console_emit_str(buf, i);
              regs->rax = (uint64_t)i;
         }
+        else if (syscall_id == 41) { // LSEEK: rdi=fd, rsi=offset, rdx=whence(0/1/2)
+             regs->rax = (uint64_t)VFS::lseek_fd((int)regs->rdi, (long)regs->rsi, (int)regs->rdx);
+        }
+        else if (syscall_id == 42) { // STAT: rdi=path, rsi=GrvStat{u64 size;u64 is_dir}
+             struct StatPkt { uint64_t size; uint64_t is_dir; };
+             uint64_t sz = 0; bool dir = false;
+             int r = VFS::stat_path((const char*)regs->rdi, &sz, &dir);
+             if (r == 0 && regs->rsi) {
+                 StatPkt* out = (StatPkt*)regs->rsi;
+                 out->size = sz;
+                 out->is_dir = dir ? 1 : 0;
+             }
+             regs->rax = (uint64_t)r;
+        }
+        else if (syscall_id == 43) { // MKDIR: rdi=path -> 0/-1
+             regs->rax = (uint64_t)VFS::mkdir((const char*)regs->rdi);
+        }
+        else if (syscall_id == 44) { // UNLINK: rdi=path -> 0/-1
+             regs->rax = (uint64_t)VFS::unlink((const char*)regs->rdi);
+        }
+        else if (syscall_id == 45) { // FTRUNCATE: rdi=fd, rsi=size -> 0/-1
+             regs->rax = (uint64_t)VFS::ftruncate_fd((int)regs->rdi, (uint64_t)regs->rsi);
+        }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
              // which returns immediately. rax = child task id, or -1.

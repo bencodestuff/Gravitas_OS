@@ -88,6 +88,7 @@ static void* ramfs_open(void* priv, const char* path, int flags, uint64_t* out_s
     Node* n = walk(root, path, (flags & VFS::O_CREATE) != 0);
     if (n == nullptr) return nullptr;
     if (n->is_dir) return nullptr; // open(2) on a dir: not supported
+    if (flags & VFS::O_TRUNC) n->size = 0;
     *out_size = n->size;
     return n;
 }
@@ -161,6 +162,62 @@ static int ramfs_mkdir(void* priv, const char* path) {
     return 0;
 }
 
+static int ramfs_truncate(void* priv, void* handle, uint64_t size) {
+    (void)priv;
+    Node* n = (Node*)handle;
+    if (size > n->capacity) {
+        uint64_t newcap = (size + 4095) & ~(uint64_t)4095;
+        uint8_t* nd = new uint8_t[newcap];
+        for (uint64_t i = 0; i < n->size; i++) nd[i] = n->data[i];
+        for (uint64_t i = n->size; i < size; i++) nd[i] = 0; // zero-fill growth
+        delete[] n->data;
+        n->data = nd;
+        n->capacity = newcap;
+    } else if (size > n->size) {
+        for (uint64_t i = n->size; i < size; i++) n->data[i] = 0;
+    }
+    n->size = size;
+    return 0;
+}
+
+static int ramfs_unlink(void* priv, const char* path) {
+    (void)priv;
+    // Split into parent dir + final name.
+    int i = 0;
+    while (path[i]) i++;
+    while (i > 0 && path[i - 1] == '/') i--;
+    int slash = -1;
+    for (int j = 0; j < i; j++) if (path[j] == '/') slash = j;
+
+    static char parent[128];
+    int plen = (slash < 0) ? 0 : slash;
+    for (int k = 0; k < plen && k < 127; k++) parent[k] = path[k];
+    parent[plen] = '\0';
+
+    const char* name = path + (slash < 0 ? 0 : slash + 1);
+    int nlen = 0;
+    while (name[nlen] && name[nlen] != '/' && nlen < 31) nlen++;
+
+    Node* dir = walk(root, parent, false);
+    if (dir == nullptr || !dir->is_dir) return -1;
+
+    Node* prev = nullptr;
+    for (Node* c = dir->first_child; c; prev = c, c = c->next_sibling) {
+        bool eq = true;
+        for (int k = 0; k < nlen; k++)
+            if (c->name[k] != name[k]) { eq = false; break; }
+        if (!eq || c->name[nlen] != '\0') continue;
+        if (c->is_dir && c->first_child) return -1; // non-empty dir
+
+        if (prev) prev->next_sibling = c->next_sibling;
+        else dir->first_child = c->next_sibling;
+        if (c->data) delete[] c->data;
+        delete c;
+        return 0;
+    }
+    return -1;
+}
+
 // --- The filesystem instance ---
 static VFS::Filesystem fs = {
     .fs_type  = "ramfs",
@@ -172,6 +229,8 @@ static VFS::Filesystem fs = {
     .readdir  = ramfs_readdir,
     .is_dir   = ramfs_is_dir,
     .mkdir    = ramfs_mkdir,
+    .truncate = ramfs_truncate,
+    .unlink   = ramfs_unlink,
 };
 
 VFS::Filesystem* instance() {

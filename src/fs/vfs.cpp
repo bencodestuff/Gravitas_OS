@@ -342,6 +342,64 @@ void close_fd(int fd) {
     close_fd_for(fds_of_current(), fd);
 }
 
+long lseek_fd(int fd, long offset, int whence) {
+    FileHandle* h = fd_slot_get(fd);
+    if (h == nullptr) return -1;
+    long base;
+    if (whence == 0) base = 0;                 // SET
+    else if (whence == 1) base = (long)h->offset; // CUR
+    else if (whence == 2) base = (long)h->size;   // END
+    else return -1;
+
+    long pos = base + offset;
+    if (pos < 0) pos = 0;
+    if ((uint64_t)pos > h->size) pos = (long)h->size; // don't seek past EOF
+    h->offset = (uint64_t)pos;
+    return pos;
+}
+
+int mkdir(const char* path) {
+    const char* rel = nullptr;
+    Filesystem* fs = resolve(path, &rel);
+    if (fs == nullptr || fs->mkdir == nullptr) return -1;
+    return fs->mkdir(fs->priv, rel);
+}
+
+int unlink(const char* path) {
+    const char* rel = nullptr;
+    Filesystem* fs = resolve(path, &rel);
+    if (fs == nullptr || fs->unlink == nullptr) return -1;
+    return fs->unlink(fs->priv, rel);
+}
+
+int ftruncate_fd(int fd, uint64_t size) {
+    FileHandle* h = fd_slot_get(fd);
+    if (h == nullptr || h->fs->truncate == nullptr) return -1;
+    int r = h->fs->truncate(h->fs->priv, h->fs_handle, size);
+    if (r == 0) h->size = size;
+    return r;
+}
+
+int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
+    const char* rel = nullptr;
+    Filesystem* fs = resolve(path, &rel);
+    if (fs == nullptr) return -1;
+
+    if (fs->is_dir && fs->is_dir(fs->priv, rel)) {
+        if (out_size) *out_size = 0;
+        if (out_is_dir) *out_is_dir = true;
+        return 0;
+    }
+    if (fs->open == nullptr) return -1;
+    uint64_t size = 0;
+    void* h = fs->open(fs->priv, rel, O_RDONLY, &size);
+    if (h == nullptr) return -1;
+    fs->close(fs->priv, h);
+    if (out_size) *out_size = size;
+    if (out_is_dir) *out_is_dir = false;
+    return 0;
+}
+
 // --- Whole-file read (spawn + kernel use) ---
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
     static char fixed[256];

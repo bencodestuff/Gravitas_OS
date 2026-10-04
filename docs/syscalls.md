@@ -62,6 +62,11 @@ surface is a "window", and what is drawn are all userland policy.
 | 38 | `CONSOLE_WRITE` | `task_id, buf, n` | bytes accepted, or −1 (owner only) |
 | 39 | `WM_HOTKEY` | `modifier mask` | 0 or −1 (`INPUT_FOCUS`-style authority check) |
 | 40 | `PUTS` | `str` | length written (whole string emitted atomically) |
+| 41 | `LSEEK` | `fd, offset, whence` | new offset, or −1 |
+| 42 | `STAT` | `path, out*` | 0/−1; fills `{size, is_dir}` |
+| 43 | `MKDIR` | `path` | 0 or −1 |
+| 44 | `UNLINK` | `path` | 0 or −1 |
+| 45 | `FTRUNCATE` | `fd, size` | 0 or −1 |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).

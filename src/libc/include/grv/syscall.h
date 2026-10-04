@@ -73,6 +73,11 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_CONSOLE_WRITE  38
 #define GRV_SYSCALL_WM_HOTKEY      39
 #define GRV_SYSCALL_PUTS           40
+#define GRV_SYSCALL_LSEEK          41
+#define GRV_SYSCALL_STAT           42
+#define GRV_SYSCALL_MKDIR          43
+#define GRV_SYSCALL_UNLINK         44
+#define GRV_SYSCALL_FTRUNCATE      45
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -89,6 +94,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_O_WRONLY 1
 #define GRV_O_RDWR   2
 #define GRV_O_CREATE 4
+#define GRV_O_TRUNC  8
 
 /* --- Convenience wrappers --- */
 
@@ -186,6 +192,37 @@ static inline long grv_write_fd(int fd, const void* buf, unsigned long count) {
 
 static inline void grv_close(int fd) {
     syscall1(GRV_SYSCALL_CLOSE, (long)fd);
+}
+
+/* --- File positioning / metadata --- */
+/* Seek an fd's offset. 'whence': 0=SET, 1=CUR, 2=END. Returns the new
+   offset (clamped to the file), or -1. */
+static inline long grv_lseek(int fd, long offset, int whence) {
+    return syscall3(GRV_SYSCALL_LSEEK, (long)fd, offset, (long)whence);
+}
+
+struct grv_stat {
+    unsigned long size;
+    long          is_dir;
+};
+
+/* Metadata for a path. Returns 0 on success and fills *out, else -1. */
+static inline int grv_stat(const char* path, struct grv_stat* out) {
+    return (int)syscall2(GRV_SYSCALL_STAT, (long)path, (long)out);
+}
+
+/* Create a directory / remove a file, by path. 0 or -1 (read-only fs
+   refuses). */
+static inline int grv_mkdir(const char* path) {
+    return (int)syscall1(GRV_SYSCALL_MKDIR, (long)path);
+}
+static inline int grv_unlink(const char* path) {
+    return (int)syscall1(GRV_SYSCALL_UNLINK, (long)path);
+}
+
+/* Set an open file's length. Returns 0 or -1. */
+static inline int grv_ftruncate(int fd, unsigned long size) {
+    return (int)syscall2(GRV_SYSCALL_FTRUNCATE, (long)fd, (long)size);
 }
 
 /* chdir: change the process working directory (0 = ok, -1 = no such dir).
