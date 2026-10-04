@@ -12,6 +12,8 @@
 #   * M3 IPC: per-task mailboxes, blocking recv wake, FIFO (msgtest.elf)
 #   * M4 surfaces: destroy/restack/enumerate, the owner check, death
 #     cleanup and the registry cap (surfacetest.elf + surfhelper.elf)
+#   * M6 damage compositor: a small window's lifecycle repaints only its
+#     rectangles, not the screen (damagetest.elf + F12 stat deltas)
 #
 # Artifacts land in test_artifacts/ (serial log + screendump).
 # Run via `ninja test`, or directly after `ninja iso`.
@@ -117,6 +119,19 @@ def type_dotted(text):
         type_str(seg)
         if i != len(text.split('.')) - 1:
             raw('34', 'b4')  # '.'
+
+# 0) Damage compositor: a small window's lifecycle on a mostly-empty
+# screen must repaint only its rectangles. F12 dumps the compositor
+# counters to serial; the delta across this run is asserted below. Kept
+# first so the screen is not yet full (scrolling legitimately repaints
+# the whole screen and would drown the measurement).
+mon('sendkey f12')
+time.sleep(0.4)
+type_dotted('run damagetest.elf')
+key('ret')
+time.sleep(4)
+mon('sendkey f12')
+time.sleep(0.4)
 
 # 1) Backspace: 'helpq' + BS -> 'help' -> help text proves the erase
 for ch in 'helpq':
@@ -249,6 +264,28 @@ if ! grep -q 'surface contract ok' "$LOG"; then
     fail "surfacetest failed its surface contract (M4 broken?)"
 fi
 echo "== surface contract ok (destroy/z-order/enumerate/owner/cap) =="
+
+# Damage compositor (damagetest.elf): a small window's lifecycle must
+# repaint only its rectangles, never the full screen per operation.
+if ! grep -q 'damagetest done' "$LOG"; then
+    fail "damagetest failed (damage compositor broken?)"
+fi
+PX=$(grep -oE 'compositor: [0-9]+ presents, [0-9]+ full, [0-9]+ rects, [0-9]+ px' "$LOG" \
+     | sed -E 's/.* ([0-9]+) px/\1/')
+COUNT=$(printf '%s\n' "$PX" | grep -c .)
+if [ "$COUNT" -ne 2 ]; then
+    fail "expected 2 compositor stat dumps, got $COUNT"
+fi
+DPRE=$(printf '%s\n' "$PX" | sed -n 1p)
+DPOST=$(printf '%s\n' "$PX" | sed -n 2p)
+DPIX=$((DPOST - DPRE))
+# The window is 240x160 (38,400 px). Create + 3 moves + 3 commits + destroy
+# stays well under 2M with damage tracking; a full-screen repaint per op
+# would be several million (1,024,000 px each).
+if [ "$DPIX" -ge 2000000 ]; then
+    fail "compositor painted too much for a small window ($DPIX px; damage broken?)"
+fi
+echo "== damage compositor ok ($DPIX px for a small-window lifecycle) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then
