@@ -29,6 +29,10 @@ namespace PMM {
     static uint64_t bitmap_size = 0;
     static uint64_t highest_addr = 0;
 
+    // Frame accounting (maintained by alloc/free, seeded by init).
+    static uint64_t free_frames_count = 0;
+    static uint64_t total_frames_count = 0;
+
     static void memory_set(void* ptr, int value, uint64_t num) {
         uint8_t* u8ptr = (uint8_t*)ptr;
         for (uint64_t i = 0; i < num; i++) u8ptr[i] = (uint8_t)value;
@@ -119,8 +123,18 @@ namespace PMM {
         // which is visible in every address space (kernel half is shared).
         reserve_range(0x08000000, 0x400000); // 4MB for the kernel heap
 
+        // Seed the free-frame counter from the finished bitmap.
+        total_frames_count = bitmap_size * 8;
+        free_frames_count = 0;
+        for (uint64_t i = 0; i < total_frames_count; i++) {
+            if (!bitmap_test(i)) free_frames_count++;
+        }
+
         kprint("[PMM] Initialized successfully.\n");
     }
+
+    uint64_t free_frames() { return free_frames_count; }
+    uint64_t total_frames() { return total_frames_count; }
 
     // Mark a physical range as permanently in use
     void reserve_range(uint64_t base, uint64_t length) {
@@ -140,6 +154,7 @@ namespace PMM {
         for (uint64_t i = 1; i < total_pages; i++) { 
              if (!bitmap_test(i)) {
                  bitmap_set(i);
+                 if (free_frames_count > 0) free_frames_count--;
                  return i * 4096; // Return 0x1000, 0x2000, etc.
              }
         }
@@ -147,6 +162,9 @@ namespace PMM {
     }
 
     void free_page(uint64_t address) {
-        bitmap_unset(address / PAGE_SIZE);
+        uint64_t i = address / PAGE_SIZE;
+        if (!bitmap_test(i)) return; // already free: don't over-count
+        bitmap_unset(i);
+        free_frames_count++;
     }
 }

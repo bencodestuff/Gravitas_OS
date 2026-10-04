@@ -17,4 +17,8 @@ namespace PMM {
 
     // Mark a physical range as permanently in use (kernel infrastructure)
     void reserve_range(uint64_t base, uint64_t length);
+
+    // Frame counters for the debugger/monitor (PAGE_SIZE frames).
+    uint64_t free_frames();
+    uint64_t total_frames();
 }

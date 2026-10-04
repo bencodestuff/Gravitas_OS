@@ -60,6 +60,11 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SURFACE_Z      27
 #define GRV_SYSCALL_SURFACE_LIST   28
 
+/* Introspection (the debugger/monitor) */
+#define GRV_SYSCALL_SYSINFO        29
+#define GRV_SYSCALL_TASK_LIST      30
+#define GRV_SYSCALL_FAULT_LAST     31
+
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
 #define GRV_O_WRONLY 1
@@ -256,6 +261,55 @@ static inline int grv_surface_lower(int id) {
    written, or -1 for a null buffer. */
 static inline int grv_surface_list(struct grv_surface_info* out, long max) {
     return (int)syscall2(GRV_SYSCALL_SURFACE_LIST, (long)out, max);
+}
+
+/* --- Introspection (the debugger/monitor) --- */
+struct grv_sysinfo {
+    unsigned long ticks;
+    unsigned long tasks;
+    unsigned long mem_free;
+    unsigned long mem_total;
+    unsigned long heap_used;
+    unsigned long heap_peak;
+    unsigned long heap_total;
+    unsigned long surfaces;
+    unsigned long comp_presents;
+    unsigned long comp_full;
+    unsigned long comp_rects;
+    unsigned long comp_pixels;
+};
+
+static inline void grv_sysinfo(struct grv_sysinfo* out) {
+    syscall1(GRV_SYSCALL_SYSINFO, (long)out);
+}
+
+struct grv_taskinfo {
+    int id;
+    int state;          /* 0 ready, 1 sleeping, 2 running */
+    unsigned long cr3;
+    unsigned long brk;
+    long waiting_on;    /* -1 = none */
+    char name[16];
+};
+
+static inline int grv_task_list(struct grv_taskinfo* out, long max) {
+    return (int)syscall2(GRV_SYSCALL_TASK_LIST, (long)out, max);
+}
+
+struct grv_fault_record {
+    unsigned long valid;
+    long task_id;
+    char task_name[16];
+    unsigned long vector;
+    unsigned long error_code;
+    unsigned long cr2;
+    unsigned long rip, rsp, rflags, cs;
+    unsigned long rax, rbx, rcx, rdx, rsi, rdi, rbp;
+    unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
+};
+
+static inline int grv_fault_last(struct grv_fault_record* out) {
+    return (int)syscall1(GRV_SYSCALL_FAULT_LAST, (long)out);
 }
 
 __END_DECLS

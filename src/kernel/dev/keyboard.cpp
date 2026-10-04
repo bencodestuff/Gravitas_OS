@@ -5,7 +5,8 @@
 #include "kernel/gfx/compositor.h" // F12 compositor stats
 
 
-constexpr uint8_t SC_DEBUG_DUMP = 0x58; // F12 (make code, set 1)
+constexpr uint8_t SC_DEBUG_DUMP = 0x58;     // F12 (make code, set 1)
+constexpr uint8_t SC_CONSOLE_ON_TOP = 0x57; // F11 (make code, set 1)
 
 namespace Keyboard {
 
@@ -67,6 +68,13 @@ namespace Keyboard {
         if (scancode == SC_DEBUG_DUMP) {
             Sched::debug_dump();
             Compositor::dump_stats();
+            return;
+        }
+
+        // F11: put the console above the windows (and back), so kernel
+        // output is readable while a window owns the screen.
+        if (scancode == SC_CONSOLE_ON_TOP) {
+            Compositor::toggle_console_on_top();
             return;
         }
 

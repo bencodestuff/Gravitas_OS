@@ -154,6 +154,33 @@ namespace Sched {
         } while (t != ready_queue);
     }
 
+    int task_count() {
+        Task* t = ready_queue;
+        if (t == nullptr) return 0;
+        int n = 0;
+        do { n++; t = t->next; } while (t != ready_queue);
+        return n;
+    }
+
+    int task_snapshot(TaskInfo* out, int max) {
+        if (out == nullptr || max <= 0) return 0;
+        Task* t = ready_queue;
+        if (t == nullptr) return 0;
+        int n = 0;
+        do {
+            if (n >= max) break;
+            out[n].id = t->id;
+            out[n].state = (t == current_task) ? 2 : (int)t->state;
+            out[n].cr3 = t->cr3;
+            out[n].brk = t->brk;
+            out[n].waiting_on = t->waiting_on;
+            for (int i = 0; i < 16; i++) out[n].name[i] = t->name[i];
+            n++;
+            t = t->next;
+        } while (t != ready_queue);
+        return n;
+    }
+
     static Task* keyboard_waiter = nullptr; // task blocked in the getc syscall
 
     void block_on_keyboard() {

@@ -21,6 +21,19 @@ namespace Sched {
     // Read-only walk; safe from IRQ context.
     void debug_dump();
 
+    // --- Introspection (debugger/monitor; read-only snapshots) ---
+    struct TaskInfo {
+        int id;
+        int state;          // 0 ready, 1 sleeping, 2 running (this snapshot)
+        uint64_t cr3;
+        uint64_t brk;
+        int64_t waiting_on; // task being waited on, or -1
+        char name[16];
+    };
+    // Fill up to 'max' records; returns the number written.
+    int task_snapshot(TaskInfo* out, int max);
+    int task_count();
+
     // --- Process lifecycle ---
     // Build a ring-3 task: 'rip' is the userland entry point (from the ELF
     // loader), 'cr3' is its pre-cloned address space (ELF code must already

@@ -78,11 +78,26 @@ namespace Compositor {
     // (its pixels may have changed) and flush.
     void surface_commit();
 
+    // Debug overlay: draw the console layer ABOVE the surfaces, so kernel
+    // text (faults, F12 dumps, the monitor) stays visible over windows.
+    // Changing it repaints immediately.
+    void set_console_on_top(bool on);
+    void toggle_console_on_top();
+    bool console_on_top();
+
     // Task teardown: release every registry entry owned by 'task_id' and
     // damage the areas they covered. The frames and mappings are freed by
     // the address-space teardown itself.
     void surfaces_for_task_gone(int task_id);
 
-    // Counters for measurement (printed by the F12 dump).
+    // Counters for measurement (printed by the F12 dump, read by Sysinfo).
+    struct Stats {
+        uint64_t presents;    // present() flushes that did work
+        uint64_t full_paints; // full-screen paints
+        uint64_t rects;       // rectangles painted
+        uint64_t pixels;      // pixels written by those rectangles
+    };
+    Stats stats();
+    int surface_count();
     void dump_stats();
 }

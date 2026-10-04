@@ -6,4 +6,9 @@ namespace Heap {
     void init(void* start_addr, size_t size);
     void* malloc(size_t size);
     void free(void* ptr);
+
+    // Allocation accounting for the debugger/monitor (bytes).
+    uint64_t used();
+    uint64_t peak();
+    uint64_t total();
 }

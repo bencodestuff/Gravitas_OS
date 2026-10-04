@@ -2,12 +2,42 @@
 #include "kernel/klib/klib.h"
 #include "kernel/core/sched.h"
 #include "kernel/gfx/console.h"
+#include "kernel/gfx/compositor.h"
 #include "kernel/io.h"
 
 
 // --- Fault reporter + contract implementation ---
 
 namespace Fault {
+
+// --- The last fault, for userland introspection ---
+static Record last = {};
+
+bool last_fault(Record* out) {
+    if (!last.valid || out == nullptr) return false;
+    *out = last;
+    return true;
+}
+
+static void record_fault(IDT::Registers* regs, uint64_t cr2) {
+    last.valid = 1;
+    last.task_id = Sched::current_task_id();
+    const char* name = Sched::current_task_name();
+    for (int i = 0; i < 15 && name[i] != '\0'; i++) last.task_name[i] = name[i];
+    last.task_name[15] = '\0';
+    last.vector = regs->interrupt_number;
+    last.error_code = regs->error_code;
+    last.cr2 = cr2;
+    last.rip = regs->rip; last.rsp = regs->rsp;
+    last.rflags = regs->rflags; last.cs = regs->cs;
+    last.rax = regs->rax; last.rbx = regs->rbx;
+    last.rcx = regs->rcx; last.rdx = regs->rdx;
+    last.rsi = regs->rsi; last.rdi = regs->rdi; last.rbp = regs->rbp;
+    last.r8 = regs->r8;   last.r9 = regs->r9;
+    last.r10 = regs->r10; last.r11 = regs->r11;
+    last.r12 = regs->r12; last.r13 = regs->r13;
+    last.r14 = regs->r14; last.r15 = regs->r15;
+}
 
 // --- Stack protector guard ---
 // Clang on ELF references the global __stack_chk_guard (not the TLS form),
@@ -138,9 +168,11 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
 
 // --- The contract ---
 [[noreturn]] void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2) {
+    record_fault(regs, cr2);
     bool from_user = (regs->cs & 3) == 3;
-
     if (from_user) {
+        // Show the dump even if a full-screen window owns the console.
+        Compositor::set_console_on_top(true);
         dump("USERLAND", regs, cr2);
         kprint("[fault] terminating task per the fault contract\n");
         // Same teardown as exit(): fds, surfaces, address space, kstack.

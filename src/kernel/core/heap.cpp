@@ -14,6 +14,12 @@ namespace Heap {
 
     SegmentHeader* first_segment;
 
+    // Allocation accounting: 'used' is the sum of live segment payloads,
+    // 'peak' the high-water mark, 'total' the heap size.
+    static uint64_t used_bytes = 0;
+    static uint64_t peak_bytes = 0;
+    static uint64_t total_bytes = 0;
+
     void init(void* start_addr, size_t size) {
         // Create the first huge segment covering the whole heap
         first_segment = (SegmentHeader*)start_addr;
@@ -22,9 +28,17 @@ namespace Heap {
         first_segment->prev = nullptr;
         first_segment->is_free = true;
         first_segment->magic = 0xDEADBEEF;
-        
+
+        used_bytes = 0;
+        peak_bytes = 0;
+        total_bytes = size;
+
         kprint("[Heap] Initialized Linked List Allocator.\n");
     }
+
+    uint64_t used() { return used_bytes; }
+    uint64_t peak() { return peak_bytes; }
+    uint64_t total() { return total_bytes; }
 
     void* malloc(size_t size) {
         SegmentHeader* current = first_segment;
@@ -59,6 +73,9 @@ namespace Heap {
 
                 current->is_free = false;
                 
+                used_bytes += current->length;
+                if (used_bytes > peak_bytes) peak_bytes = used_bytes;
+
                 // Return memory area AFTER the header
                 return (void*)( (uint64_t)current + sizeof(SegmentHeader) );
             }
@@ -70,6 +87,8 @@ namespace Heap {
     }
 
     void free(void* ptr) {
+        if (ptr == nullptr) return; // delete nullptr is legal
+
         // Go back from the pointer to find the header
         SegmentHeader* segment = (SegmentHeader*)((uint64_t)ptr - sizeof(SegmentHeader));
         
@@ -78,6 +97,7 @@ namespace Heap {
             return;
         }
 
+        used_bytes -= segment->length;
         segment->is_free = true;
 
         // MERGE: Combine with Next if free

@@ -28,4 +28,22 @@ namespace Fault {
 
     // Kernel-side __stack_chk_fail: report the offending caller and halt.
     [[noreturn]] void stack_chk_fail_kernel(uint64_t caller_rip);
+
+    // --- Crash record (introspection) ---
+    // The most recent CPU fault, kept so userland (the monitor) can read it
+    // after the offending task is gone. Filled the moment a fault is taken.
+    struct Record {
+        uint64_t valid;
+        int64_t  task_id;
+        char     task_name[16];
+        uint64_t vector;
+        uint64_t error_code;
+        uint64_t cr2;
+        uint64_t rip, rsp, rflags, cs;
+        uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
+        uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    };
+
+    // Copy the last recorded fault; false if none has happened.
+    bool last_fault(Record* out);
 }

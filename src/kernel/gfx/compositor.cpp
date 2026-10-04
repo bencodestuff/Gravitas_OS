@@ -385,23 +385,22 @@ static void stamp_surface(const Surface* s, int x0, int y0, int x1, int y1) {
 
 // Repaint one screen rectangle from scratch: background, then the console
 // cells it covers, then every surface intersecting it, bottom-to-top.
-static void paint_rect(int x0, int y0, int x1, int y1) {
-    x0 = imax(x0, 0); y0 = imax(y0, 0);
-    x1 = imin(x1, (int)fb_w); y1 = imin(y1, (int)fb_h);
-    if (x1 <= x0 || y1 <= y0) return;
+// When the debug overlay is on, the cells are drawn AFTER the surfaces so
+// kernel text (faults, dumps, the monitor) stays visible over windows.
+static bool console_top = false;
 
-    fill_rect(x0, y0, x1, y1, Console::background());
-
+static void paint_cells(int x0, int y0, int x1, int y1) {
     int cols = Console::cols(), rows = Console::rows();
     int cw = Font::cell_w(), ch = Font::cell_h();
-    if (cols > 0 && rows > 0) {
-        int c0 = imax(x0 / cw, 0), c1 = imin((x1 - 1) / cw, cols - 1);
-        int r0 = imax(y0 / ch, 0), r1 = imin((y1 - 1) / ch, rows - 1);
-        for (int r = r0; r <= r1; r++)
-            for (int c = c0; c <= c1; c++)
-                paint_cell(c, r);
-    }
+    if (cols <= 0 || rows <= 0) return;
+    int c0 = imax(x0 / cw, 0), c1 = imin((x1 - 1) / cw, cols - 1);
+    int r0 = imax(y0 / ch, 0), r1 = imin((y1 - 1) / ch, rows - 1);
+    for (int r = r0; r <= r1; r++)
+        for (int c = c0; c <= c1; c++)
+            paint_cell(c, r);
+}
 
+static void stamp_surfaces(int x0, int y0, int x1, int y1) {
     for (int oi = 0; oi < order_count; oi++) {
         Surface* s = &surfaces[order[oi]];
         int sx0 = imax(x0, imax(s->x, 0));
@@ -409,6 +408,21 @@ static void paint_rect(int x0, int y0, int x1, int y1) {
         int sx1 = imin(x1, imin(s->x + (int)s->w, (int)fb_w));
         int sy1 = imin(y1, imin(s->y + (int)s->h, (int)fb_h));
         if (sx1 > sx0 && sy1 > sy0) stamp_surface(s, sx0, sy0, sx1, sy1);
+    }
+}
+
+static void paint_rect(int x0, int y0, int x1, int y1) {
+    x0 = imax(x0, 0); y0 = imax(y0, 0);
+    x1 = imin(x1, (int)fb_w); y1 = imin(y1, (int)fb_h);
+    if (x1 <= x0 || y1 <= y0) return;
+
+    fill_rect(x0, y0, x1, y1, Console::background());
+    if (console_top) {
+        stamp_surfaces(x0, y0, x1, y1);
+        paint_cells(x0, y0, x1, y1);
+    } else {
+        paint_cells(x0, y0, x1, y1);
+        stamp_surfaces(x0, y0, x1, y1);
     }
 
     stat_rects++;
@@ -505,6 +519,16 @@ void surface_commit() {
     present();
 }
 
+void set_console_on_top(bool on) {
+    if (console_top == on) return;
+    console_top = on;
+    composite(); // the layering changed for the whole screen
+}
+
+void toggle_console_on_top() { set_console_on_top(!console_top); }
+
+bool console_on_top() { return console_top; }
+
 void surfaces_for_task_gone(int task_id) {
     for (int i = 0; i < MAX_SURFACES; i++) {
         if (surfaces[i].used && surfaces[i].task_id == task_id) {
@@ -518,12 +542,26 @@ void surfaces_for_task_gone(int task_id) {
     }
 }
 
+Stats stats() {
+    Stats s;
+    s.presents = stat_presents;
+    s.full_paints = stat_full;
+    s.rects = stat_rects;
+    s.pixels = stat_pixels;
+    return s;
+}
+
+int surface_count() {
+    return order_count;
+}
+
 void dump_stats() {
+    Stats s = stats();
     kprint("[dbg] compositor: ");
-    kprint_uint(stat_presents); kprint(" presents, ");
-    kprint_uint(stat_full);     kprint(" full, ");
-    kprint_uint(stat_rects);    kprint(" rects, ");
-    kprint_uint(stat_pixels);   kprint(" px\n");
+    kprint_uint(s.presents);    kprint(" presents, ");
+    kprint_uint(s.full_paints); kprint(" full, ");
+    kprint_uint(s.rects);       kprint(" rects, ");
+    kprint_uint(s.pixels);      kprint(" px\n");
 }
 
 } // namespace Compositor

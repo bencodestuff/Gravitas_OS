@@ -15,6 +15,7 @@
 #include "fs/elf.h"
 #include "fs/vfs.h"
 #include "kernel/core/pmm.h"
+#include "kernel/core/sysinfo.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
@@ -304,6 +305,17 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 28) { // SURFACE LIST: rdi=Info*, rsi=max -> count
              regs->rax = (uint64_t)(long)Compositor::surface_list(
                  (Compositor::Info*)regs->rdi, regs->rsi);
+        }
+        else if (syscall_id == 29) { // SYSINFO: rdi = SysInfo* -> 0
+             Sysinfo::get((SysInfo*)regs->rdi);
+             regs->rax = 0;
+        }
+        else if (syscall_id == 30) { // TASK LIST: rdi=TaskInfo*, rsi=max -> count
+             regs->rax = (uint64_t)(long)Sched::task_snapshot(
+                 (Sched::TaskInfo*)regs->rdi, (int)regs->rsi);
+        }
+        else if (syscall_id == 31) { // FAULT LAST: rdi = Fault::Record* -> 1/0
+             regs->rax = Fault::last_fault((Fault::Record*)regs->rdi) ? 1 : 0;
         }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
