@@ -40,6 +40,13 @@ int printf(const char* restrict format, ...) {
 
 		const char* format_begun_at = format++;
 
+		// Length modifier (only 'l' is supported): make d/i/u/x 64-bit.
+		// Must be read before the conversion char so "%lu"/"%lx" parse —
+		// otherwise the modifier falls through to the literal path below
+		// and the rest of the format string is printed verbatim.
+		bool long_val = false;
+		if (*format == 'l') { long_val = true; format++; }
+
 		if (*format == 'c') {
 			format++;
 			char c = (char) va_arg(parameters, int /* char promotes to int */);
@@ -64,12 +71,6 @@ int printf(const char* restrict format, ...) {
 		} else if (*format == 'd' || *format == 'i' || *format == 'u') {
 			format++;
 			bool is_unsigned = (*(format-1) == 'u');
-
-			// Length modifier: 'l' selects long (64-bit) — without one the
-			// value is read as int (32-bit). long long is overkill for an
-			// OS where u64 counts ticks, not calendar years.
-			bool long_val = false;
-			if (*format == 'l') { long_val = true; format++; }
 
 			// Itoa into a local buffer (freestanding: no itoa in libc)
 			char numbuf[24];
@@ -105,8 +106,6 @@ int printf(const char* restrict format, ...) {
 			written += len;
 		} else if (*format == 'x') {
 			format++;
-			bool long_val = (*format == 'l');
-			if (long_val) format++;
 
 			unsigned long long uv = long_val ? va_arg(parameters, unsigned long)
 			                                 : (unsigned int)va_arg(parameters, unsigned int);
