@@ -14,6 +14,7 @@
 #     cleanup and the registry cap (surfacetest.elf + surfhelper.elf)
 #   * M6 damage compositor: a small window's lifecycle repaints only its
 #     rectangles, not the screen (damagetest.elf + F12 stat deltas)
+#   * M7 debugger: introspection syscalls + recorded crash (mon.elf)
 #
 # Artifacts land in test_artifacts/ (serial log + screendump).
 # Run via `ninja test`, or directly after `ninja iso`.
@@ -196,6 +197,11 @@ type_dotted('run surfacetest.elf')
 key('ret')
 time.sleep(8)
 
+# 9) Debugger: mon reads the introspection syscalls and the crash record.
+type_dotted('run mon.elf')
+key('ret')
+time.sleep(3)
+
 mon('screendump ' + 'test_artifacts/console.ppm')
 s.close()
 PYEOF
@@ -286,6 +292,15 @@ if [ "$DPIX" -ge 2000000 ]; then
     fail "compositor painted too much for a small window ($DPIX px; damage broken?)"
 fi
 echo "== damage compositor ok ($DPIX px for a small-window lifecycle) =="
+
+# Debugger (mon.elf): introspection snapshot + the recorded crash
+if ! grep -q 'mon: ticks' "$LOG"; then
+    fail "mon produced no system snapshot (introspection broken?)"
+fi
+if ! grep -q "mon: last fault: task 'crash.elf'" "$LOG"; then
+    fail "mon did not read back the recorded crash (fault record broken?)"
+fi
+echo "== debugger monitor ok (sysinfo/tasks/surfaces/crash record) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then
