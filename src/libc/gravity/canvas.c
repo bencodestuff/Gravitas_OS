@@ -87,6 +87,27 @@ void gravity_text(struct gravity_canvas* c, int x, int y, const char* s,
     gravity_invalidate(c, x, y, grv_text_width(s), (int)g_font.height);
 }
 
+void gravity_cell(struct gravity_canvas* c, int x, int y, unsigned char ch,
+                  unsigned int fg, unsigned int bg) {
+    int gh = gravity_font_height();
+    gravity_fill(c, x, y, 8, gh, bg); // background first (this invalidates)
+    if (!gravity_init() || ch < 32 || ch > 126) return;
+
+    const unsigned char* g = g_font.glyphs + (unsigned long)ch * g_font.height;
+    for (unsigned row = 0; row < g_font.height; row++) {
+        int py = y + (int)row;
+        if (py < 0 || py >= c->h) continue;
+        unsigned char bits = g[row];
+        for (int col = 0; col < 8; col++) {
+            if (!(bits & (0x80 >> col))) continue;
+            int px = x + col;
+            if (px < 0 || px >= c->w) continue;
+            c->px[(unsigned long)py * c->w + px] = fg;
+        }
+    }
+    gravity_invalidate(c, x, y, 8, gh);
+}
+
 void gravity_present(struct gravity_canvas* c) {
     if (c->dx1 <= c->dx0 || c->dy1 <= c->dy0) return;
     // The commit is per calling task: it repaints the task's surface(s)

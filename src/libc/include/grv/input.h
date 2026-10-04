@@ -22,6 +22,8 @@ __BEGIN_DECLS
 #define GRV_KEY_DOWN   0x102
 #define GRV_KEY_LEFT   0x103
 #define GRV_KEY_RIGHT  0x104
+#define GRV_KEY_PAGEUP 0x105
+#define GRV_KEY_PAGEDOWN 0x106
 
 /* Modifier bits (GRV_EV_KEY's m.b). */
 #define GRV_MOD_SHIFT 1

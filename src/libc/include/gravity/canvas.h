@@ -39,6 +39,11 @@ void gravity_border(struct gravity_canvas* c, int x, int y, int w, int h,
 void gravity_text(struct gravity_canvas* c, int x, int y, const char* s,
                   unsigned int fg);
 
+/* One fixed cell: fill (x,y,8,font_height) with 'bg', then blit glyph 'ch'
+   in 'fg'. The building block for a text grid. */
+void gravity_cell(struct gravity_canvas* c, int x, int y, unsigned char ch,
+                  unsigned int fg, unsigned int bg);
+
 /* Commit the dirty rectangle to the surface (no-op if nothing is dirty). */
 void gravity_present(struct gravity_canvas* c);
 

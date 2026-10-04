@@ -23,6 +23,10 @@ struct gravity_app {
     struct gravity_canvas canvas;
     void (*on_event)(struct gravity_app* app, const struct gravity_event* ev);
     void (*on_draw)(struct gravity_app* app);
+    /* Optional: run once per loop, before blocking for the next event. For
+       work that arrives outside the input mailbox — e.g. a terminal
+       draining the output of the programs it hosts. */
+    void (*on_poll)(struct gravity_app* app);
     void* user;
     int redraw;   /* set by gravity_refresh; internal */
 };

@@ -7,5 +7,6 @@
 #include <gravity/canvas.h>
 #include <gravity/app.h>
 #include <gravity/widget.h>
+#include <gravity/term.h>
 
 #endif
