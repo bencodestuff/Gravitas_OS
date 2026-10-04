@@ -94,6 +94,11 @@ namespace Compositor {
     int screen_width();
     int screen_height();
 
+    // Current pointer position, clamped to the screen. The WM hit-tests
+    // with it; the kernel owns the authoritative position.
+    int cursor_x();
+    int cursor_y();
+
     // Event 'type' values the kernel posts to the authority's mailbox
     // (mirrored in libc grv/syscall.h).
     constexpr uint64_t EVT_SURFACE_ADDED   = 1;

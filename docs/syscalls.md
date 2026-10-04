@@ -125,6 +125,8 @@ struct grv_sysinfo {
     unsigned long comp_pixels; // pixels written
     unsigned long screen_w;    // framebuffer size (for overlay creation)
     unsigned long screen_h;
+    unsigned long cursor_x;    // pointer position (screen pixels)
+    unsigned long cursor_y;
 };
 ```
 

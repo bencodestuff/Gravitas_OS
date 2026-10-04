@@ -20,6 +20,8 @@ struct SysInfo {
     uint64_t comp_pixels;
     uint64_t screen_w;
     uint64_t screen_h;
+    uint64_t cursor_x;     // pointer position (screen pixels)
+    uint64_t cursor_y;
 };
 
 namespace Sysinfo {

@@ -198,20 +198,33 @@ namespace Sched {
     }
 
     // Wake the task a key should go to: the focused one, or (with no focus
-    // set) the first waiting task. getc_waiting is NOT cleared here — the
-    // woken task clears it once it actually drains a key, so a wake with an
-    // empty queue simply re-blocks.
+    // set) the oldest waiting task — the console. getc_waiting is NOT
+    // cleared here — the woken task clears it once it actually drains a
+    // key, so a wake with an empty queue simply re-blocks.
     void wake_keyboard_waiter() {
         Task* t = ready_queue;
         if (t == nullptr) return;
+
+        if (focus_task != -1) {
+            do {
+                if (t->getc_waiting && t->id == focus_task) {
+                    t->state = READY;
+                    return;
+                }
+                t = t->next;
+            } while (t != ready_queue);
+            return;
+        }
+
+        // No focus: pick the lowest-id waiter (the console/shell, spawned
+        // first). Without a rule like this, several GETC waiters would race
+        // and the recipient would depend on queue order.
+        Task* best = nullptr;
         do {
-            if (t->getc_waiting &&
-                (focus_task == -1 || t->id == focus_task)) {
-                t->state = READY;
-                if (focus_task == -1) return; // legacy: exactly one waiter
-            }
+            if (t->getc_waiting && (best == nullptr || t->id < best->id)) best = t;
             t = t->next;
         } while (t != ready_queue);
+        if (best != nullptr) best->state = READY;
     }
 
     void set_input_focus(int task_id) {

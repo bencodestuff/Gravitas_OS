@@ -29,6 +29,8 @@ void get(SysInfo* out) {
 
     out->screen_w = (uint64_t)Compositor::screen_width();
     out->screen_h = (uint64_t)Compositor::screen_height();
+    out->cursor_x = (uint64_t)Compositor::cursor_x();
+    out->cursor_y = (uint64_t)Compositor::cursor_y();
 }
 
 } // namespace Sysinfo

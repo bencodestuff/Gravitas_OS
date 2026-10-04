@@ -294,6 +294,8 @@ struct grv_sysinfo {
     unsigned long comp_pixels;
     unsigned long screen_w;
     unsigned long screen_h;
+    unsigned long cursor_x;
+    unsigned long cursor_y;
 };
 
 static inline void grv_sysinfo(struct grv_sysinfo* out) {

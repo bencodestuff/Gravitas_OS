@@ -577,6 +577,9 @@ void authority_gone(int task_id) {
 int screen_width()  { fb_ready(); return (int)fb_w; }
 int screen_height() { fb_ready(); return (int)fb_h; }
 
+int cursor_x() { int x, y; cursor_pos(&x, &y); return x; }
+int cursor_y() { int x, y; cursor_pos(&x, &y); return y; }
+
 void set_console_on_top(bool on) {
     if (console_top == on) return;
     console_top = on;
