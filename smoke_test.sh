@@ -25,6 +25,7 @@
 #     (files.elf)
 #   * M13 image viewer + image library: decodes a picture and displays it
 #     (imageview.elf, grv_image)
+#   * libc basics: string/formatted output/allocator/parse/sort (libctest.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -233,6 +234,9 @@ type_dotted('run msgtest.elf'); key('ret'); wait_for('all ipc checks pass')
 # and captures the reply — both stdio directions through the kernel.
 type_dotted('run consoletest.elf'); key('ret'); wait_for('consoletest: PASS')
 
+# 7c) libc basics: string, formatted output, allocator, parsing, sort.
+type_dotted('run libctest.elf'); key('ret'); wait_for('libctest: all checks pass')
+
 # 8) Surface contract: surfacetest exercises the whole surface lifecycle
 type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 
@@ -358,6 +362,12 @@ if grep -q 'echo:ping' "$LOG"; then
     fail "hosted program output leaked to the kernel console"
 fi
 echo "== console endpoint ok (attach/write/read round-trip) =="
+
+# libc basics (libctest.elf)
+if ! grep -q 'libctest: all checks pass' "$LOG"; then
+    fail "libctest failed (libc string/stdio/stdlib regression)"
+fi
+echo "== libc basics ok (string/snprintf/alloc/parse/sort) =="
 
 # Surface contract (surfacetest.elf + surfhelper.elf)
 if ! grep -q 'surface contract ok' "$LOG"; then

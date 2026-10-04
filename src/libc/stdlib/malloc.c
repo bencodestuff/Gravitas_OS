@@ -71,3 +71,44 @@ void free(void* ptr) {
     c->size &= ~CHUNK_USED;
     // TODO: merge adjacent free chunks
 }
+
+// Grow in place when the chunk is the last one (extend the break) — the
+// common case for a buffer that is filled by repeated reads/writes — else
+// allocate, copy and free.
+void* realloc(void* ptr, size_t size) {
+    if (ptr == NULL) return malloc(size);
+    if (size == 0) { free(ptr); return NULL; }
+
+    chunk_t* c = (chunk_t*)ptr - 1;
+    size_t old = CHUNK_SIZE(c);
+    size_t need = ALIGN16(size);
+    if (need <= old) return ptr; // already fits (kept in place)
+
+    if (c->next == NULL && current_brk != NULL) {
+        void* nb = grv_brk((char*)current_brk + (need - old));
+        if ((long)nb != -1 && nb != current_brk) {
+            current_brk = nb;
+            c->size = need | CHUNK_USED;
+            return ptr;
+        }
+    }
+
+    void* np = malloc(size);
+    if (!np) return NULL;
+    unsigned char* d = (unsigned char*)np;
+    unsigned char* s = (unsigned char*)ptr;
+    size_t copy = old < need ? old : need;
+    for (size_t i = 0; i < copy; i++) d[i] = s[i];
+    free(ptr);
+    return np;
+}
+
+void* calloc(size_t count, size_t size) {
+    if (size != 0 && count > (size_t)-1 / size) return NULL; // overflow
+    size_t total = count * size;
+    void* p = malloc(total);
+    if (!p) return NULL;
+    unsigned char* b = (unsigned char*)p;
+    for (size_t i = 0; i < total; i++) b[i] = 0;
+    return p;
+}

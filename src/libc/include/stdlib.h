@@ -2,7 +2,6 @@
 #define _STDLIB_H 1
 
 #include <sys/cdefs.h>
-
 #include <stddef.h>
 
 __BEGIN_DECLS
@@ -13,7 +12,20 @@ void abort(void);
 /* Memory allocation — backed by the grv_brk syscall (kernel grows the
    program's data segment on demand). */
 void* malloc(size_t size);
+void* calloc(size_t count, size_t size);
+void* realloc(void* ptr, size_t size);
 void  free(void* ptr);
+
+/* Number parsing. */
+long strtol(const char* __restrict, char** __restrict, int base);
+int  atoi(const char*);
+
+/* Sort 'count' elements of 'size' bytes by 'compare'. */
+void qsort(void* base, size_t count, size_t size,
+           int (*compare)(const void*, const void*));
+
+__attribute__((__noreturn__))
+void exit(int code);
 
 __END_DECLS
 

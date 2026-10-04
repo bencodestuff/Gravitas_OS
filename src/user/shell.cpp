@@ -8,8 +8,7 @@
 // Entry: main(argc, argv) via crt0 (not _start).
 
 static bool str_eq(const char* a, const char* b) {
-    while (*a && *b) { if (*a != *b) return false; a++; b++; }
-    return *a == *b;
+    return strcmp(a, b) == 0;
 }
 
 static bool str_ends_with_elf(const char* s) {
