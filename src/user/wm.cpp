@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <grv/syscall.h>
 #include <grv/text.h>
+#include <grv/input.h>
 
 // wm — the Gravitas window manager (userland policy).
 //
@@ -47,6 +48,8 @@ static int   nwin = 0;
 
 static int   focused = -1;       // focused task id, or -1
 static int   console_task = -1;  // the shell: focus returns here on desktop clicks
+static int   click_sid = -1;     // window that received the button-down (for release)
+static int   last_fx = -1, last_fy = -1; // last forwarded pointer position
 static int   dragging = 0;
 static int   drag_sid = -1;
 static int   drag_off_x = 0, drag_off_y = 0;
@@ -290,6 +293,25 @@ static void scan_existing() {
 
 // --- input ----------------------------------------------------------
 
+// Send a mouse event to the task owning window 'w', in window-local
+// coordinates. 'buttons' is the current button mask.
+static void forward_mouse(Win* w, int buttons, int cx, int cy) {
+    struct grv_msg m;
+    m.from = 0;
+    m.type = GRV_EV_MOUSE;
+    m.a = (unsigned long)buttons;
+    m.b = grv_mouse_pack(cx - w->x, cy - w->y);
+    grv_send(w->owner, &m);
+}
+
+// Top-most window whose client body contains the point, or 0.
+static Win* window_body_at(int cx, int cy) {
+    for (int i = nwin - 1; i >= 0; i--) {
+        if (in_body(&wins[i], cx, cy)) return &wins[i];
+    }
+    return 0;
+}
+
 static void on_press(int cx, int cy) {
     for (int i = nwin - 1; i >= 0; i--) {
         Win* w = &wins[i];
@@ -308,6 +330,8 @@ static void on_press(int cx, int cy) {
         }
         if (in_body(w, cx, cy)) {
             focus_window(w);
+            forward_mouse(w, GRV_BTN_LEFT, cx, cy); // deliver the click
+            click_sid = w->sid;
             return;
         }
     }
@@ -317,14 +341,19 @@ static void on_press(int cx, int cy) {
     }
 }
 
-static void on_release() {
+static void on_release(int cx, int cy) {
+    if (click_sid >= 0) {
+        Win* w = find_sid(click_sid);
+        if (w != 0) forward_mouse(w, 0, cx, cy);
+        click_sid = -1;
+    }
     dragging = 0;
     drag_sid = -1;
 }
 
 static void drag_to(int cx, int cy) {
     Win* w = find_sid(drag_sid);
-    if (w == 0) { on_release(); return; }
+    if (w == 0) { on_release(cx, cy); return; }
 
     int nx = cx - drag_off_x;
     int ny = cy - drag_off_y;
@@ -396,15 +425,27 @@ int main(int argc, char** argv) {
         grv_sysinfo(&si);
         int cx = (int)si.cursor_x, cy = (int)si.cursor_y;
 
+        // Collapse button edges across the drained packets, then act once.
         struct grv_mouse_packet p;
+        bool pressed = false, released = false;
         while (grv_mouse_read(&p)) {
             int left = p.buttons & 1;
-            if (left && !(btn_prev & 1)) on_press(cx, cy);
-            if (!left && (btn_prev & 1)) on_release();
+            if (left && !(btn_prev & 1)) pressed = true;
+            if (!left && (btn_prev & 1)) released = true;
             btn_prev = p.buttons;
         }
 
-        if (dragging) drag_to(cx, cy);
+        if (pressed) on_press(cx, cy);
+        if (released) on_release(cx, cy);
+        if (dragging) {
+            drag_to(cx, cy);
+        } else if (!pressed && !released) {
+            // Hover motion goes to the window under the pointer.
+            Win* w = window_body_at(cx, cy);
+            if (w && (cx != last_fx || cy != last_fy))
+                forward_mouse(w, btn_prev, cx, cy);
+        }
+        last_fx = cx; last_fy = cy;
 
         grv_sleep(8);
     }

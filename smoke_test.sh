@@ -224,7 +224,9 @@ type_dotted('bg win.elf'); key('ret'); wait_for(r"wm: window #[0-9]+ 'win")
 mmove(-440, -350); mclick()                 # click the title bar (window at 80,60)
 wait_for('wm: focus task')
 type_str('a'); wait_for(r"win: key 'a'")
-mmove(226, -5); mclick()                     # click the close box (~426,45)
+mmove(0, 100); mclick()                      # click the client body -> forwarded
+wait_for(r'win: click [0-9]+,[0-9]+')
+mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'wm: window #[0-9]+ gone')
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
@@ -337,10 +339,13 @@ fi
 if ! grep -q "win: key 'a'" "$LOG"; then
     fail "wm did not route the keyboard to the focused window"
 fi
+if ! grep -qE 'win: click [0-9]+,[0-9]+' "$LOG"; then
+    fail "wm did not forward the mouse click to the client"
+fi
 if ! grep -qE "wm: window #[0-9]+ gone" "$LOG"; then
     fail "wm did not close the window"
 fi
-echo "== window manager ok (claim/discover/focus/type/close) =="
+echo "== window manager ok (claim/discover/focus/type/click/close) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then
