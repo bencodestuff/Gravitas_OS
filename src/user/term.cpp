@@ -1,0 +1,98 @@
+#include <stdio.h>
+#include <gravity/gravity.h>
+#include <grv/syscall.h>
+#include <grv/input.h>
+
+// term — the Gravitas terminal: a Gravity text grid that hosts the userland
+// shell. The kernel console endpoint carries the shell's stdio here (see the
+// CONSOLE_* syscalls), so keystrokes go in and output comes back without the
+// kernel knowing what a terminal is.
+
+#define COLS   80
+#define ROWS   25
+#define CELL_W 8
+#define CELL_H 16
+
+static const unsigned int FG = 0xFFD0E0F0;
+static const unsigned int BG = 0xFF101418;
+
+static struct gravity_app app;
+static struct gravity_term term;
+static int shell_pid = -1;
+
+// Output arrives in our console ring, woken by an EV_CONSOLE_OUT mailbox
+// message; poll it each loop and feed the grid.
+static void on_poll(struct gravity_app* a) {
+    char buf[512];
+    long n;
+    int got = 0;
+    while ((n = grv_console_read(buf, sizeof(buf))) > 0) {
+        gravity_term_write(&term, buf, (int)n);
+        got = 1;
+    }
+    if (got) gravity_refresh(a);
+}
+
+static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
+    if (ev->type != GRV_EV_KEY) return;
+    long v = ev->a;
+
+    if (v == GRV_KEY_PAGEUP) {
+        gravity_term_scrollback(&term, ROWS / 2);
+        gravity_refresh(a);
+        return;
+    }
+    if (v == GRV_KEY_PAGEDOWN) {
+        gravity_term_scrollback(&term, -(ROWS / 2));
+        gravity_refresh(a);
+        return;
+    }
+    if (shell_pid < 0) return;
+
+    // Everything else is a byte for the hosted shell's stdin. Typing snaps
+    // the scrollback back to the live screen.
+    char c;
+    if (v >= 32 && v < 127) c = (char)v;
+    else if (v == '\n' || v == '\b' || v == '\t') c = (char)v;
+    else return;
+
+    gravity_term_snap_bottom(&term);
+    grv_console_write(shell_pid, &c, 1);
+    gravity_refresh(a);
+}
+
+static void on_draw(struct gravity_app* a) {
+    // No clear: the grid owns every cell and repaints only the rows that
+    // changed, so the surface must persist between frames. The first render
+    // (all rows dirty) paints the whole thing.
+    gravity_term_render(&term, &a->canvas, 0, 0);
+}
+
+int main(int argc, char** argv) {
+    (void)argc; (void)argv;
+
+    if (gravity_term_init(&term, COLS, ROWS, CELL_W, CELL_H, FG, BG) != 0) {
+        printf("term: out of memory\n");
+        return 1;
+    }
+
+    const char* cargv[1] = { "shell.elf" };
+    shell_pid = (int)grv_spawn_bg("shell.elf", cargv, 1);
+    if (shell_pid < 0) {
+        const char* msg = "term: cannot start shell\n";
+        int n = 0; while (msg[n]) n++;
+        gravity_term_write(&term, msg, n);
+    } else if (grv_console_attach(shell_pid) != 0) {
+        const char* msg = "term: cannot attach console\n";
+        int n = 0; while (msg[n]) n++;
+        gravity_term_write(&term, msg, n);
+    }
+    printf("term: hosting shell as task %d\n", shell_pid);
+
+    app.on_event = on_event;
+    app.on_draw = on_draw;
+    app.on_poll = on_poll;
+    app.user = 0;
+    gravity_run(&app, COLS * CELL_W, ROWS * CELL_H);
+    return 0;
+}

@@ -293,6 +293,18 @@ extern "C" void kmain(void) {
         kprint("\n");
     }
 
+    // The terminal hosts the shell in a window; it needs a WM to place it.
+    if (wm_id >= 0) {
+        int term_id = spawn_program("/bin/term.elf", "term.elf");
+        if (term_id < 0) {
+            kprint("[Kernel] term.elf not found — console-only userland.\n");
+        } else {
+            kprint("[Kernel] terminal as task ");
+            kprint_uint((uint64_t)term_id);
+            kprint("\n");
+        }
+    }
+
     while (1) {
         asm("hlt"); // Idle: the scheduler switches to tasks from timer IRQs
     }

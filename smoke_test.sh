@@ -19,6 +19,8 @@
 #     (wm.elf + win.elf, driven with injected mouse events)
 #   * M12 console endpoint: a task binds a child's console, sends it a line
 #     and captures the reply (consoletest.elf + echoprog.elf)
+#   * M12 terminal: a Gravity text grid hosting the shell, driven by clicking
+#     and typing (term.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -79,6 +81,7 @@ wait_for() {
 wait_for 'GRAVITAS OS KERNEL BOOTED'
 wait_for 'SELF-TEST OK'
 wait_for "type 'help'"
+wait_for 'term: hosting shell as task'
 echo "== boot markers ok =="
 
 # The shipped state must load the PSF2 font, not fall back
@@ -172,22 +175,22 @@ def wait_count(pat, n, timeout=40.0):
 def wait_for(pat, timeout=40.0):
     wait_count(pat, 1, timeout)
 
-# The kernel brings up a window manager at boot. Stop it so the low-level
-# surface/damage tests below run against unmanaged surfaces (as they were
-# written); the WM step at the end starts a fresh one.
-m = re.search(r'window manager as task (\d+)', read_log())
-if m:
-    type_str('kill ' + m.group(1))
-    key('ret')
-    time.sleep(0.4)
+# The kernel brings up a window manager and a terminal at boot. Stop both so
+# the low-level surface/damage tests below run against unmanaged surfaces (as
+# they were written); the WM step at the end starts a fresh one and the
+# terminal step a fresh terminal.
+for pat in (r'window manager as task (\d+)', r'terminal as task (\d+)'):
+    m = re.search(pat, read_log())
+    if m:
+        type_str('kill ' + m.group(1))
+        key('ret')
+        time.sleep(0.4)
 
-# 0) Damage compositor: a small window's lifecycle on a mostly-empty screen
-# must repaint only its rectangles. F12 dumps the compositor counters to
-# serial; the delta across this run is asserted below. First so the screen
-# is not yet full (scrolling legitimately repaints the whole screen).
-cmd('sendkey f12');            wait_count('compositor:', 1)
+# 0) Damage compositor: a small window's lifecycle must repaint only its
+# rectangles, not the screen per operation. damagetest samples the
+# compositor's pixel counter around just its surface ops, so the assertion
+# is independent of console scrolling.
 type_dotted('run damagetest.elf'); key('ret'); wait_for('damagetest done')
-cmd('sendkey f12');            wait_count('compositor:', 2)
 
 # 1) Backspace: 'helpq' + BS -> 'help' -> help text proves the erase
 for ch in 'helpq':
@@ -243,6 +246,17 @@ mmove(0, 100); mclick()                      # click the client body -> forwarde
 wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'window #[0-9]+ gone')
+
+# 11) Terminal: a Gravity text grid hosting the shell. The boot terminal was
+# stopped; start a fresh one, focus it, and type a command — the hosted shell
+# runs it (the kernel logs the spawned program; the output itself is captured
+# by the terminal, not the console).
+type_dotted('bg term.elf'); key('ret'); wait_for('term: hosting shell as task')
+wait_for(r"window #[0-9]+ 'term")
+mmove(-440, -200); mclick()                  # click the terminal body (~200,200)
+wait_for('focus task')
+type_str('ls'); key('ret')
+wait_for(r"User task 'ls.elf' created")
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
 time.sleep(0.3)
@@ -324,26 +338,24 @@ fi
 echo "== surface contract ok (destroy/z-order/enumerate/owner/cap) =="
 
 # Damage compositor (damagetest.elf): a small window's lifecycle must
-# repaint only its rectangles, never the full screen per operation.
+# repaint only its rectangles, never the full screen per operation. The
+# program samples the compositor counter around JUST the surface ops, so
+# console scrolling cannot pollute the figure.
 if ! grep -q 'damagetest done' "$LOG"; then
     fail "damagetest failed (damage compositor broken?)"
 fi
-PX=$(grep -oE 'compositor: [0-9]+ presents, [0-9]+ full, [0-9]+ rects, [0-9]+ px' "$LOG" \
-     | sed -E 's/.* ([0-9]+) px/\1/')
-COUNT=$(printf '%s\n' "$PX" | grep -c .)
-if [ "$COUNT" -ne 2 ]; then
-    fail "expected 2 compositor stat dumps, got $COUNT"
+DAM=$(grep -oE 'damagetest: window damage [0-9]+ px' "$LOG" \
+      | sed -E 's/.* ([0-9]+) px/\1/' | tail -1)
+if [ -z "$DAM" ]; then
+    fail "damagetest reported no damage figure"
 fi
-DPRE=$(printf '%s\n' "$PX" | sed -n 1p)
-DPOST=$(printf '%s\n' "$PX" | sed -n 2p)
-DPIX=$((DPOST - DPRE))
 # The window is 240x160 (38,400 px). Create + 3 moves + 3 commits + destroy
 # stays well under 2M with damage tracking; a full-screen repaint per op
 # would be several million (1,024,000 px each).
-if [ "$DPIX" -ge 2000000 ]; then
-    fail "compositor painted too much for a small window ($DPIX px; damage broken?)"
+if [ "$DAM" -ge 2000000 ]; then
+    fail "compositor painted too much for a small window ($DAM px; damage broken?)"
 fi
-echo "== damage compositor ok ($DPIX px for a small-window lifecycle) =="
+echo "== damage compositor ok ($DAM px for a small-window lifecycle) =="
 
 # Debugger (mon.elf): introspection snapshot + the recorded crash
 if ! grep -q 'mon: ticks' "$LOG"; then
@@ -371,6 +383,19 @@ if ! grep -qE "window #[0-9]+ gone" "$LOG"; then
     fail "wm did not close the window"
 fi
 echo "== window manager ok (claim/discover/focus/type/click/close) =="
+
+# Terminal (term.elf): a Gravity text grid that hosts the shell. Starting it,
+# focusing it and typing must reach the hosted shell.
+if ! grep -q 'term: hosting shell as task' "$LOG"; then
+    fail "terminal did not start and attach its shell"
+fi
+if ! grep -qE "window #[0-9]+ 'term" "$LOG"; then
+    fail "terminal window was not discovered by the WM"
+fi
+if ! grep -q "User task 'ls.elf' created" "$LOG"; then
+    fail "terminal did not deliver input to the hosted shell (M12 UI broken?)"
+fi
+echo "== terminal ok (grid hosts the shell; input reaches it) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

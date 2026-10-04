@@ -6,9 +6,10 @@
 // Prints a text banner, then creates a solid surface over it, moves it
 // around, and destroys it. Visually: the window appears and moves, and
 // each move restores the text/background it uncovered (no ghosting, no
-// stale pixels). The smoke harness asserts the final marker and checks
-// the compositor wrote far fewer pixels than a full-screen repaint per
-// operation; screendumps are kept for the eye.
+// stale pixels). It samples the compositor's pixel counter around ONLY the
+// surface operations (no console output in between), so the smoke harness
+// can assert the window repainted far less than a full-screen repaint per
+// operation regardless of how full the screen is.
 
 static void fill(struct grv_surface_info* s, unsigned int color) {
     unsigned int* px = (unsigned int*)s->address;
@@ -26,6 +27,9 @@ int main(int argc, char** argv) {
     struct grv_surface_info s;
     int id = grv_surface_create(240, 160, &s);
     if (id < 0) { printf("damagetest: FAIL create\n"); return 1; }
+
+    struct grv_sysinfo a, b;
+    grv_sysinfo(&a); // window-lifecycle damage measured from here
 
     fill(&s, 0xFFFF00FF);            // opaque magenta
     grv_surface_move(id, 400, 200);
@@ -46,6 +50,10 @@ int main(int argc, char** argv) {
     }
     grv_sleep(300);
 
+    grv_sysinfo(&b);
+    unsigned long dmg = (unsigned long)(b.comp_pixels - a.comp_pixels);
+    printf("damagetest: window damage %lu px\n", dmg);
     printf("damagetest done\n");
     return 0;
 }
+
