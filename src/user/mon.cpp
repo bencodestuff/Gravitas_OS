@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
 
     struct grv_sysinfo si;
     grv_sysinfo(&si);
-    printf("mon: ticks %lu, tasks %lu, surfaces %lu\n",
-           si.ticks, si.tasks, si.surfaces);
+    printf("mon: ticks %lu, tasks %lu, surfaces %lu, cursor %lu,%lu\n",
+           si.ticks, si.tasks, si.surfaces, si.cursor_x, si.cursor_y);
     printf("mon: mem %lu/%lu frames free (%lu MB), heap %lu/%lu B used, peak %lu\n",
            si.mem_free, si.mem_total, (si.mem_free * 4096) / (1024 * 1024),
            si.heap_used, si.heap_total, si.heap_peak);

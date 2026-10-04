@@ -161,28 +161,29 @@ namespace Mouse {
         if (cycle == 3) {
             cycle = 0;
 
+            uint8_t flags = packet[0];
+
+            // 9-bit two's-complement deltas: low 8 bits in the data
+            // byte, sign extension bit in the flags
+            int16_t dx = packet[1];
+            int16_t dy = packet[2];
+            if (flags & PACKET_X_NEG) dx |= 0xFF00;
+            if (flags & PACKET_Y_NEG) dy |= 0xFF00;
+            dy = -dy; // PS/2 reports Y screen-inverted: up is positive
+                      // in the raw protocol; screen convention (down
+                      // positive) needs the flip
+
+            // The cursor advances with EVERY packet, independent of the
+            // ring: it stays live even when no task is draining, and a
+            // full ring only drops the queued event, never the pointer.
+            cur_x += dx;
+            cur_y += dy;
+            if (cur_x < 0) cur_x = 0;
+            if (cur_y < 0) cur_y = 0;
+
             int next_write = (write_ptr + 1) % BUFFER_SIZE;
             if (next_write != read_ptr) {
                 Packet p;
-                uint8_t flags = packet[0];
-
-                // 9-bit two's-complement deltas: low 8 bits in the data
-                // byte, sign extension bit in the flags
-                int16_t dx = packet[1];
-                int16_t dy = packet[2];
-                if (flags & PACKET_X_NEG) dx |= 0xFF00;
-                if (flags & PACKET_Y_NEG) dy |= 0xFF00;
-                dy = -dy; // PS/2 reports Y screen-inverted: up is positive
-                          // in the raw protocol; screen convention (down
-                          // positive) needs the flip
-
-                // cursor advances with every packet, kernel-side — the
-                // cursor stays live even when no app is draining packets
-                cur_x += dx;
-                cur_y += dy;
-                if (cur_x < 0) cur_x = 0;
-                if (cur_y < 0) cur_y = 0;
-
                 p.dx = dx;
                 p.dy = dy;
                 p.buttons = (flags & PACKET_BTN_LEFT  ? 1 : 0) |
@@ -192,7 +193,7 @@ namespace Mouse {
                 packet_buffer[write_ptr] = p;
                 write_ptr = next_write;
             }
-            // buffer full: drop the packet (a GUI would do flow control)
+            // ring full: drop the queued event (motion is lossy by nature)
         }
     }
 
