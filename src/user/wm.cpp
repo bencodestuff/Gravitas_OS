@@ -89,11 +89,30 @@ static void focus_console() {
 
 static int clip_x0, clip_y0, clip_x1, clip_y1;
 
+// Decoration occlusion. While drawing a window's decoration into the overlay,
+// pixels inside these rectangles are skipped: they are the CLIENT areas of
+// windows stacked above it, whose real surfaces the compositor paints *below*
+// the overlay. Without this, a lower window's title bar/border would be drawn
+// over a higher window (the overlay is above every surface).
+struct ClipRect { int x, y, w, h; };
+static ClipRect occl[MAXWIN];
+static int noccl = 0;
+
+static int occluded(int x, int y) {
+    for (int i = 0; i < noccl; i++) {
+        const ClipRect* r = &occl[i];
+        if (x >= r->x && x < r->x + r->w &&
+            y >= r->y && y < r->y + r->h) return 1;
+    }
+    return 0;
+}
+
 static void fill(int x, int y, int w, int h, unsigned int c) {
     for (int yy = y; yy < y + h; yy++) {
         if (yy < clip_y0 || yy >= clip_y1) continue;
         for (int xx = x; xx < x + w; xx++) {
             if (xx < clip_x0 || xx >= clip_x1) continue;
+            if (noccl && occluded(xx, yy)) continue;
             overlay_px[(unsigned long)yy * overlay_w + xx] = c;
         }
     }
@@ -114,6 +133,7 @@ static void text(int x, int y, const char* s, unsigned int fg) {
                     if (!(bits & (0x80 >> col))) continue;
                     int xx = x + col;
                     if (xx < clip_x0 || xx >= clip_x1) continue;
+                    if (noccl && occluded(xx, yy)) continue;
                     overlay_px[(unsigned long)yy * overlay_w + xx] = fg;
                 }
             }
@@ -202,8 +222,20 @@ static void redraw(int x0, int y0, int x1, int y1) {
     for (int i = 0; i < nwin; i++) {
         int a, b, c, d;
         decor_rect(&wins[i], &a, &b, &c, &d);
-        if (a < x1 && a + c > x0 && b < y1 && b + d > y0) draw_window(&wins[i]);
+        if (!(a < x1 && a + c > x0 && b < y1 && b + d > y0)) continue;
+        // Occlude this window's decoration by the client areas of the windows
+        // stacked above it (their surfaces show through there).
+        noccl = 0;
+        for (int j = i + 1; j < nwin && noccl < MAXWIN; j++) {
+            occl[noccl].x = wins[j].x;
+            occl[noccl].y = wins[j].y;
+            occl[noccl].w = wins[j].w;
+            occl[noccl].h = wins[j].h;
+            noccl++;
+        }
+        draw_window(&wins[i]);
     }
+    noccl = 0;
 
     draw_taskbar(); // the bar sits above every window
     draw_menu();    // the launcher popup sits above the bar
