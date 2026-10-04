@@ -56,6 +56,9 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_SURFACE_CREATE 18
 #define GRV_SYSCALL_SURFACE_COMMIT 19
 #define GRV_SYSCALL_SURFACE_MOVE   20
+#define GRV_SYSCALL_SURFACE_DESTROY 26
+#define GRV_SYSCALL_SURFACE_Z      27
+#define GRV_SYSCALL_SURFACE_LIST   28
 
 /* Open flags (subset) */
 #define GRV_O_RDONLY 0
@@ -202,18 +205,24 @@ static inline unsigned long grv_ticks(void) {
     return (unsigned long)syscall1(GRV_SYSCALL_TICKS, 0);
 }
 
-/* --- Surfaces (compositor) --- */
+/* --- Surfaces (compositor) ---
+   The record the kernel fills at create and in list: identical layout on
+   both sides of the syscall boundary. 'address' is the owner-space VA;
+   x/y are screen position; z is the draw position (0 = bottom). */
 struct grv_surface_info {
     unsigned long address;
     unsigned long width;
     unsigned long height;
+    unsigned long id;
+    unsigned long owner;
+    long          x;
+    long          y;
+    unsigned long z;
 };
 
 static inline int grv_surface_create(unsigned long w, unsigned long h,
                                      struct grv_surface_info* out) {
-    long id = syscall3(GRV_SYSCALL_SURFACE_CREATE, (long)w, (long)h, (long)out);
-    if (id >= 0 && out) { out->width = w; out->height = h; }
-    return (int)id;
+    return (int)syscall3(GRV_SYSCALL_SURFACE_CREATE, (long)w, (long)h, (long)out);
 }
 
 static inline void grv_surface_commit(void) {
@@ -222,6 +231,31 @@ static inline void grv_surface_commit(void) {
 
 static inline void grv_surface_move(int id, int x, int y) {
     syscall3(GRV_SYSCALL_SURFACE_MOVE, (long)id, (long)x, (long)y);
+}
+
+/* Destroy an owned surface. 0 ok, -1 unknown/not ours. */
+static inline int grv_surface_destroy(int id) {
+    return (int)syscall1(GRV_SYSCALL_SURFACE_DESTROY, (long)id);
+}
+
+/* Restack an owned surface: pos < 0 = bottom, pos huge = top, otherwise
+   the exact draw position. 0 ok, -1 unknown/not ours. */
+static inline int grv_surface_z(int id, long pos) {
+    return (int)syscall2(GRV_SYSCALL_SURFACE_Z, (long)id, pos);
+}
+
+static inline int grv_surface_raise(int id) {
+    return grv_surface_z(id, 0x7FFFFFFF);
+}
+
+static inline int grv_surface_lower(int id) {
+    return grv_surface_z(id, -1);
+}
+
+/* Copy up to 'max' records, bottom-to-top (index = z). Returns the count
+   written, or -1 for a null buffer. */
+static inline int grv_surface_list(struct grv_surface_info* out, long max) {
+    return (int)syscall2(GRV_SYSCALL_SURFACE_LIST, (long)out, max);
 }
 
 __END_DECLS

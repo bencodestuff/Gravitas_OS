@@ -19,3 +19,9 @@ extern "C" void kprint_uint(uint64_t value);
 extern "C" void kprint_hex(uint64_t value);
 
 extern "C" char* strcpy(char* dest, const char* src); // klib
+
+// The freestanding memory functions the compiler may call at any time.
+extern "C" void* memset(void* dest, int value, size_t n);
+extern "C" void* memcpy(void* dest, const void* src, size_t n);
+extern "C" void* memmove(void* dest, const void* src, size_t n);
+extern "C" int   memcmp(const void* a, const void* b, size_t n);

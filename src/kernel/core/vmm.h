@@ -11,7 +11,14 @@ namespace VMM {
     // Map into an explicit address space (used for building new processes)
     void map_page_in(uint64_t pml4_phys, uint64_t physical_addr,
                      uint64_t virtual_addr, uint64_t flags);
-    void unmap_page(uint64_t virtual_addr);
+
+    // Drop 'pages' mappings from an explicit address space: the PTEs are
+    // cleared (frames are NOT freed — that's the caller's), so a range can
+    // be handed back to alloc_user_range. TLB entries are flushed only when
+    // the space is the one currently active; other spaces have no cached
+    // translations to invalidate.
+    void unmap_user_range(uint64_t pml4_phys, uint64_t virtual_addr, uint64_t pages);
+
     void switch_pml4(uint64_t pml4_phys_addr);
     uint64_t current_pml4();          // read CR3
     uint64_t get_kernel_pml4_phys();

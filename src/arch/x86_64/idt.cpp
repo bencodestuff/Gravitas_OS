@@ -281,14 +281,9 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 18) { // SURFACE CREATE: rdi=w, rsi=h, rdx=out struct
              long id = Compositor::surface_create(regs->rdi, regs->rsi);
              if (id >= 0 && regs->rdx) {
-                 struct FbPkt { uint64_t address,width,height; };
-                 FbPkt* out = (FbPkt*)regs->rdx;
                  Compositor::Info info;
-                 if (Compositor::surface_info((int)id, &info)) {
-                     out->address = info.address;
-                     out->width = info.width;
-                     out->height = info.height;
-                 }
+                 if (Compositor::surface_info((int)id, &info))
+                     *(Compositor::Info*)regs->rdx = info;
              }
              regs->rax = (uint64_t)id;
         }
@@ -299,6 +294,16 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 20) { // SURFACE MOVE: rdi=id, rsi=x, rdx=y
              Compositor::surface_move((int)regs->rdi, (int)regs->rsi, (int)regs->rdx);
              regs->rax = 0;
+        }
+        else if (syscall_id == 26) { // SURFACE DESTROY: rdi=id -> 0 or -1
+             regs->rax = (uint64_t)(long)Compositor::surface_destroy((int)regs->rdi);
+        }
+        else if (syscall_id == 27) { // SURFACE Z: rdi=id, rsi=pos -> 0 or -1
+             regs->rax = (uint64_t)(long)Compositor::surface_z((int)regs->rdi, (int64_t)regs->rsi);
+        }
+        else if (syscall_id == 28) { // SURFACE LIST: rdi=Info*, rsi=max -> count
+             regs->rax = (uint64_t)(long)Compositor::surface_list(
+                 (Compositor::Info*)regs->rdi, regs->rsi);
         }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)

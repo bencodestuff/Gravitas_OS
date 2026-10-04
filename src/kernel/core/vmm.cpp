@@ -14,6 +14,9 @@ namespace VMM {
     constexpr uint64_t PTE_WRITABLE = 2;
     constexpr uint64_t PTE_USER = 4;
     constexpr uint64_t PTE_NO_CACHE = 0x10;
+    // Software-only bit (52..62 are free in a non-present PTE): marks a VA
+    // as reserved with no backing frame. range_free() treats it as used.
+    constexpr uint64_t PTE_GUARD = 1ull << 62;
 
     static uint64_t* kernel_pml4 = nullptr;
     static uint64_t hhdm_offset = 0;
@@ -22,10 +25,6 @@ namespace VMM {
     static void memset(void* ptr, int value, uint64_t size) {
         uint8_t* p = (uint8_t*)ptr;
         for (uint64_t i = 0; i < size; i++) p[i] = value;
-    }
-
-    static uint64_t pml4_to_phys(uint64_t* pml4_virt) {
-        return (uint64_t)pml4_virt - hhdm_offset;
     }
 
     uint64_t current_pml4() {
@@ -175,7 +174,6 @@ namespace VMM {
         kprint("[VMM] Initialized.\n");
     }
 
-    void unmap_page(uint64_t virtual_addr) { (void)virtual_addr; }
     void switch_pml4(uint64_t pml4_phys_addr) {
         asm volatile("mov %0, %%cr3" : : "r"(pml4_phys_addr) : "memory");
     }
@@ -215,8 +213,24 @@ namespace VMM {
 
             uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, false, false);
             if (pt == nullptr) continue;          // table absent -> free
-            if (pt[pt_idx] & PTE_PRESENT) return false;
+            if (pt[pt_idx] & (PTE_PRESENT | PTE_GUARD)) return false;
         }
+        return true;
+    }
+
+    // Claim a VA with a software guard PTE (no backing frame). The range
+    // becomes invisible to range_free() until the caller maps over it —
+    // structurally safe, and unlike the old scheme it burns no frame that
+    // the caller would then overwrite and leak.
+    static bool reserve_guard(uint64_t pml4_phys, uint64_t va, bool user) {
+        uint64_t pml4_idx = (va >> 39) & 0x1FF;
+        uint64_t pdp_idx  = (va >> 30) & 0x1FF;
+        uint64_t pd_idx   = (va >> 21) & 0x1FF;
+        uint64_t pt_idx   = (va >> 12) & 0x1FF;
+
+        uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, true, user);
+        if (pt == nullptr) return false;
+        pt[pt_idx] = PTE_GUARD;
         return true;
     }
 
@@ -225,13 +239,9 @@ namespace VMM {
         uint64_t candidate = USER_VA_BASE;
         while (candidate + pages * 4096 <= USER_VA_END) {
             if (range_free(pml4_phys, candidate, pages)) {
-                // Reserve with a guard mapping on the FIRST page: until the
-                // caller overwrites it with real mappings, any future scan
-                // sees PRESENT and skips this range. (Single-CPU + spawns
-                // under cli make the alloc/map window safe anyway; the
-                // guard makes it structurally safe.)
-                map_page_in(pml4_phys, PMM::alloc_page(), candidate,
-                            PTE_PRESENT | PTE_WRITABLE);
+                // Guard on the FIRST page only: one bit is enough to make
+                // the whole scanned range non-free.
+                if (!reserve_guard(pml4_phys, candidate, true)) return 0;
                 return candidate;
             }
             candidate += 4096;
@@ -241,8 +251,27 @@ namespace VMM {
 
     bool reserve_user_range(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages) {
         if (!range_free(pml4_phys, vaddr, pages)) return false;
-        map_page_in(pml4_phys, PMM::alloc_page(), vaddr, PTE_PRESENT | PTE_WRITABLE);
-        return true;
+        return reserve_guard(pml4_phys, vaddr, true);
+    }
+
+    void unmap_user_range(uint64_t pml4_phys, uint64_t virtual_addr, uint64_t pages) {
+        bool current = (pml4_phys == current_pml4());
+        for (uint64_t p = 0; p < pages; p++) {
+            uint64_t va = virtual_addr + p * 4096;
+            uint64_t pml4_idx = (va >> 39) & 0x1FF;
+            uint64_t pdp_idx  = (va >> 30) & 0x1FF;
+            uint64_t pd_idx   = (va >> 21) & 0x1FF;
+            uint64_t pt_idx   = (va >> 12) & 0x1FF;
+
+            uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, false, false);
+            if (pt == nullptr) continue;
+            if (!(pt[pt_idx] & (PTE_PRESENT | PTE_GUARD))) continue;
+
+            pt[pt_idx] = 0;
+            // Only the active space has cached translations to drop; a
+            // switch to any other space flushes the TLB wholesale.
+            if (current) asm volatile("invlpg (%0)" :: "r"(va) : "memory");
+        }
     }
 
     // Recursively free a table page and everything below it (tables + frames).

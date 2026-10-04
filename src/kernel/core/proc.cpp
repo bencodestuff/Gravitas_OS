@@ -203,8 +203,11 @@ namespace Sched {
             // NOTE: caller must clean up the task on failure (id already used)
             return -1;
         }
-        // Map the top page; the allocator's guard page is the bottom one.
-        // Stack top = base + 2 pages (grows down toward the guard).
+        // Map both pages of the stack explicitly: alloc_user_range only
+        // reserves the VA range (no frames behind it), so the two pages
+        // the stack actually uses must be backed here.
+        // Stack top = base + 2 pages, growing down through both.
+        VMM::map_page(PMM::alloc_page(), stack_base, 0x07);        // P|W|U
         VMM::map_page(PMM::alloc_page(), stack_base + 4096, 0x07); // P|W|U
         if (switched) VMM::switch_pml4(old_cr3);
 
