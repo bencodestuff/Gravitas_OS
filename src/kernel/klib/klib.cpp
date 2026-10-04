@@ -1,22 +1,22 @@
 // klib implementation — see klib.h.
 //
 // kprint's output channel is the full console: serial (host terminal)
-// plus Framebuffer::screen_print (the visible framebuffer). When M5
-// decouples the console, only this function changes shape.
+// plus Console::print (the kernel's text screen model). klib owns the
+// voice; Console owns the text; Compositor owns the pixels.
 
 #include "klib.h"
 
 #include "kernel/io.h"
 
-namespace Framebuffer {
-    void screen_print(const char* str); // gfx's text renderer
+namespace Console {
+    void print(const char* str); // gfx's text model
 }
 
 extern "C" void kprint(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) {
         outb(0x3f8, str[i]);    // host terminal (serial)
     }
-    Framebuffer::screen_print(str); // QEMU window (screen)
+    Console::print(str);        // kernel text screen (cells)
 }
 
 extern "C" void kprint_uint(uint64_t value) {
@@ -35,13 +35,15 @@ extern "C" void kprint_uint(uint64_t value) {
 }
 
 extern "C" void kprint_hex(uint64_t value) {
-    kprint("0x");
-    for (int i = 60; i >= 0; i -= 4) {
-        uint64_t n = (value >> i) & 0xF;
-        char c = (n < 10) ? '0' + n : 'A' + (n - 10);
-        char s[2] = {c, '\0'};
-        kprint(s);
+    char buf[19];
+    buf[0] = '0';
+    buf[1] = 'x';
+    for (int i = 0; i < 16; i++) {
+        uint64_t n = (value >> (60 - i * 4)) & 0xF;
+        buf[2 + i] = (n < 10) ? (char)('0' + n) : (char)('A' + n - 10);
     }
+    buf[18] = '\0';
+    kprint(buf);
 }
 
 // Freestanding compiler requirements (clang emits calls to these for

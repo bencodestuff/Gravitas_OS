@@ -453,6 +453,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     // --- IRQ 0: Timer (Interrupt 32) ---
     if (num == 32) {
         Timer::tick(); // Update the counter
+        Compositor::refresh(); // repaint if a surface died without a commit
         PIC::send_eoi(0);
 
         Sched::yield();

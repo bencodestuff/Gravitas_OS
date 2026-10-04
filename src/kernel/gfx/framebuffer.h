@@ -1,9 +1,12 @@
 #pragma once
 #include <stdint.h>
 
-namespace Framebuffer {
-    void clear_screen(uint32_t color);
+// --- Framebuffer: hardware access and userland mapping only ---
+// Text lives in Console, painting lives in Compositor. This module owns
+// just the Limine framebuffer request and the syscall-16 mapping of the
+// screen into a user address space.
 
+namespace Framebuffer {
     // --- Info for userland graphics (syscall 16) ---
     struct Info {
         uint64_t width;    // pixels
@@ -18,11 +21,7 @@ namespace Framebuffer {
     // space 'cr3' at a fresh user VA (from the user VA allocator).
     // Returns true on success (info.address then points at the pixels).
     bool get_info_and_map(uint64_t cr3, Info* info);
-
-    // Reset the console cursor to the top-left (a graphics app taking over
-    // the screen shouldn't have the text console scribbling mid-screen)
-    void reset_cursor();
 }
 
-// Global printer helper
+// Global printer helper (klib)
 extern "C" void kprint(const char* str);

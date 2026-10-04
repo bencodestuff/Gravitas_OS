@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // klib — the kernel's own tiny support library.
-//   kprint       : one console voice (serial + framebuffer text)
+//   kprint       : one console voice (serial + the Console text screen)
 //   kprint_uint  : decimal printer (no heap, no varargs)
 //   kprint_hex   : hex printer (0x-prefixed, uppercase digits)
 //   memset/memcpy/memmove/memcmp : freestanding compiler requirements —

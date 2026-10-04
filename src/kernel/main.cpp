@@ -16,6 +16,8 @@
 #include "kernel/gfx/font.h"
 #include "kernel/core/fault.h"
 #include "kernel/gfx/framebuffer.h"
+#include "kernel/gfx/console.h"
+#include "kernel/gfx/compositor.h"
 #include "fs/elf.h"
 #include "fs/tar.h"
 #include "fs/vfs.h"
@@ -198,8 +200,10 @@ extern "C" void kmain(void) {
     // otherwise the 16px glyphs would overwrite the old 8px-spaced
     // boot text mid-screen. (Serial keeps the full early log.)
     if (Font::load_from_disk()) {
-        Framebuffer::clear_screen(0x00000000);
-        Framebuffer::reset_cursor();
+        // New metrics: re-derive the cell grid (the old text is discarded,
+        // as before) and repaint the freshly empty screen.
+        Console::init();
+        Compositor::composite();
     }
 
     // --- VFS self-test: ramfs create/write/read round-trip ---

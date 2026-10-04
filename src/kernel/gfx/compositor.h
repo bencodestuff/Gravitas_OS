@@ -64,9 +64,20 @@ namespace Compositor {
     // enumerate (owner filtering is userland policy).
     int surface_list(Info* out, uint64_t max);
 
-    // Recomposite: console framebuffer as the background layer, then every
-    // registered surface bottom-to-top, then the mouse cursor.
+    // Recomposite: console cell layer (background text) as the deepest
+    // layer, then every registered surface bottom-to-top, then the mouse
+    // cursor. The compositor is the ONLY code that writes screen pixels.
     void composite();
+
+    // Paint the console's dirty cell rows into the framebuffer, skipping
+    // cells covered by a surface. Called by the console after text changes
+    // (so text appears immediately without a full recomposite).
+    void console_paint();
+
+    // Periodic refresh (timer tick): composite fully only if surface
+    // structure changed without a following commit (e.g. a surface's
+    // owner died); otherwise does nothing.
+    void refresh();
 
     // Task teardown: release every registry entry owned by 'task_id'. The
     // frames and mappings are freed by the address-space teardown itself.

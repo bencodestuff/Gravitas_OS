@@ -1,6 +1,7 @@
 #include "kernel/core/fault.h"
 #include "kernel/klib/klib.h"
 #include "kernel/core/sched.h"
+#include "kernel/gfx/console.h"
 #include "kernel/io.h"
 
 
@@ -53,6 +54,8 @@ static const char* vector_name(uint64_t v) {
 
 // --- The dump: everything we know, in one place ---
 static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
+    Console::ink(Console::LT_RED, Console::BLACK); // faults read red
+
     kprint("\n=== FAULT: ");
     kprint(title);
     kprint(" in task '");
@@ -129,6 +132,8 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
     kprint(" R15=");
     kprint_hex(regs->r15);
     kprint("\n");
+
+    Console::ink(Console::WHITE, Console::BLACK); // back to normal ink
 }
 
 // --- The contract ---

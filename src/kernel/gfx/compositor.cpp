@@ -1,4 +1,6 @@
 #include "kernel/gfx/compositor.h"
+#include "kernel/gfx/console.h"
+#include "kernel/gfx/font.h"
 #include "kernel/klib/klib.h"
 #include "kernel/dev/mouse.h"
 #include "kernel/core/sched.h"
@@ -11,6 +13,14 @@ extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile struct limine_hhdm_request hhdm_request;
 
 // --- Compositor: the surface registry and the screen painter ---
+//
+// This is the ONLY module that writes screen pixels. It paints, in order:
+//   1. the console cell layer (background fill + text) — the deepest layer
+//   2. every surface, bottom-to-top
+//   3. the mouse cursor
+// A surface event triggers a full composite; console text only triggers a
+// cheap repaint of the rows it changed. See compositor.h for the surface
+// object contract.
 
 namespace Compositor {
 
@@ -18,8 +28,8 @@ namespace Compositor {
 // this is really a guard against runaway clients, not a budget.
 constexpr int MAX_SURFACES = 32;
 
-// Sanity cap on a single surface (16M pixels at 32bpp ≈ 64MB is far past
-// any screen); keeps w*h*4 well clear of 64-bit overflow.
+// Sanity cap on a single surface (16M pixels at 32bpp), keeping w*h*4
+// well clear of 64-bit overflow.
 constexpr uint64_t MAX_SURFACE_BYTES = 64ull << 20;
 
 struct Surface {
@@ -41,7 +51,7 @@ static int order[MAX_SURFACES];
 static int order_count = 0;
 
 static int next_surface_id = 1;
-static bool dirty = true;   // recomposite on next commit if nothing pending
+static bool structure_dirty = true; // recomposite pending (surface change)
 
 // --- the real framebuffer (kernel writes via HHDM) ---
 static uint32_t* fb_base = nullptr;
@@ -182,7 +192,7 @@ int surface_create(uint64_t w, uint64_t h) {
     }
 
     order_insert(slot, order_count); // new surfaces start on top
-    dirty = true;
+    structure_dirty = true;
     return s->id;
 }
 
@@ -198,7 +208,7 @@ int surface_destroy(int id) {
     Heap::free(s->frames);
     release_slot(slot);
 
-    dirty = true;
+    structure_dirty = true;
     return 0;
 }
 
@@ -212,7 +222,7 @@ int surface_z(int id, int64_t pos) {
     else if (pos >= (int64_t)order_count) order_insert(slot, order_count);
     else order_insert(slot, (int)pos);
 
-    dirty = true;
+    structure_dirty = true;
     return 0;
 }
 
@@ -221,7 +231,7 @@ void surface_move(int id, int x, int y) {
     if (s == nullptr) return;
     s->x = x;
     s->y = y;
-    dirty = true;
+    structure_dirty = true;
 }
 
 bool surface_info(int id, Info* out) {
@@ -247,8 +257,73 @@ int surface_list(Info* out, uint64_t max) {
 
 // --- painting -------------------------------------------------------------
 
+static void fill_rect(int x0, int y0, int x1, int y1, uint32_t color) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (int)fb_w) x1 = (int)fb_w;
+    if (y1 > (int)fb_h) y1 = (int)fb_h;
+    for (int y = y0; y < y1; y++) {
+        uint32_t* row = fb_base + (uint64_t)y * fb_pitch_px;
+        for (int x = x0; x < x1; x++) row[x] = color;
+    }
+}
+
+static void paint_cell(int col, int row) {
+    int x = col * Font::cell_w();
+    int y = row * Font::cell_h();
+    Font::draw_char(x, y, Console::cell(col, row),
+                    Console::cell_fg(col, row), Console::cell_bg(col, row));
+}
+
+// Is any surface's box covering this cell's pixels? (Surfaces stay on top
+// of text, so a cell under one must not be painted.)
+static bool cell_covered(int col, int row) {
+    int x = col * Font::cell_w();
+    int y = row * Font::cell_h();
+    int w = Font::cell_w(), h = Font::cell_h();
+    for (int i = 0; i < order_count; i++) {
+        Surface* s = &surfaces[order[i]];
+        if (s->x < x + w && s->x + (int)s->w > x &&
+            s->y < y + h && s->y + (int)s->h > y) return true;
+    }
+    return false;
+}
+
+// Full console layer: fill only the margins the cell grid does not cover
+// (each cell paints its own background), then draw every cell.
+static void paint_console_full() {
+    int cols = Console::cols(), rows = Console::rows();
+    if (cols <= 0 || rows <= 0) return;
+
+    uint32_t bg = Console::background();
+    fill_rect(cols * Font::cell_w(), 0, (int)fb_w, (int)fb_h, bg); // right
+    fill_rect(0, rows * Font::cell_h(), (int)fb_w, (int)fb_h, bg); // bottom
+
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            paint_cell(c, r);
+
+    Console::clean_all();
+}
+
+void console_paint() {
+    if (!fb_ready()) return;
+    int rows = Console::rows();
+    for (int r = 0; r < rows; r++) {
+        int c0, c1;
+        if (!Console::row_dirty(r, &c0, &c1)) continue;
+        for (int c = c0; c <= c1; c++) {
+            if (!cell_covered(c, r)) paint_cell(c, r);
+        }
+        Console::clean_row(r);
+    }
+}
+
 void composite() {
     if (!fb_ready()) return;
+
+    // Layer -1: the console (background + text cells)
+    paint_console_full();
 
     // Layer 0: surfaces bottom-to-top
     for (int oi = 0; oi < order_count; oi++) {
@@ -264,9 +339,8 @@ void composite() {
         for (int y = y0; y < y1; y++) {
             uint32_t* dst = fb_base + y * fb_pitch_px + x0;
             // Byte offset of this row's first visible pixel inside the
-            // owner's (scattered) buffer. Pixel n lives in page
-            // (offset>>12) at byte (offset & 0xFFF) — each pixel is
-            // 4-byte aligned, so the read is always aligned.
+            // owner's (scattered) buffer: pixel n lives in page
+            // (offset>>12) at byte (offset & 0xFFF).
             uint64_t off = ((uint64_t)y - s->y) * s->w * 4
                          + ((uint64_t)x0 - s->x) * 4;
 
@@ -274,9 +348,8 @@ void composite() {
                 uint32_t c = *(uint32_t*)(frame_ptr(s->frames[off >> 12]) + (off & 0xFFF));
                 off += 4;
 
-                // alpha blend: alpha in the top byte (0 = transparent)
                 uint32_t a = c >> 24;
-                if (a == 0) { dst++; continue; }              // fully transparent
+                if (a == 0) { dst++; continue; }              // transparent
                 if (a == 0xFF) { *dst = c & 0x00FFFFFF; }     // opaque
                 else {
                     uint32_t d = *dst;
@@ -308,6 +381,12 @@ void composite() {
             *dst++ = (v == 1) ? 0x00000000 : 0x00FFFFFF;
         }
     }
+
+    structure_dirty = false;
+}
+
+void refresh() {
+    if (structure_dirty) composite();
 }
 
 void surfaces_for_task_gone(int task_id) {
@@ -322,13 +401,11 @@ void surfaces_for_task_gone(int task_id) {
             removed = true;
         }
     }
-    if (removed) dirty = true;
+    if (removed) structure_dirty = true;
 }
 
-// called from surface_commit syscall
 void composite_if_dirty(bool force) {
-    if (dirty || force) composite();
-    dirty = false;
+    if (structure_dirty || force) composite();
 }
 
 } // namespace Compositor
