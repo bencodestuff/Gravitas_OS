@@ -8,6 +8,7 @@ void gravity_run(struct gravity_app* app, int w, int h) {
 
     if (app->on_draw) app->on_draw(app);
     gravity_present(&app->canvas);
+    app->redraw = 0;
 
     for (;;) {
         struct grv_msg m;
@@ -20,7 +21,12 @@ void gravity_run(struct gravity_app* app, int w, int h) {
             ev.b = (long)m.b;
             if (app->on_event) app->on_event(app, &ev);
         }
-        if (app->on_draw) app->on_draw(app);
-        gravity_present(&app->canvas);
+        // Redraw only when the app asked — an ignored event (a hover
+        // motion) does no drawing and, crucially, no commit.
+        if (app->redraw && app->on_draw) {
+            app->on_draw(app);
+            gravity_present(&app->canvas);
+            app->redraw = 0;
+        }
     }
 }

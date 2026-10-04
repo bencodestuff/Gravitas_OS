@@ -15,17 +15,19 @@ static char last_key = 0;
 static int  click_x = -1, click_y = -1;
 
 static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
-    (void)a;
     if (ev->type == GRV_EV_KEY) {
         long v = ev->a;
         last_key = (v >= 32 && v < 127) ? (char)v : '?';
         printf("win: key '%c'\n", last_key);
+        gravity_refresh(a);
     } else if (ev->type == GRV_EV_MOUSE) {
         if (ev->a & GRV_BTN_LEFT) { // a press
             click_x = grv_mouse_x(ev->b);
             click_y = grv_mouse_y(ev->b);
             printf("win: click %d,%d\n", click_x, click_y);
+            gravity_refresh(a);
         }
+        // hover motion: nothing to draw, so no refresh (and no commit)
     }
 }
 
