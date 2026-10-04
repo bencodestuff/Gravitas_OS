@@ -61,7 +61,7 @@ static int maxi(int a, int b) { return a > b ? a : b; }
 // Find a task by name (the console is the shell). The WM focuses it when no
 // window is focused, so keyboard input has a deterministic owner.
 static int find_task_by_name(const char* name) {
-    struct grv_taskinfo tl[32];
+    static struct grv_taskinfo tl[32];
     int n = grv_task_list(tl, 32);
     for (int i = 0; i < n; i++) {
         int j = 0;
@@ -216,7 +216,7 @@ static void focus_window(Win* w) {
 }
 
 static void owner_name(int owner, char* out) {
-    struct grv_taskinfo tl[32];
+    static struct grv_taskinfo tl[32];
     int n = grv_task_list(tl, 32);
     for (int i = 0; i < 16; i++) out[i] = 0;
     for (int i = 0; i < n; i++) {
@@ -233,7 +233,7 @@ static void add_window(int sid) {
     if (find_sid(sid)) return;
     if (nwin >= MAXWIN) return;
 
-    struct grv_surface_info list[48];
+    static struct grv_surface_info list[48];
     int n = grv_surface_list(list, 48);
     struct grv_surface_info* si = 0;
     for (int i = 0; i < n; i++) if ((int)list[i].id == sid) { si = &list[i]; break; }
@@ -281,7 +281,7 @@ static void remove_window(int sid) {
 }
 
 static void scan_existing() {
-    struct grv_surface_info list[48];
+    static struct grv_surface_info list[48];
     int n = grv_surface_list(list, 48);
     for (int i = 0; i < n; i++) {
         int sid = (int)list[i].id;

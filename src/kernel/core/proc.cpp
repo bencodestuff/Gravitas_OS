@@ -31,6 +31,10 @@ extern uint8_t fpu_template[512];
 
 namespace Sched {
 
+    // Per-task user stack: 8 pages (32 KB). Big enough for frames that hold
+    // a few KB of scratch (a WM keeping surface records, a shell's buffers).
+    constexpr uint64_t USER_STACK_PAGES = 8;
+
     // --- WAIT for already-exited tasks ---
     // WAIT is advisory (a parent may wait late or never), so every exit
     // lands in a small ring that WAIT consumes. Bounded: once 8 newer
@@ -39,8 +43,7 @@ namespace Sched {
     constexpr int RECENT_EXITS = 8;
     struct RecentExit { int id; uint64_t code; };
     static RecentExit recent_exits[RECENT_EXITS];
-    static uint64_t exit_head = 0;
-    bool task_exists(int id) {
+    static uint64_t exit_head = 0;    bool task_exists(int id) {
         if (current_task == nullptr) return false;
         Task* t = ready_queue;
         do {
@@ -211,19 +214,18 @@ namespace Sched {
             VMM::switch_pml4(new_task->cr3);
             switched = true;
         }
-        uint64_t stack_base = VMM::alloc_user_range(new_task->cr3, 2); // 2 pages
+        uint64_t stack_base = VMM::alloc_user_range(new_task->cr3, USER_STACK_PAGES);
         if (stack_base == 0) {
             kprint("[Sched] Out of user VA for stack!\n");
             if (switched) VMM::switch_pml4(old_cr3);
             // NOTE: caller must clean up the task on failure (id already used)
             return -1;
         }
-        // Map both pages of the stack explicitly: alloc_user_range only
-        // reserves the VA range (no frames behind it), so the two pages
-        // the stack actually uses must be backed here.
-        // Stack top = base + 2 pages, growing down through both.
-        VMM::map_page(PMM::alloc_page(), stack_base, 0x07);        // P|W|U
-        VMM::map_page(PMM::alloc_page(), stack_base + 4096, 0x07); // P|W|U
+        // Back every page of the stack: alloc_user_range only reserves the
+        // VA range, so the frames must be mapped here. 8 pages (32K) is a
+        // comfortable floor — bigger programs put multi-KB frames on it.
+        for (uint64_t p = 0; p < USER_STACK_PAGES; p++)
+            VMM::map_page(PMM::alloc_page(), stack_base + p * 4096, 0x07); // P|W|U
         if (switched) VMM::switch_pml4(old_cr3);
 
         // --- Build the initial user stack (System V argv layout) ---
@@ -237,7 +239,8 @@ namespace Sched {
             while (*s) { total_len++; s++; }
             total_len++; // NUL
         }
-        uint64_t strings_start = (stack_base + 8192 - total_len) & ~(uint64_t)15;
+        uint64_t stack_top_va = stack_base + USER_STACK_PAGES * 4096;
+        uint64_t strings_start = (stack_top_va - total_len) & ~(uint64_t)15;
         uint64_t array_start = strings_start - ((argc + 1) * 8);
         uint64_t new_rsp = array_start - 8;
 
