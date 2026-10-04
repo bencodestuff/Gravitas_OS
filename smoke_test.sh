@@ -16,6 +16,11 @@
 #     rectangles, not the screen (damagetest.elf + F12 stat deltas)
 #   * M7 debugger: introspection syscalls + recorded crash (mon.elf)
 #
+# Timing: the driver never sleeps a fixed amount waiting for a program.
+# Each step types a command, then waits for that step's completion marker
+# to appear in the serial log — so the run is as fast as the guest, and a
+# wedged step fails on a timeout instead of passing on a lucky sleep.
+#
 # Artifacts land in test_artifacts/ (serial log + screendump).
 # Run via `ninja test`, or directly after `ninja iso`.
 set -u
@@ -55,14 +60,14 @@ qemu-system-x86_64 -cdrom gravitas.iso -m 512M \
     -serial "file:$LOG" -monitor "unix:$SOCK,server,nowait" &
 QPID=$!
 
-# wait_for <pattern>: poll the serial log (60s per marker)
+# wait_for <pattern>: poll the serial log until it matches (60s cap)
 wait_for() {
     pat="$1"
     i=0
-    while [ "$i" -lt 300 ]; do
+    while [ "$i" -lt 600 ]; do
         grep -qE "$pat" "$LOG" 2>/dev/null && return 0
         i=$((i + 1))
-        sleep 0.2
+        sleep 0.1
     done
     fail "timeout waiting for: $pat"
 }
@@ -80,133 +85,133 @@ grep -qE '\[font\] loaded .*8x16' "$LOG" || fail "PSF2 font did not load"
 echo "== font loaded (8x16) =="
 
 # --- Drive the shell through the QEMU monitor ---
-# Printable keys by name (reliable); special keys as raw set-1 scancodes
-# (make/break pairs) because `sendkey bspc` is dropped by QEMU.
+# Printable keys by name; special keys as raw scancodes. The monitor queues
+# commands in order, so the driver sends without waiting for a reply (only
+# draining QEMU's echo so it never blocks on a full socket), paces keys just
+# enough for the guest's keyboard controller to keep up, and waits on the
+# serial log for each step's marker.
 echo "== driving the shell =="
-python3 - "$SOCK" <<'PYEOF' || fail "monitor session error"
-import socket, sys, time
+python3 - "$SOCK" "$LOG" <<'PYEOF' || fail "monitor session error"
+import socket, sys, time, re
 
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(sys.argv[1])
-time.sleep(0.5)
-s.recv(65536)  # banner
+LOG = sys.argv[2]
+time.sleep(0.3)
+s.settimeout(1.0)
+try:
+    s.recv(65536)  # monitor banner
+except Exception:
+    pass
 
-def mon(cmd):
-    s.sendall((cmd + '\n').encode())
-    time.sleep(0.25)
-    s.settimeout(0.4)
+PACE = 0.04  # per-scancode guest pacing; we only type when the guest is idle
+
+def cmd(c):
+    s.sendall((c + '\n').encode())
+    # Drain QEMU's echo non-blockingly so its output buffer can't fill and
+    # stall command processing.
+    s.settimeout(0)
     try:
-        s.recv(65536)
+        while s.recv(65536):
+            pass
     except Exception:
         pass
-    s.settimeout(5)
+    s.settimeout(None)
 
 def key(name):
-    mon('sendkey ' + name)
+    cmd('sendkey ' + name)
+    time.sleep(PACE)
 
 def raw(make, brk):
-    mon('sendkey 0x' + make)
-    mon('sendkey 0x' + brk)
+    cmd('sendkey 0x' + make)
+    time.sleep(PACE)
+    cmd('sendkey 0x' + brk)
+    time.sleep(PACE)
 
 def type_str(text):
     for ch in text:
         key('spc' if ch == ' ' else ch)
-        time.sleep(0.08)  # pacing: a busy guest (bg task printing) can reorder keys
 
 def type_dotted(text):
-    # Type a dotted name: split at each dot (the raw hex make/break is the
-    # only reliable way to send '.' — named keys for it get dropped).
-    for i, seg in enumerate(text.split('.')):
+    # Split at each dot: the raw hex make/break is the only reliable way to
+    # send '.' (named keys for it get dropped).
+    segs = text.split('.')
+    for i, seg in enumerate(segs):
         type_str(seg)
-        if i != len(text.split('.')) - 1:
-            raw('34', 'b4')  # '.'
+        if i != len(segs) - 1:
+            raw('34', 'b4')
 
-# 0) Damage compositor: a small window's lifecycle on a mostly-empty
-# screen must repaint only its rectangles. F12 dumps the compositor
-# counters to serial; the delta across this run is asserted below. Kept
-# first so the screen is not yet full (scrolling legitimately repaints
-# the whole screen and would drown the measurement).
-mon('sendkey f12')
-time.sleep(0.4)
-type_dotted('run damagetest.elf')
-key('ret')
-time.sleep(4)
-mon('sendkey f12')
-time.sleep(0.4)
+def read_log():
+    try:
+        with open(LOG, 'r', errors='ignore') as f:
+            return f.read()
+    except OSError:
+        return ""
+
+def wait_count(pat, n, timeout=40.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if len(re.findall(pat, read_log())) >= n:
+            return
+        time.sleep(0.03)
+    sys.stderr.write("timed out waiting for %d x %s\n" % (n, pat))
+    sys.exit(1)
+
+def wait_for(pat, timeout=40.0):
+    wait_count(pat, 1, timeout)
+
+# 0) Damage compositor: a small window's lifecycle on a mostly-empty screen
+# must repaint only its rectangles. F12 dumps the compositor counters to
+# serial; the delta across this run is asserted below. First so the screen
+# is not yet full (scrolling legitimately repaints the whole screen).
+cmd('sendkey f12');            wait_count('compositor:', 1)
+type_dotted('run damagetest.elf'); key('ret'); wait_for('damagetest done')
+cmd('sendkey f12');            wait_count('compositor:', 2)
 
 # 1) Backspace: 'helpq' + BS -> 'help' -> help text proves the erase
 for ch in 'helpq':
     key(ch)
 raw('0e', '8e')   # backspace
-key('ret')
-time.sleep(2)
+key('ret'); wait_for('commands are programs')
 
 # 2) cat: bare-name spawn + VFS path fallback + file read
-type_str('cat hello')
-raw('34', 'b4')   # '.'
-type_str('txt')
-key('ret')
-time.sleep(2)
+type_str('cat hello'); raw('34', 'b4'); type_str('txt'); key('ret')
+wait_for('Hello from the Gravitas tar')
 
 # 2b) Console scroll: flood prints 150 numbered lines, forcing the cell
-# layer to scroll far past the screen. Regression guard for the console
-# rework (screen scroll + reflow under load).
-type_dotted('run flood.elf')
-key('ret')
-time.sleep(4)
+# layer to scroll far past the screen.
+type_dotted('run flood.elf'); key('ret'); wait_for('flood done')
 
 # 3) Fault contract: crash.elf faults -> task dies, OS survives
-type_str('run crash')
-key('ret')
-time.sleep(3)
+type_str('run crash'); key('ret'); wait_for('terminating task per the fault contract')
 
 # 4) Stack protector: smash.elf overruns a buffer -> detected, exits
-type_str('run smash')
-key('ret')
-time.sleep(3)
+type_str('run smash'); key('ret'); wait_for('stack smashing detected')
 
-# 5) Process control: background spawn keeps the prompt alive. The
-# sleeper prints ticks + 'done' ~2.5s later (visible in the serial log).
-type_dotted('bg sleeper.elf')
-key('ret')
-time.sleep(0.6)            # sleeper is mid-run NOW
-type_str('jobs')           # prompt must answer while it runs
-key('ret')
-time.sleep(0.5)
-type_str('help')           # interactivity proof
-key('ret')
-time.sleep(4)              # sleeper finishes in the background
+# 5) Process control: background spawn keeps the prompt alive. The sleeper
+# prints ticks + 'done' ~2.5s later; jobs must answer while it runs.
+type_dotted('bg sleeper.elf'); key('ret'); wait_for("bg: started 'sleeper")
+type_str('jobs'); key('ret')
+type_str('help'); key('ret'); wait_count('commands are programs', 2)
+wait_for(r'\[sleeper\] done')
 
 # 6) Process-control contract: proctest checks spawn_bg/wait/kill
-# (incl. double-wait failure and kill mid-flight) and exits nonzero
-# on ANY violation.
-type_dotted('run proctest.elf')
-key('ret')
-time.sleep(10)
+type_dotted('run proctest.elf'); key('ret'); wait_for('all process-control checks pass')
 
-# 7) IPC contract: msgtest spawns msgecho.elf in the background and
-# round-trips messages through it (blocking recv wakes via IPC, FIFO
-# order, poison-exit, send-after-death refusal).
-type_dotted('run msgtest.elf')
-key('ret')
-time.sleep(8)
+# 7) IPC contract: msgtest spawns msgecho.elf and round-trips messages
+type_dotted('run msgtest.elf'); key('ret'); wait_for('all ipc checks pass')
 
-# 8) Surface contract: surfacetest exercises create/destroy, z-order,
-# enumeration, the owner check, death cleanup, and the registry cap.
-type_dotted('run surfacetest.elf')
-key('ret')
-time.sleep(8)
+# 8) Surface contract: surfacetest exercises the whole surface lifecycle
+type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 
-# 9) Debugger: mon reads the introspection syscalls and the crash record.
-type_dotted('run mon.elf')
-key('ret')
-time.sleep(3)
+# 9) Debugger: mon reads the introspection syscalls and the crash record
+type_dotted('run mon.elf'); key('ret'); wait_for('mon: last fault')
 
-mon('screendump ' + 'test_artifacts/console.ppm')
+cmd('screendump ' + 'test_artifacts/console.ppm')
+time.sleep(0.3)
 s.close()
 PYEOF
 
-wait_for 'commands are programs' || true
 if ! grep -q 'commands are programs' "$LOG"; then
     fail "backspace test: 'help' output missing (erase or input broken?)"
 fi
