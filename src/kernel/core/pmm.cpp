@@ -104,7 +104,8 @@ namespace PMM {
         // Lock the kernel heap's physical range so alloc_page() never hands
         // those frames to anyone else. The heap lives at HHDM+0x08000000,
         // which is visible in every address space (kernel half is shared).
-        reserve_range(0x08000000, 0x400000); // 4MB for the kernel heap
+        // Keep this in step with HEAP_SIZE in main.cpp.
+        reserve_range(0x08000000, 0x2000000); // 32MB for the kernel heap
 
         // Seed the free-frame counter from the finished bitmap.
         total_frames_count = bitmap_size * 8;

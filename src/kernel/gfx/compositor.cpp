@@ -66,6 +66,15 @@ static int hotkey_mod_mask = 0; // modifier chord reserved by the authority
 static uint32_t* fb_base = nullptr;
 static uint64_t fb_w = 0, fb_h = 0, fb_pitch_px = 0;
 
+// Double buffering: paint_rect composes into a shadow buffer (the same
+// geometry as the framebuffer), and present()/composite() blit the finished
+// rectangles to the framebuffer in one tight copy. Without this the
+// framebuffer briefly shows a rectangle's intermediate states — the
+// background fill before the surfaces are stamped — which reads as flicker
+// when a large window (e.g. the image viewer) moves.
+static uint32_t* back = nullptr;     // shadow, heap-allocated on first use
+static uint32_t* g_paint = nullptr;  // where the drawing primitives write
+
 static bool fb_ready() {
     if (fb_base) return true;
     if (framebuffer_request.response == nullptr ||
@@ -75,7 +84,25 @@ static bool fb_ready() {
     fb_w = fb->width;
     fb_h = fb->height;
     fb_pitch_px = fb->pitch / 4;
+    g_paint = fb_base;
     return true;
+}
+
+// Allocate the shadow once the heap is up. If it never fits we simply keep
+// painting the framebuffer directly (correct, just without the buffer).
+static void ensure_back() {
+    if (back) return;
+    if (Heap::total() == 0) return; // heap not initialized yet
+    back = (uint32_t*)Heap::malloc((size_t)fb_h * fb_pitch_px * sizeof(uint32_t));
+}
+
+// Copy a finished rectangle from the shadow to the framebuffer.
+static void blit_rect(int x0, int y0, int x1, int y1) {
+    for (int y = y0; y < y1; y++) {
+        uint32_t* s = back + (uint64_t)y * fb_pitch_px + x0;
+        uint32_t* d = fb_base + (uint64_t)y * fb_pitch_px + x0;
+        for (int x = x0; x < x1; x++) d[x - x0] = s[x - x0];
+    }
 }
 
 static uint8_t* frame_ptr(uint64_t phys) {
@@ -368,7 +395,7 @@ int surface_list(Info* out, uint64_t max) {
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint32_t color) {
     for (int y = y0; y < y1; y++) {
-        uint32_t* row = fb_base + (uint64_t)y * fb_pitch_px;
+        uint32_t* row = g_paint + (uint64_t)y * fb_pitch_px;
         for (int x = x0; x < x1; x++) row[x] = color;
     }
 }
@@ -384,7 +411,7 @@ static void paint_cell(int col, int row) {
 // [x0,x1) x [y0,y1) must already be inside the screen and the surface.
 static void stamp_surface(const Surface* s, int x0, int y0, int x1, int y1) {
     for (int y = y0; y < y1; y++) {
-        uint32_t* dst = fb_base + (uint64_t)y * fb_pitch_px + x0;
+        uint32_t* dst = g_paint + (uint64_t)y * fb_pitch_px + x0;
         // Byte offset of this row's first visible pixel inside the owner's
         // (scattered) buffer: pixel n lives in page (offset>>12) at byte
         // (offset & 0xFFF).
@@ -438,7 +465,9 @@ static void stamp_surfaces(int x0, int y0, int x1, int y1) {
     }
 }
 
-static void paint_rect(int x0, int y0, int x1, int y1) {
+static void paint_rect(int x0, int y0, int x1, int y1,
+                       int* rx0, int* ry0, int* rx1, int* ry1) {
+    *rx0 = *rx1 = 0; *ry0 = *ry1 = 0;
     x0 = imax(x0, 0); y0 = imax(y0, 0);
     x1 = imin(x1, (int)fb_w); y1 = imin(y1, (int)fb_h);
     if (x1 <= x0 || y1 <= y0) return;
@@ -466,6 +495,7 @@ static void paint_rect(int x0, int y0, int x1, int y1) {
         stamp_surfaces(x0, y0, x1, y1);
     }
 
+    *rx0 = x0; *ry0 = y0; *rx1 = x1; *ry1 = y1;
     stat_rects++;
     stat_pixels += (uint64_t)(x1 - x0) * (uint64_t)(y1 - y0);
 }
@@ -489,7 +519,7 @@ static void draw_cursor() {
     int mx, my;
     cursor_pos(&mx, &my);
     for (int cy = 0; cy < CURSOR_H; cy++) {
-        uint32_t* dst = fb_base + (uint64_t)(my + cy) * fb_pitch_px + mx;
+        uint32_t* dst = g_paint + (uint64_t)(my + cy) * fb_pitch_px + mx;
         for (int cx = 0; cx < CURSOR_W; cx++) {
             uint8_t v = cursor_sprite16[cy][cx];
             if (v == 0) { dst++; continue; }
@@ -506,9 +536,21 @@ static void draw_cursor() {
 void composite() {
     if (!fb_ready()) return;
     uint64_t flags = irq_save();
-    paint_rect(0, 0, (int)fb_w, (int)fb_h);
+
+    ensure_back();
+    g_paint = back ? back : fb_base;
+    if (back) Font::set_target(back, fb_pitch_px, (int)fb_w, (int)fb_h);
+
+    int rx0, ry0, rx1, ry1;
+    paint_rect(0, 0, (int)fb_w, (int)fb_h, &rx0, &ry0, &rx1, &ry1);
     damage_count = 0;
     draw_cursor();
+
+    if (back) {
+        if (rx1 > rx0 && ry1 > ry0) blit_rect(rx0, ry0, rx1, ry1);
+        Font::set_target(nullptr, 0, 0, 0);
+    }
+    g_paint = fb_base;
     stat_full++;
     irq_restore(flags);
 }
@@ -543,11 +585,27 @@ void present() {
         return; // nothing to do — the common idle tick
     }
 
-    for (int i = 0; i < damage_count; i++)
-        paint_rect(damage[i].x0, damage[i].y0, damage[i].x1, damage[i].y1);
+    ensure_back();
+    g_paint = back ? back : fb_base;
+    if (back) Font::set_target(back, fb_pitch_px, (int)fb_w, (int)fb_h);
+
+    int n = 0;
+    int rx0[MAX_DAMAGE], ry0[MAX_DAMAGE], rx1[MAX_DAMAGE], ry1[MAX_DAMAGE];
+    for (int i = 0; i < damage_count; i++) {
+        int a, b, c, d;
+        paint_rect(damage[i].x0, damage[i].y0, damage[i].x1, damage[i].y1,
+                   &a, &b, &c, &d);
+        if (c > a && d > b) { rx0[n] = a; ry0[n] = b; rx1[n] = c; ry1[n] = d; n++; }
+    }
     damage_count = 0;
 
     draw_cursor(); // always last: a painted rect may have covered it
+
+    if (back) {
+        for (int i = 0; i < n; i++) blit_rect(rx0[i], ry0[i], rx1[i], ry1[i]);
+        Font::set_target(nullptr, 0, 0, 0);
+    }
+    g_paint = fb_base;
     stat_presents++;
     irq_restore(flags);
 }
@@ -646,7 +704,8 @@ void dump_stats() {
     kprint_uint(s.presents);    kprint(" presents, ");
     kprint_uint(s.full_paints); kprint(" full, ");
     kprint_uint(s.rects);       kprint(" rects, ");
-    kprint_uint(s.pixels);      kprint(" px\n");
+    kprint_uint(s.pixels);      kprint(" px, dbuf ");
+    kprint(back ? "on\n" : "off\n");
 }
 
 } // namespace Compositor

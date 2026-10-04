@@ -58,7 +58,7 @@ volatile struct limine_kernel_address_request kernel_address_request = {
 // heap is visible from the kernel half no matter which process is active —
 // no per-space mapping needed and no clone-time surprises.
 #define HEAP_PHYS_BASE  0x08000000
-#define HEAP_SIZE       0x400000 // 4MB
+#define HEAP_SIZE       0x2000000 // 32MB (holds the compositor's 4MB shadow)
 
 // Load a program from the tarfs into a fresh address space and start it as
 // a ring-3 task. Returns the new task id, or -1 on any failure.

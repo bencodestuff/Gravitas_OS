@@ -43,6 +43,10 @@ namespace Font {
     // console erases glyphs. Returns the next x (x + cell width).
     int draw_char(int x, int y, char c, uint32_t fg, uint32_t bg);
 
+    // Redirect glyph rendering to a compositor back buffer (same geometry as
+    // the framebuffer). Pass nullptr to render straight to the framebuffer.
+    void set_target(uint32_t* base, uint64_t pitch_px, int width, int height);
+
     // Render an ASCII string left to right, one cell per char.
     // Returns the x after the last glyph.
     int draw_string(int x, int y, const char* s, uint32_t fg, uint32_t bg);

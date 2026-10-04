@@ -123,6 +123,19 @@ static bool fb_ready(FbInfo* out) {
     return true;
 }
 
+// Optional render target (the compositor's back buffer). When set, glyphs go
+// there instead of the framebuffer so a whole frame is composed off-screen.
+static uint32_t* tgt_base = nullptr;
+static uint64_t  tgt_pitch = 0;
+static int       tgt_w = 0, tgt_h = 0;
+
+void Font::set_target(uint32_t* base, uint64_t pitch_px, int width, int height) {
+    tgt_base = base;
+    tgt_pitch = pitch_px;
+    tgt_w = width;
+    tgt_h = height;
+}
+
 // Pointer to an active-font glyph for an ASCII code, or nullptr when
 // the code has no glyph (blank cell).
 static const uint8_t* glyph_for(char c) {
@@ -138,7 +151,14 @@ static const uint8_t* glyph_for(char c) {
 
 int Font::draw_char(int x, int y, char c, uint32_t fg, uint32_t bg) {
     FbInfo fb;
-    if (!fb_ready(&fb)) return x;
+    if (tgt_base) {
+        fb.base = tgt_base;
+        fb.width = tgt_w;
+        fb.height = tgt_h;
+        fb.pitch_px = tgt_pitch;
+    } else if (!fb_ready(&fb)) {
+        return x;
+    }
 
     // Fully off-screen horizontally: still return the advance so
     // callers can run off to the edge safely.
