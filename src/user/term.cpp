@@ -102,6 +102,17 @@ int main(int argc, char** argv) {
         const char* msg = "term: cannot attach console\n";
         int n = 0; while (msg[n]) n++;
         gravity_term_write(&term, msg, n);
+    } else if (argc > 1) {
+        // An initial command (e.g. `term cat /hello.txt`): type it for the
+        // shell once attached, so a launcher can open a file straight away.
+        static char cmd[256];
+        int n = 0;
+        for (int i = 1; i < argc && n < 250; i++) {
+            if (i > 1) cmd[n++] = ' ';
+            for (int j = 0; argv[i][j] && n < 250; j++) cmd[n++] = argv[i][j];
+        }
+        cmd[n++] = '\n';
+        grv_console_write(shell_pid, cmd, (unsigned long)n);
     }
     printf("term: hosting shell as task %d\n", shell_pid);
 

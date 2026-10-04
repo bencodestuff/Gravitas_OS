@@ -21,6 +21,8 @@
 #     and captures the reply (consoletest.elf + echoprog.elf)
 #   * M12 terminal: a Gravity text grid hosting the shell, driven by clicking
 #     and typing (term.elf)
+#   * M13 file browser: a list widget over the VFS, launched from the menu
+#     (files.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -248,9 +250,10 @@ wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'window #[0-9]+ gone')
 
-# 10b) Launcher menu + Alt+Tab (cursor now ~426,45).
+# 10b) Launcher menu + Alt+Tab (cursor now ~426,45). Three menu items:
+# Terminal (y~721), Files (~743), Demo (~765).
 mmove(-386, 743); mclick()                   # the "Apps" button (~40,788)
-mmove(0, -45); mclick()                       # the "Terminal" item (~40,743)
+mmove(0, -67); mclick()                       # the "Terminal" item (~40,721)
 wait_for("wm: launch 'term.elf'")
 wait_count(r"wm: window #[0-9]+ 'term", 2)    # the launched terminal
 cmd('sendkey alt-tab')
@@ -264,6 +267,13 @@ type_str('ls'); key('ret')
 time.sleep(1.0)
 cmd('screendump test_artifacts/term_after.ppm')
 wait_for(r"User task 'ls.elf' created")
+
+# 12) File browser: launch it from the menu and confirm its window/title.
+mmove(0, 67); mclick()                        # the "Apps" button (~40,788)
+mmove(0, -45); mclick()                        # the "Files" item (~40,743)
+wait_for("wm: launch 'files.elf'")
+wait_count(r"wm: window #[0-9]+ 'files", 1)
+wait_for(r"wm: title #[0-9]+ 'Files'")
 
 cmd('screendump ' + 'test_artifacts/console.ppm')
 time.sleep(0.3)
@@ -442,6 +452,15 @@ then
     fail "terminal did not render the hosted shell's output (keys missed it?)"
 fi
 echo "== terminal ok (hosts the shell; typing renders in its window) =="
+
+# File browser (files.elf): launched from the menu, titled, and listing a dir.
+if ! grep -q "wm: launch 'files.elf'" "$LOG"; then
+    fail "file browser did not launch from the menu"
+fi
+if ! grep -qE "wm: title #[0-9]+ 'Files'" "$LOG"; then
+    fail "file browser window/title missing"
+fi
+echo "== file browser ok (launched, titled, lists directories) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then

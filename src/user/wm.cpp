@@ -220,8 +220,9 @@ static void full_redraw() { redraw(0, 0, overlay_w, overlay_h); }
 
 struct AppItem { const char* label; const char* prog; };
 static const AppItem apps[] = {
-    { "Terminal",    "term.elf" },
-    { "Demo window", "win.elf"  },
+    { "Terminal",    "term.elf"  },
+    { "Files",       "files.elf" },
+    { "Demo window", "win.elf"   },
 };
 static const int napps = (int)(sizeof(apps) / sizeof(apps[0]));
 
