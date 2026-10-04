@@ -150,6 +150,8 @@ namespace Sched {
         new_task->con_in_head = new_task->con_in_tail = 0;
         new_task->con_out_head = new_task->con_out_tail = 0;
         new_task->con_notified = false;
+        new_task->timer_deadline = 0;
+        new_task->timer_armed = false;
 
         // 2. Allocate a Stack for this thread (4KB)
         uint64_t* stack_bottom = new uint64_t[4096]; // 32KB: deep syscalls
@@ -196,6 +198,8 @@ namespace Sched {
         new_task->con_in_head = new_task->con_in_tail = 0;
         new_task->con_out_head = new_task->con_out_tail = 0;
         new_task->con_notified = false;
+        new_task->timer_deadline = 0;
+        new_task->timer_armed = false;
         new_task->exit_code = 0;
         new_task->cr3 = cr3;
         strcpy(new_task->name, name);

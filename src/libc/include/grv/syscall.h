@@ -78,6 +78,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_MKDIR          43
 #define GRV_SYSCALL_UNLINK         44
 #define GRV_SYSCALL_FTRUNCATE      45
+#define GRV_SYSCALL_TIMER_SET      46
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the

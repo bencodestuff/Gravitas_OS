@@ -415,6 +415,10 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         else if (syscall_id == 45) { // FTRUNCATE: rdi=fd, rsi=size -> 0/-1
              regs->rax = (uint64_t)VFS::ftruncate_fd((int)regs->rdi, (uint64_t)regs->rsi);
         }
+        else if (syscall_id == 46) { // TIMER_SET: rdi = ms (0 disarms) -> 0
+             Sched::timer_arm_current(regs->rdi);
+             regs->rax = 0;
+        }
         else if (syscall_id == 4 || syscall_id == 21) { // SPAWN / SPAWN_BG:
              // Blocks until the spawned program exits — EXCEPT SPAWN_BG (21)
              // which returns immediately. rax = child task id, or -1.
@@ -568,6 +572,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     // --- IRQ 0: Timer (Interrupt 32) ---
     if (num == 32) {
         Timer::tick(); // Update the counter
+        Sched::timer_tick(); // fire any due userland one-shot timers
         Compositor::present(); // repaint pending damage (text/surfaces/cursor)
         PIC::send_eoi(0);
 

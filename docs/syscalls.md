@@ -67,6 +67,7 @@ surface is a "window", and what is drawn are all userland policy.
 | 43 | `MKDIR` | `path` | 0 or −1 |
 | 44 | `UNLINK` | `path` | 0 or −1 |
 | 45 | `FTRUNCATE` | `fd, size` | 0 or −1 |
+| 46 | `TIMER_SET` | `ms` (0 cancels) | 0; posts `GRV_EV_TIMER` on expiry |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS).

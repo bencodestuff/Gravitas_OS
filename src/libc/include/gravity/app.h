@@ -35,6 +35,13 @@ struct gravity_app {
 /* Ask for a redraw. Call from on_event when the app's state changed. */
 static inline void gravity_refresh(struct gravity_app* app) { app->redraw = 1; }
 
+/* Arm the app's one-shot timer: after 'ms' the app receives a
+   GRV_EV_TIMER event in on_event (call again to make it repeat). 0 cancels. */
+static inline void gravity_timer(struct gravity_app* app, unsigned long ms) {
+    (void)app;
+    grv_timer_set(ms);
+}
+
 void gravity_run(struct gravity_app* app, int w, int h);
 
 __END_DECLS

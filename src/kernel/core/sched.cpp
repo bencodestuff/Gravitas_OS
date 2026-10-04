@@ -76,6 +76,8 @@ namespace Sched {
         current_task->con_in_head = current_task->con_in_tail = 0;
         current_task->con_out_head = current_task->con_out_tail = 0;
         current_task->con_notified = false;
+        current_task->timer_deadline = 0;
+        current_task->timer_armed = false;
         current_task->user_rip = 0;
         current_task->user_rsp = 0;
         current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
@@ -421,6 +423,34 @@ namespace Sched {
         me->con_in_tail = (me->con_in_tail + 1) % CONSOLE_RING;
         irq_restore(f);
         return c;
+    }
+
+    // --- Timed wakeup (userland) ---
+    void timer_arm_current(uint64_t ms) {
+        if (ms == 0) { current_task->timer_armed = false; return; }
+        uint64_t t = (ms + 19) / 20; // 50Hz -> 20ms/tick, round up
+        if (t == 0) t = 1;
+        current_task->timer_deadline = Timer::get_ticks() + t;
+        current_task->timer_armed = true;
+    }
+
+    void timer_tick() {
+        if (ready_queue == nullptr) return;
+        uint64_t now = Timer::get_ticks();
+        Task* t = ready_queue;
+        do {
+            if (t->timer_armed && now >= t->timer_deadline) {
+                Ipc::Msg m;
+                m.from = (uint64_t)-1;
+                m.type = Input::EV_TIMER;
+                m.a = 0;
+                m.b = 0;
+                // Keep it armed if the mailbox is full, so the wakeup is not
+                // lost (retried next tick).
+                if (Ipc::send(t->id, m) == 0) t->timer_armed = false;
+            }
+            t = t->next;
+        } while (t != ready_queue);
     }
 
     void switch_to_task_cr3(Task* task) {

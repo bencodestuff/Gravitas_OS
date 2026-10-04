@@ -68,6 +68,10 @@ namespace Sched {
         char con_out[CONSOLE_RING];  // bytes this task's children wrote
         int  con_out_head, con_out_tail;
         bool con_notified;           // a console-out wakeup is already queued
+
+        // --- one-shot user timer (timed wakeup) ---
+        uint64_t timer_deadline;     // absolute tick when it fires
+        bool     timer_armed;
     };
 
     // Shared scheduler state. Storage lives in sched.cpp; proc.cpp

@@ -15,6 +15,13 @@ __BEGIN_DECLS
 
 #define GRV_EV_KEY   1  /* m.a = key value, m.b = modifiers          */
 #define GRV_EV_MOUSE 2  /* m.a = buttons,   m.b = (x<<32)|y (local)   */
+#define GRV_EV_TIMER 4  /* the task's one-shot timer elapsed          */
+
+/* Opt a task's one-shot timer: after 'ms' the kernel posts GRV_EV_TIMER to
+   its mailbox (re-arm for a repeating tick). 0 cancels it. */
+static inline int grv_timer_set(unsigned long ms) {
+    return (int)syscall1(GRV_SYSCALL_TIMER_SET, (long)ms);
+}
 
 /* Key values: printable ASCII as-is; special keys above ASCII. */
 #define GRV_KEY_ESCAPE 0x100

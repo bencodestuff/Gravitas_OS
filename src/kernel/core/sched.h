@@ -110,6 +110,13 @@ namespace Sched {
     // Sleep the current task for 'ticks' timer ticks (timer IRQ wakes it).
     void sleep_current(uint64_t ticks);
 
+    // --- Timed wakeup (userland) ---
+    // Arm a one-shot timer for the current task: when 'ms' elapses the kernel
+    // posts EV_TIMER to the task's mailbox (the app re-arms). 0 disarms.
+    void timer_arm_current(uint64_t ms);
+    // Fire any due user timers. Called from the timer IRQ each tick.
+    void timer_tick();
+
     // Current task's address space (syscall layer needs it for fb mapping)
     uint64_t current_task_cr3();
 

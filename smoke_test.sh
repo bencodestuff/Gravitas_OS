@@ -27,6 +27,7 @@
 #     (imageview.elf, grv_image)
 #   * libc basics: string/formatted output/allocator/parse/sort (libctest.elf)
 #   * file API: seek/stat/truncate/create/remove (filetest.elf)
+#   * timed wakeup: one-shot EV_TIMER with no other input (timertest.elf)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -241,6 +242,9 @@ type_dotted('run libctest.elf'); key('ret'); wait_for('libctest: all checks pass
 # 7d) File API: mkdir/create/write/stat/seek/truncate/unlink on the ramfs.
 type_dotted('run filetest.elf'); key('ret'); wait_for('filetest: all checks pass')
 
+# 7e) Timed wakeup: a one-shot timer posts GRV_EV_TIMER with no other input.
+type_dotted('run timertest.elf'); key('ret'); wait_for('timertest: PASS')
+
 # 8) Surface contract: surfacetest exercises the whole surface lifecycle
 type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 
@@ -378,6 +382,12 @@ if ! grep -q 'filetest: all checks pass' "$LOG"; then
     fail "filetest failed (seek/stat/truncate/create/remove regression)"
 fi
 echo "== file API ok (mkdir/create/write/stat/seek/truncate/unlink) =="
+
+# Timed wakeup (timertest.elf)
+if ! grep -q 'timertest: PASS' "$LOG"; then
+    fail "timertest failed (one-shot timer / EV_TIMER regression)"
+fi
+echo "== timer wakeup ok (one-shot GRV_EV_TIMER) =="
 
 # Surface contract (surfacetest.elf + surfhelper.elf)
 if ! grep -q 'surface contract ok' "$LOG"; then

@@ -11,6 +11,7 @@ namespace Input {
     constexpr uint64_t EV_KEY   = 1; // a = key value, b = modifiers
     constexpr uint64_t EV_MOUSE = 2; // a = buttons, b = (x<<32)|y, window-local
     constexpr uint64_t EV_CONSOLE_OUT = 3; // a console owner has output waiting
+    constexpr uint64_t EV_TIMER = 4; // the task's one-shot timer elapsed
 
     // Key values: printable ASCII as-is; special keys above ASCII.
     constexpr uint64_t KEY_ESCAPE = 0x100;
