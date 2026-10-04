@@ -1,6 +1,5 @@
 #include "kernel/gfx/console.h"
 #include "kernel/gfx/font.h"
-#include "kernel/gfx/compositor.h"
 #include "kernel/klib/klib.h"
 #include <limine.h>
 
@@ -146,10 +145,6 @@ void print(const char* s) {
         }
         // other control bytes are swallowed, exactly like the old printer
     }
-
-    // The compositor is the only thing that touches pixels: hand it the
-    // dirty rows now so text appears immediately.
-    Compositor::console_paint();
 }
 
 int cols() { return grid_cols; }

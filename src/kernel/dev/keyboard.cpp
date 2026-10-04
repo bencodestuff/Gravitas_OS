@@ -1,7 +1,8 @@
 #include "kernel/dev/keyboard.h"
 #include "kernel/klib/klib.h"
 #include "kernel/io.h"
-#include "kernel/core/sched.h"   // F12 debug dump
+#include "kernel/core/sched.h"     // F12 debug dump
+#include "kernel/gfx/compositor.h" // F12 compositor stats
 
 
 constexpr uint8_t SC_DEBUG_DUMP = 0x58; // F12 (make code, set 1)
@@ -65,6 +66,7 @@ namespace Keyboard {
         // enqueued — it's a kernel console command, not a keystroke.
         if (scancode == SC_DEBUG_DUMP) {
             Sched::debug_dump();
+            Compositor::dump_stats();
             return;
         }
 

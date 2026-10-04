@@ -14,13 +14,16 @@ extern volatile struct limine_hhdm_request hhdm_request;
 
 // --- Compositor: the surface registry and the screen painter ---
 //
-// This is the ONLY module that writes screen pixels. It paints, in order:
-//   1. the console cell layer (background fill + text) — the deepest layer
-//   2. every surface, bottom-to-top
-//   3. the mouse cursor
-// A surface event triggers a full composite; console text only triggers a
-// cheap repaint of the rows it changed. See compositor.h for the surface
-// object contract.
+// This is the ONLY module that writes screen pixels, and it writes as few
+// as possible: every mutation (surface op, console text, cursor motion)
+// records a rectangle of damage, and present() repaints just those
+// rectangles. A rectangle is repainted from scratch — background, then
+// the console cells it covers, then every surface intersecting it — so
+// z-order and "text under a window" fall out for free.
+//
+// Painting runs with interrupts disabled: syscalls enter through a trap
+// gate (IF stays on), so a timer IRQ could otherwise interrupt a paint
+// or run the scheduler mid-frame.
 
 namespace Compositor {
 
@@ -31,6 +34,10 @@ constexpr int MAX_SURFACES = 32;
 // Sanity cap on a single surface (16M pixels at 32bpp), keeping w*h*4
 // well clear of 64-bit overflow.
 constexpr uint64_t MAX_SURFACE_BYTES = 64ull << 20;
+
+// Coalescing damage list. On overflow everything collapses to the
+// bounding box — overdraw is always correct, underdraw never is.
+constexpr int MAX_DAMAGE = 16;
 
 struct Surface {
     int id;
@@ -51,7 +58,6 @@ static int order[MAX_SURFACES];
 static int order_count = 0;
 
 static int next_surface_id = 1;
-static bool structure_dirty = true; // recomposite pending (surface change)
 
 // --- the real framebuffer (kernel writes via HHDM) ---
 static uint32_t* fb_base = nullptr;
@@ -71,6 +77,71 @@ static bool fb_ready() {
 
 static uint8_t* frame_ptr(uint64_t phys) {
     return (uint8_t*)(uintptr_t)(phys + hhdm_request.response->offset);
+}
+
+static inline int imin(int a, int b) { return a < b ? a : b; }
+static inline int imax(int a, int b) { return a > b ? a : b; }
+
+// --- interrupt-state guard ---
+// The paint and the damage list are single-consumer; keep out the timer
+// (whose IRQ path also paints) while they run.
+static inline uint64_t irq_save() {
+    uint64_t flags;
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+static inline void irq_restore(uint64_t flags) {
+    asm volatile("pushq %0; popfq" :: "r"(flags) : "memory");
+}
+
+// --- damage ----------------------------------------------------------------
+
+struct Rect { int x0, y0, x1, y1; }; // x1/y1 exclusive
+
+static Rect damage[MAX_DAMAGE];
+static int damage_count = 0;
+
+static uint64_t stat_presents = 0, stat_full = 0, stat_rects = 0, stat_pixels = 0;
+
+static void dmg_add_locked(int x0, int y0, int x1, int y1) {
+    x0 = imax(x0, 0); y0 = imax(y0, 0);
+    x1 = imin(x1, (int)fb_w); y1 = imin(y1, (int)fb_h);
+    if (x1 <= x0 || y1 <= y0) return;
+
+    // Merge into any rectangle it touches (touching counts).
+    for (int i = 0; i < damage_count; i++) {
+        Rect* d = &damage[i];
+        if (x0 <= d->x1 && x1 >= d->x0 && y0 <= d->y1 && y1 >= d->y0) {
+            d->x0 = imin(d->x0, x0); d->y0 = imin(d->y0, y0);
+            d->x1 = imax(d->x1, x1); d->y1 = imax(d->y1, y1);
+            return;
+        }
+    }
+    if (damage_count < MAX_DAMAGE) {
+        damage[damage_count].x0 = x0; damage[damage_count].y0 = y0;
+        damage[damage_count].x1 = x1; damage[damage_count].y1 = y1;
+        damage_count++;
+        return;
+    }
+    // Full: collapse everything (and this rect) into one bounding box.
+    for (int i = 0; i < damage_count; i++) {
+        Rect* d = &damage[i];
+        x0 = imin(x0, d->x0); y0 = imin(y0, d->y0);
+        x1 = imax(x1, d->x1); y1 = imax(y1, d->y1);
+    }
+    damage[0].x0 = x0; damage[0].y0 = y0;
+    damage[0].x1 = x1; damage[0].y1 = y1;
+    damage_count = 1;
+}
+
+static void damage_add(int x0, int y0, int x1, int y1) {
+    uint64_t flags = irq_save();
+    dmg_add_locked(x0, y0, x1, y1);
+    irq_restore(flags);
+}
+
+static void damage_surface(const Surface* s) {
+    damage_add(s->x, s->y, s->x + (int)s->w, s->y + (int)s->h);
 }
 
 // --- registry helpers -----------------------------------------------------
@@ -192,7 +263,7 @@ int surface_create(uint64_t w, uint64_t h) {
     }
 
     order_insert(slot, order_count); // new surfaces start on top
-    structure_dirty = true;
+    damage_surface(s);               // it now covers (0,0)-(w,h)
     return s->id;
 }
 
@@ -203,12 +274,11 @@ int surface_destroy(int id) {
     int slot = slot_of(s);
     uint64_t owner_cr3 = Sched::current_task_cr3(); // owner == the caller
 
+    damage_surface(s); // repaint what it covered, after release
     for (uint64_t p = 0; p < s->page_count; p++) PMM::free_page(s->frames[p]);
     VMM::unmap_user_range(owner_cr3, s->va, s->page_count);
     Heap::free(s->frames);
     release_slot(slot);
-
-    structure_dirty = true;
     return 0;
 }
 
@@ -216,22 +286,34 @@ int surface_z(int id, int64_t pos) {
     Surface* s = find_owned(id);
     if (s == nullptr) return -1;
 
+    // Precise damage: changing z only changes the picture where the moved
+    // surface overlaps another one (everywhere else it draws itself
+    // exactly as before).
+    for (int i = 0; i < MAX_SURFACES; i++) {
+        if (!surfaces[i].used || &surfaces[i] == s) continue;
+        Surface* t = &surfaces[i];
+        int ix0 = imax(s->x, t->x);
+        int iy0 = imax(s->y, t->y);
+        int ix1 = imin(s->x + (int)s->w, t->x + (int)t->w);
+        int iy1 = imin(s->y + (int)s->h, t->y + (int)t->h);
+        if (ix1 > ix0 && iy1 > iy0) damage_add(ix0, iy0, ix1, iy1);
+    }
+
     int slot = slot_of(s);
     order_remove(slot);
     if (pos < 0) order_insert(slot, 0);
     else if (pos >= (int64_t)order_count) order_insert(slot, order_count);
     else order_insert(slot, (int)pos);
-
-    structure_dirty = true;
     return 0;
 }
 
 void surface_move(int id, int x, int y) {
     Surface* s = find_owned(id);
     if (s == nullptr) return;
+    damage_surface(s);          // old position
     s->x = x;
     s->y = y;
-    structure_dirty = true;
+    damage_surface(s);          // new position
 }
 
 bool surface_info(int id, Info* out) {
@@ -258,10 +340,6 @@ int surface_list(Info* out, uint64_t max) {
 // --- painting -------------------------------------------------------------
 
 static void fill_rect(int x0, int y0, int x1, int y1, uint32_t color) {
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > (int)fb_w) x1 = (int)fb_w;
-    if (y1 > (int)fb_h) y1 = (int)fb_h;
     for (int y = y0; y < y1; y++) {
         uint32_t* row = fb_base + (uint64_t)y * fb_pitch_px;
         for (int x = x0; x < x1; x++) row[x] = color;
@@ -275,137 +353,177 @@ static void paint_cell(int col, int row) {
                     Console::cell_fg(col, row), Console::cell_bg(col, row));
 }
 
-// Is any surface's box covering this cell's pixels? (Surfaces stay on top
-// of text, so a cell under one must not be painted.)
-static bool cell_covered(int col, int row) {
-    int x = col * Font::cell_w();
-    int y = row * Font::cell_h();
-    int w = Font::cell_w(), h = Font::cell_h();
-    for (int i = 0; i < order_count; i++) {
-        Surface* s = &surfaces[order[i]];
-        if (s->x < x + w && s->x + (int)s->w > x &&
-            s->y < y + h && s->y + (int)s->h > y) return true;
-    }
-    return false;
-}
+// Alpha-blend a clipped screen rectangle of a surface into the framebuffer.
+// [x0,x1) x [y0,y1) must already be inside the screen and the surface.
+static void stamp_surface(const Surface* s, int x0, int y0, int x1, int y1) {
+    for (int y = y0; y < y1; y++) {
+        uint32_t* dst = fb_base + (uint64_t)y * fb_pitch_px + x0;
+        // Byte offset of this row's first visible pixel inside the owner's
+        // (scattered) buffer: pixel n lives in page (offset>>12) at byte
+        // (offset & 0xFFF).
+        uint64_t off = ((uint64_t)y - s->y) * s->w * 4 + ((uint64_t)x0 - s->x) * 4;
+        for (int x = x0; x < x1; x++) {
+            uint32_t c = *(uint32_t*)(frame_ptr(s->frames[off >> 12]) + (off & 0xFFF));
+            off += 4;
 
-// Full console layer: fill only the margins the cell grid does not cover
-// (each cell paints its own background), then draw every cell.
-static void paint_console_full() {
-    int cols = Console::cols(), rows = Console::rows();
-    if (cols <= 0 || rows <= 0) return;
-
-    uint32_t bg = Console::background();
-    fill_rect(cols * Font::cell_w(), 0, (int)fb_w, (int)fb_h, bg); // right
-    fill_rect(0, rows * Font::cell_h(), (int)fb_w, (int)fb_h, bg); // bottom
-
-    for (int r = 0; r < rows; r++)
-        for (int c = 0; c < cols; c++)
-            paint_cell(c, r);
-
-    Console::clean_all();
-}
-
-void console_paint() {
-    if (!fb_ready()) return;
-    int rows = Console::rows();
-    for (int r = 0; r < rows; r++) {
-        int c0, c1;
-        if (!Console::row_dirty(r, &c0, &c1)) continue;
-        for (int c = c0; c <= c1; c++) {
-            if (!cell_covered(c, r)) paint_cell(c, r);
+            uint32_t a = c >> 24;
+            if (a == 0) { dst++; continue; }            // transparent
+            if (a == 0xFF) { *dst = c & 0x00FFFFFF; }   // opaque
+            else {
+                uint32_t d = *dst;
+                uint32_t dr = d & 0xFF, dg = (d >> 8) & 0xFF, db = (d >> 16) & 0xFF;
+                uint32_t sr = c & 0xFF, sg = (c >> 8) & 0xFF, sb = (c >> 16) & 0xFF;
+                *dst = 0xFF000000
+                     | (((dr + (sr - dr) * a / 255) & 0xFF))
+                     | ((((dg + (sg - dg) * a / 255) & 0xFF)) << 8)
+                     | ((((db + (sb - db) * a / 255) & 0xFF)) << 16);
+            }
+            dst++;
         }
-        Console::clean_row(r);
     }
 }
 
-void composite() {
-    if (!fb_ready()) return;
+// Repaint one screen rectangle from scratch: background, then the console
+// cells it covers, then every surface intersecting it, bottom-to-top.
+static void paint_rect(int x0, int y0, int x1, int y1) {
+    x0 = imax(x0, 0); y0 = imax(y0, 0);
+    x1 = imin(x1, (int)fb_w); y1 = imin(y1, (int)fb_h);
+    if (x1 <= x0 || y1 <= y0) return;
 
-    // Layer -1: the console (background + text cells)
-    paint_console_full();
+    fill_rect(x0, y0, x1, y1, Console::background());
 
-    // Layer 0: surfaces bottom-to-top
+    int cols = Console::cols(), rows = Console::rows();
+    int cw = Font::cell_w(), ch = Font::cell_h();
+    if (cols > 0 && rows > 0) {
+        int c0 = imax(x0 / cw, 0), c1 = imin((x1 - 1) / cw, cols - 1);
+        int r0 = imax(y0 / ch, 0), r1 = imin((y1 - 1) / ch, rows - 1);
+        for (int r = r0; r <= r1; r++)
+            for (int c = c0; c <= c1; c++)
+                paint_cell(c, r);
+    }
+
     for (int oi = 0; oi < order_count; oi++) {
         Surface* s = &surfaces[order[oi]];
-
-        // clip to screen
-        int x0 = s->x < 0 ? 0 : s->x;
-        int y0 = s->y < 0 ? 0 : s->y;
-        int x1 = (s->x + (int)s->w > (int)fb_w) ? (int)fb_w : s->x + (int)s->w;
-        int y1 = (s->y + (int)s->h > (int)fb_h) ? (int)fb_h : s->y + (int)s->h;
-        if (x1 <= x0 || y1 <= y0) continue;
-
-        for (int y = y0; y < y1; y++) {
-            uint32_t* dst = fb_base + y * fb_pitch_px + x0;
-            // Byte offset of this row's first visible pixel inside the
-            // owner's (scattered) buffer: pixel n lives in page
-            // (offset>>12) at byte (offset & 0xFFF).
-            uint64_t off = ((uint64_t)y - s->y) * s->w * 4
-                         + ((uint64_t)x0 - s->x) * 4;
-
-            for (int x = x0; x < x1; x++) {
-                uint32_t c = *(uint32_t*)(frame_ptr(s->frames[off >> 12]) + (off & 0xFFF));
-                off += 4;
-
-                uint32_t a = c >> 24;
-                if (a == 0) { dst++; continue; }              // transparent
-                if (a == 0xFF) { *dst = c & 0x00FFFFFF; }     // opaque
-                else {
-                    uint32_t d = *dst;
-                    uint32_t dr = d & 0xFF, dg = (d >> 8) & 0xFF, db = (d >> 16) & 0xFF;
-                    uint32_t sr = c & 0xFF, sg = (c >> 8) & 0xFF, sb = (c >> 16) & 0xFF;
-                    *dst = 0xFF000000
-                         | (((dr + (sr - dr) * a / 255) & 0xFF))
-                         | ((((dg + (sg - dg) * a / 255) & 0xFF)) << 8)
-                         | ((((db + (sb - db) * a / 255) & 0xFF)) << 16);
-                }
-                dst++;
-            }
-        }
+        int sx0 = imax(x0, imax(s->x, 0));
+        int sy0 = imax(y0, imax(s->y, 0));
+        int sx1 = imin(x1, imin(s->x + (int)s->w, (int)fb_w));
+        int sy1 = imin(y1, imin(s->y + (int)s->h, (int)fb_h));
+        if (sx1 > sx0 && sy1 > sy0) stamp_surface(s, sx0, sy0, sx1, sy1);
     }
 
-    // Layer 1 (top): the mouse cursor
+    stat_rects++;
+    stat_pixels += (uint64_t)(x1 - x0) * (uint64_t)(y1 - y0);
+}
+
+// --- cursor ---------------------------------------------------------------
+
+static int last_cursor_x = -10000, last_cursor_y = -10000;
+static bool cursor_seen = false;
+
+static void cursor_pos(int* x, int* y) {
     int mx = Mouse::cursor_x(), my = Mouse::cursor_y();
     if (mx > (int)fb_w - CURSOR_W) mx = (int)fb_w - CURSOR_W;
     if (my > (int)fb_h - CURSOR_H) my = (int)fb_h - CURSOR_H;
     if (mx < 0) mx = 0;
     if (my < 0) my = 0;
     Mouse::apply_position_clamp(mx, my);
+    *x = mx; *y = my;
+}
 
+static void draw_cursor() {
+    int mx, my;
+    cursor_pos(&mx, &my);
     for (int cy = 0; cy < CURSOR_H; cy++) {
-        uint32_t* dst = fb_base + (my + cy) * fb_pitch_px + mx;
+        uint32_t* dst = fb_base + (uint64_t)(my + cy) * fb_pitch_px + mx;
         for (int cx = 0; cx < CURSOR_W; cx++) {
             uint8_t v = cursor_sprite16[cy][cx];
             if (v == 0) { dst++; continue; }
             *dst++ = (v == 1) ? 0x00000000 : 0x00FFFFFF;
         }
     }
-
-    structure_dirty = false;
+    last_cursor_x = mx;
+    last_cursor_y = my;
+    cursor_seen = true;
 }
 
-void refresh() {
-    if (structure_dirty) composite();
+// --- the two entry points -------------------------------------------------
+
+void composite() {
+    if (!fb_ready()) return;
+    uint64_t flags = irq_save();
+    paint_rect(0, 0, (int)fb_w, (int)fb_h);
+    damage_count = 0;
+    draw_cursor();
+    stat_full++;
+    irq_restore(flags);
+}
+
+void present() {
+    if (!fb_ready()) return;
+
+    uint64_t flags = irq_save();
+
+    // Console text: dirty cell rows become damage rectangles.
+    int cw = Font::cell_w(), ch = Font::cell_h();
+    int rows = Console::rows();
+    for (int r = 0; r < rows; r++) {
+        int c0, c1;
+        if (!Console::row_dirty(r, &c0, &c1)) continue;
+        dmg_add_locked(c0 * cw, r * ch, (c1 + 1) * cw, (r + 1) * ch);
+        Console::clean_row(r);
+    }
+
+    // Cursor motion: damage where it was and where it is now.
+    int cx, cy;
+    cursor_pos(&cx, &cy);
+    bool moved = (cx != last_cursor_x || cy != last_cursor_y);
+    if (moved) {
+        dmg_add_locked(last_cursor_x, last_cursor_y,
+                       last_cursor_x + CURSOR_W, last_cursor_y + CURSOR_H);
+        dmg_add_locked(cx, cy, cx + CURSOR_W, cy + CURSOR_H);
+    }
+
+    if (damage_count == 0 && !moved && cursor_seen) {
+        irq_restore(flags);
+        return; // nothing to do — the common idle tick
+    }
+
+    for (int i = 0; i < damage_count; i++)
+        paint_rect(damage[i].x0, damage[i].y0, damage[i].x1, damage[i].y1);
+    damage_count = 0;
+
+    draw_cursor(); // always last: a painted rect may have covered it
+    stat_presents++;
+    irq_restore(flags);
+}
+
+void surface_commit() {
+    int me = Sched::current_task_id();
+    for (int i = 0; i < MAX_SURFACES; i++) {
+        if (surfaces[i].used && surfaces[i].task_id == me) damage_surface(&surfaces[i]);
+    }
+    present();
 }
 
 void surfaces_for_task_gone(int task_id) {
-    bool removed = false;
     for (int i = 0; i < MAX_SURFACES; i++) {
         if (surfaces[i].used && surfaces[i].task_id == task_id) {
+            damage_surface(&surfaces[i]); // repaint where it was
             // The frames and mappings die with the task's address space
             // (destroy_user_space frees them); only the registry entry and
             // the frame list are ours to release.
             Heap::free(surfaces[i].frames);
             release_slot(i);
-            removed = true;
         }
     }
-    if (removed) structure_dirty = true;
 }
 
-void composite_if_dirty(bool force) {
-    if (structure_dirty || force) composite();
+void dump_stats() {
+    kprint("[dbg] compositor: ");
+    kprint_uint(stat_presents); kprint(" presents, ");
+    kprint_uint(stat_full);     kprint(" full, ");
+    kprint_uint(stat_rects);    kprint(" rects, ");
+    kprint_uint(stat_pixels);   kprint(" px\n");
 }
 
 } // namespace Compositor

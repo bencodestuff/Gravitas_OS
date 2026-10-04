@@ -64,25 +64,25 @@ namespace Compositor {
     // enumerate (owner filtering is userland policy).
     int surface_list(Info* out, uint64_t max);
 
-    // Recomposite: console cell layer (background text) as the deepest
-    // layer, then every registered surface bottom-to-top, then the mouse
-    // cursor. The compositor is the ONLY code that writes screen pixels.
+    // Full-screen repaint (boot, font swap). Rare; the normal path is
+    // present().
     void composite();
 
-    // Paint the console's dirty cell rows into the framebuffer, skipping
-    // cells covered by a surface. Called by the console after text changes
-    // (so text appears immediately without a full recomposite).
-    void console_paint();
+    // Flush all pending damage: console text rows, surface changes and
+    // cursor motion, repainting only the affected rectangles. Cheap when
+    // little changed, a no-op when nothing did, and the only place pixels
+    // are painted.
+    void present();
 
-    // Periodic refresh (timer tick): composite fully only if surface
-    // structure changed without a following commit (e.g. a surface's
-    // owner died); otherwise does nothing.
-    void refresh();
+    // A surface commit: damage every surface owned by the calling task
+    // (its pixels may have changed) and flush.
+    void surface_commit();
 
-    // Task teardown: release every registry entry owned by 'task_id'. The
-    // frames and mappings are freed by the address-space teardown itself.
+    // Task teardown: release every registry entry owned by 'task_id' and
+    // damage the areas they covered. The frames and mappings are freed by
+    // the address-space teardown itself.
     void surfaces_for_task_gone(int task_id);
 
-    // Recomposite (skips if nothing changed unless force)
-    void composite_if_dirty(bool force);
+    // Counters for measurement (printed by the F12 dump).
+    void dump_stats();
 }

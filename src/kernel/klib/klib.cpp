@@ -2,7 +2,8 @@
 //
 // kprint's output channel is the full console: serial (host terminal)
 // plus Console::print (the kernel's text screen model). klib owns the
-// voice; Console owns the text; Compositor owns the pixels.
+// voice; Console owns the text; Compositor owns the pixels, and the
+// flush after each spoken string is what makes text appear promptly.
 
 #include "klib.h"
 
@@ -11,12 +12,16 @@
 namespace Console {
     void print(const char* str); // gfx's text model
 }
+namespace Compositor {
+    void present(); // gfx's damage flush
+}
 
 extern "C" void kprint(const char* str) {
     for (int i = 0; str[i] != '\0'; i++) {
         outb(0x3f8, str[i]);    // host terminal (serial)
     }
     Console::print(str);        // kernel text screen (cells)
+    Compositor::present();      // repaint whatever changed
 }
 
 extern "C" void kprint_uint(uint64_t value) {

@@ -287,8 +287,8 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              }
              regs->rax = (uint64_t)id;
         }
-        else if (syscall_id == 19) { // SURFACE COMMIT: recomposite the screen
-             Compositor::composite_if_dirty(true);
+        else if (syscall_id == 19) { // SURFACE COMMIT: repaint our surfaces
+             Compositor::surface_commit();
              regs->rax = 0;
         }
         else if (syscall_id == 20) { // SURFACE MOVE: rdi=id, rsi=x, rdx=y
@@ -453,7 +453,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     // --- IRQ 0: Timer (Interrupt 32) ---
     if (num == 32) {
         Timer::tick(); // Update the counter
-        Compositor::refresh(); // repaint if a surface died without a commit
+        Compositor::present(); // repaint pending damage (text/surfaces/cursor)
         PIC::send_eoi(0);
 
         Sched::yield();
