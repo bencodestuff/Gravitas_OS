@@ -9,6 +9,8 @@
 #   * fault contract + stack protector (crash.elf / smash.elf)
 #   * M2 process control: bg spawn (non-blocking), wait, kill (proctest.elf)
 #   * M3 IPC: per-task mailboxes, blocking recv wake, FIFO (msgtest.elf)
+#   * M4 surfaces: destroy/restack/enumerate, the owner check, death
+#     cleanup and the registry cap (surfacetest.elf + surfhelper.elf)
 #
 # Artifacts land in test_artifacts/ (serial log + screendump).
 # Run via `ninja test`, or directly after `ninja iso`.
@@ -165,6 +167,12 @@ type_dotted('run msgtest.elf')
 key('ret')
 time.sleep(8)
 
+# 8) Surface contract: surfacetest exercises create/destroy, z-order,
+# enumeration, the owner check, death cleanup, and the registry cap.
+type_dotted('run surfacetest.elf')
+key('ret')
+time.sleep(8)
+
 mon('screendump ' + 'test_artifacts/console.ppm')
 s.close()
 PYEOF
@@ -221,6 +229,12 @@ if ! grep -q 'all ipc checks pass' "$LOG"; then
     fail "msgtest failed its ipc contract (M3 broken?)"
 fi
 echo "== ipc contract ok (send/recv/fifo/death) =="
+
+# Surface contract (surfacetest.elf + surfhelper.elf)
+if ! grep -q 'surface contract ok' "$LOG"; then
+    fail "surfacetest failed its surface contract (M4 broken?)"
+fi
+echo "== surface contract ok (destroy/z-order/enumerate/owner/cap) =="
 
 # Human-readable screenshot (best effort)
 if command -v ffmpeg >/dev/null; then
