@@ -245,6 +245,7 @@ static inline void grv_sleep(unsigned long ms) {
 struct grv_mouse_packet {
     short dx, dy;         // movement since last packet
     unsigned char buttons; // bit0 left, bit1 right, bit2 middle
+    char dz;              // wheel movement (signed); 0 if no wheel
 };
 
 /* Drain one mouse packet. Returns 1 if a packet was read, 0 if none. */

@@ -262,17 +262,17 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              asm volatile("cli");
              Sched::yield();
         }
-        else if (syscall_id == 15) { // MOUSE READ: rdi = struct* {dx,dy,buttons}
+        else if (syscall_id == 15) { // MOUSE READ: rdi = struct* {dx,dy,buttons,dz}
              // Non-blocking. rax = 1 if a packet was drained, 0 if none.
              // Once a display authority exists, the mouse is its alone (the
              // WM brokers pointer input); other tasks get nothing.
-             struct MousePkt { int16_t dx, dy; uint8_t buttons; };
+             struct MousePkt { int16_t dx, dy; uint8_t buttons; int8_t dz; };
              MousePkt* out = (MousePkt*)regs->rdi;
-             int16_t dx, dy; uint8_t buttons;
+             int16_t dx, dy; uint8_t buttons; int8_t dz;
              if (Compositor::has_authority() && !Compositor::is_authority()) {
                  regs->rax = 0;
-             } else if (Mouse::read_packet(&dx, &dy, &buttons)) {
-                 out->dx = dx; out->dy = dy; out->buttons = buttons;
+             } else if (Mouse::read_packet(&dx, &dy, &buttons, &dz)) {
+                 out->dx = dx; out->dy = dy; out->buttons = buttons; out->dz = dz;
                  regs->rax = 1;
              } else {
                  regs->rax = 0;
@@ -574,6 +574,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     if (num == 32) {
         Timer::tick(); // Update the counter
         Sched::timer_tick(); // fire any due userland one-shot timers
+        Keyboard::tick(); // typematic repeat for a held key
         Compositor::present(); // repaint pending damage (text/surfaces/cursor)
         PIC::send_eoi(0);
 

@@ -60,7 +60,7 @@ void gravity_run(struct gravity_app* app, int w, int h) {
         if (grv_recv(&m, 1) != 0) continue;
 
         if (m.type == GRV_EV_KEY || m.type == GRV_EV_MOUSE ||
-            m.type == GRV_EV_TIMER) {
+            m.type == GRV_EV_TIMER || m.type == GRV_EV_SCROLL) {
             struct gravity_event ev;
             ev.type = (long)m.type;
             ev.a = (long)m.a;

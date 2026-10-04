@@ -567,6 +567,17 @@ static void forward_mouse(Win* w, int buttons, int cx, int cy) {
     grv_send(w->owner, &m);
 }
 
+// Send a wheel-scroll event to the task owning window 'w'. 'delta' is the
+// number of wheel notches (positive = up/away).
+static void forward_scroll(Win* w, int delta) {
+    struct grv_msg m;
+    m.from = 0;
+    m.type = GRV_EV_SCROLL;
+    m.a = ((unsigned long)w->sid << 16);
+    m.b = (long)delta;
+    grv_send(w->owner, &m);
+}
+
 // Top-most window whose client body contains the point, or 0.
 static Win* window_body_at(int cx, int cy) {
     for (int i = nwin - 1; i >= 0; i--) {
@@ -801,11 +812,13 @@ int main(int argc, char** argv) {
         // Collapse button edges across the drained packets, then act once.
         struct grv_mouse_packet p;
         bool pressed = false, released = false;
+        int wheel = 0;
         while (grv_mouse_read(&p)) {
             int left = p.buttons & 1;
             if (left && !(btn_prev & 1)) pressed = true;
             if (!left && (btn_prev & 1)) released = true;
             btn_prev = p.buttons;
+            wheel += p.dz;
         }
 
         if (pressed) on_press(cx, cy);
@@ -823,6 +836,13 @@ int main(int argc, char** argv) {
             Win* w = window_body_at(cx, cy);
             if (w && (cx != last_fx || cy != last_fy))
                 forward_mouse(w, btn_prev, cx, cy);
+        }
+
+        // The wheel scrolls the window under the pointer (menu/taskbar clicks
+        // above already returned earlier).
+        if (wheel != 0) {
+            Win* w = window_body_at(cx, cy);
+            if (w) forward_scroll(w, wheel);
         }
         last_fx = cx; last_fy = cy;
 

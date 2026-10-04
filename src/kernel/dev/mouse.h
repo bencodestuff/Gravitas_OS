@@ -12,9 +12,9 @@ namespace Mouse {
     void handle_interrupt();
 
     // Drain one accumulated packet. Returns true if a packet was ready,
-    // filling dx/dy (signed deltas) and buttons (bit0 left, bit1 right,
-    // bit2 middle).
-    bool read_packet(int16_t* dx, int16_t* dy, uint8_t* buttons);
+    // filling dx/dy (signed deltas), buttons (bit0 left, bit1 right,
+    // bit2 middle) and dz (wheel, signed).
+    bool read_packet(int16_t* dx, int16_t* dy, uint8_t* buttons, int8_t* dz);
 
     // Accumulated cursor position (deltas applied as packets arrive,
     // clamped at composite time to the framebuffer bounds)

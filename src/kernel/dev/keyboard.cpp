@@ -5,6 +5,7 @@
 #include "kernel/core/ipc.h"       // post key events to a task's mailbox
 #include "kernel/core/input.h"     // event types, key values, modifiers
 #include "kernel/gfx/compositor.h" // F12 compositor stats
+#include "kernel/core/timer.h"     // tick deadline for typematic repeat
 
 constexpr uint8_t SC_DEBUG_DUMP = 0x58;     // F12 (make code, set 1)
 constexpr uint8_t SC_CONSOLE_ON_TOP = 0x57; // F11 (make code, set 1)
@@ -35,6 +36,19 @@ namespace Keyboard {
     static bool alt_left = false, alt_right = false;
     static bool caps_lock = false;
     static bool extended = false; // 0xE0 prefix pending
+
+    // Typematic repeat: the last key-down is re-delivered on a timer while it
+    // is held (after a delay, then at a fixed rate). Stored decoded so the
+    // repeat re-runs the exact same delivery the make did.
+    constexpr uint64_t REPEAT_DELAY = 25; // ticks before the first repeat (500ms)
+    constexpr uint64_t REPEAT_RATE  = 2;  // ticks between repeats (40ms, ~25/s)
+    static bool     repeat_on = false;
+    static uint8_t  repeat_code = 0;
+    static bool     repeat_ext = false;
+    static uint64_t repeat_value = 0;
+    static uint64_t repeat_mods = 0;
+    static char     repeat_char = 0;
+    static uint64_t repeat_due = 0;
 
     // Console character ring (the GETC path, unchanged interface).
     #define BUFFER_SIZE 256
@@ -111,7 +125,12 @@ namespace Keyboard {
             if (code == SC_ALT)  { alt_right = !release; return; }
         }
 
-        if (release) return; // only key-downs produce input
+        // Releasing the held key ends its repeat.
+        if (release) {
+            if (repeat_on && code == repeat_code && ext == repeat_ext)
+                repeat_on = false;
+            return;
+        }
 
         uint64_t value = 0;
         if (ext) {
@@ -156,7 +175,26 @@ namespace Keyboard {
         if (value >= 32 && value <= 126) ring_char = (char)value;
         else if (value == '\b' || value == '\t' || value == '\n') ring_char = (char)value;
 
+        // Arm typematic repeat: if the key stays down, tick() re-delivers it.
+        repeat_on = true;
+        repeat_code = code;
+        repeat_ext = ext;
+        repeat_value = value;
+        repeat_mods = mods;
+        repeat_char = ring_char;
+        repeat_due = Timer::get_ticks() + REPEAT_DELAY;
+
         deliver(value, mods, ring_char);
+    }
+
+    // Called from the timer IRQ: re-deliver the held key once its repeat
+    // deadline passes.
+    void tick() {
+        if (!repeat_on) return;
+        uint64_t now = Timer::get_ticks();
+        if (now < repeat_due) return;
+        repeat_due = now + REPEAT_RATE;
+        deliver(repeat_value, repeat_mods, repeat_char);
     }
 
     char get_queued_key() {

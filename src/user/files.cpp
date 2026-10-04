@@ -146,6 +146,9 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         else if (v == GRV_KEY_PAGEDOWN) { gravity_list_scroll(&list, gravity_list_rows(&list)); gravity_refresh(a); }
         else if (v == '\n') { open_selected(); gravity_refresh(a); }
         else if (v == '\b') { up(); gravity_refresh(a); }
+    } else if (ev->type == GRV_EV_SCROLL) {
+        gravity_list_scroll(&list, -grv_scroll_delta(ev->b) * 3);
+        gravity_refresh(a);
     } else if (ev->type == GRV_EV_MOUSE) {
         if (ev->a & GRV_BTN_LEFT) {
             int idx = gravity_list_hit(&list, grv_mouse_x(ev->b), grv_mouse_y(ev->b));

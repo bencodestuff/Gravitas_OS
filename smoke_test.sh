@@ -260,6 +260,10 @@ wait_for(r"wm: title #[0-9]+ 'Gravity demo'")   # client title over IPC
 mmove(-440, -350); mclick()                 # click the title bar (window at 80,60)
 wait_for('focus task')
 type_str('a'); wait_for(r"win: key 'a'")
+# Typematic repeat: a key held down is re-delivered by the kernel (the driver
+# repeats it on the timer tick), so several key events arrive.
+cmd('sendkey a 900')
+wait_count(r"win: key 'a'", 4)
 mmove(0, 100); mclick()                      # click the client body -> forwarded
 wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
@@ -443,6 +447,9 @@ if ! grep -qE "window #[0-9]+ 'win" "$LOG"; then
 fi
 if ! grep -q "win: key 'a'" "$LOG"; then
     fail "wm did not route the keyboard to the focused window"
+fi
+if [ "$(grep -c "win: key 'a'" "$LOG")" -lt 4 ]; then
+    fail "held key did not repeat (typematic repeat broken?)"
 fi
 if ! grep -qE 'win: click [0-9]+,[0-9]+' "$LOG"; then
     fail "wm did not forward the mouse click to the client"

@@ -35,6 +35,12 @@ static void on_poll(struct gravity_app* a) {
 }
 
 static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
+    if (ev->type == GRV_EV_SCROLL) {
+        // Wheel: three lines per notch (positive = up/back in time).
+        gravity_term_scrollback(&term, grv_scroll_delta(ev->b) * 3);
+        gravity_refresh(a);
+        return;
+    }
     if (ev->type != GRV_EV_KEY) return;
     long v = ev->a;
 

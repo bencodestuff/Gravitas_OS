@@ -16,6 +16,7 @@ __BEGIN_DECLS
 #define GRV_EV_KEY   1  /* m.a = key value, m.b = modifiers          */
 #define GRV_EV_MOUSE 2  /* m.a = buttons,   m.b = (x<<32)|y (local)   */
 #define GRV_EV_TIMER 4  /* the task's one-shot timer elapsed          */
+#define GRV_EV_SCROLL 5 /* m.a = surface id<<16, m.b = signed wheel   */
 
 /* Opt a task's one-shot timer: after 'ms' the kernel posts GRV_EV_TIMER to
    its mailbox (re-arm for a repeating tick). 0 cancels it. */
@@ -58,6 +59,10 @@ static inline int grv_mouse_y(long b) { return (int)(unsigned int)b; }
 /* A mouse event carries the target surface id in the high 16 bits of 'a',
    with the button mask (GRV_BTN_*) in the low bits. */
 static inline int grv_mouse_surface(long a) { return (int)(a >> 16); }
+
+/* A scroll event's signed wheel delta (m.b): positive = up/away from the
+   user, negative = down/toward. */
+static inline int grv_scroll_delta(long b) { return (int)b; }
 
 __END_DECLS
 

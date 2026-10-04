@@ -20,13 +20,15 @@ constexpr uint8_t ST_OUTPUT_FULL = 0x01;
 constexpr uint8_t ST_AUX_DATA    = 0x20; // set when the byte is from the mouse
 
 // Mouse commands
-constexpr uint8_t MOUSE_SET_DEFAULTS    = 0xF6;
+constexpr uint8_t MOUSE_SET_DEFAULTS     = 0xF6;
 constexpr uint8_t MOUSE_ENABLE_REPORTING = 0xF4;
-constexpr uint8_t MOUSE_IDENTIFY        = 0xF2;
+constexpr uint8_t MOUSE_IDENTIFY         = 0xF2;
+constexpr uint8_t MOUSE_SET_SAMPLE_RATE  = 0xF3;
 
 // --- Packet state machine ---
-// The mouse sends 3-byte packets. Byte 0 has bit3 ALWAYS SET (0x08) — that's
-// the sync bit used to resynchronize if we ever join mid-packet.
+// The mouse sends 3-byte packets (or 4-byte IntelliMouse packets with a Z
+// byte). Byte 0 has bit3 ALWAYS SET (0x08) — that's the sync bit used to
+// resynchronize if we ever join mid-packet.
 constexpr uint8_t PACKET_FLAGS_ALWAYS = 0x08;
 constexpr uint8_t PACKET_X_NEG  = 0x10;
 constexpr uint8_t PACKET_Y_NEG  = 0x20;
@@ -39,6 +41,7 @@ namespace Mouse {
     // --- circular packet buffer (same pattern as the keyboard driver) ---
     struct Packet {
         int16_t dx, dy;
+        int8_t  dz;       // wheel: positive = up/away, negative = down/toward
         uint8_t buttons;
     };
 
@@ -52,7 +55,8 @@ namespace Mouse {
 
     // --- assembly-stream state ---
     static uint8_t cycle = 0;
-    static uint8_t packet[3];
+    static int     pktsize = 3;   // 3 standard, 4 IntelliMouse (with wheel)
+    static uint8_t packet[4];
 
     // --- low-level helpers ---
     static void controller_wait_write() {
@@ -99,6 +103,35 @@ namespace Mouse {
         }
     }
 
+    // Send a command byte followed by one parameter byte (e.g. set sample
+    // rate), ACK-checked at each step.
+    static void mouse_send2(uint8_t cmd, uint8_t arg) {
+        controller_wait_write();
+        outb(PS2_COMMAND, CMD_WRITE_AUX);
+        controller_wait_write();
+        outb(PS2_DATA, cmd);
+        uint8_t ack = mouse_read_ack();
+        if (ack != 0xFA) {
+            kprint("[Mouse] WARN: cmd ");
+            kprint_uint(cmd);
+            kprint(" ack=");
+            kprint_uint(ack);
+            kprint(" (want FA)\n");
+        }
+        controller_wait_write();
+        outb(PS2_COMMAND, CMD_WRITE_AUX);
+        controller_wait_write();
+        outb(PS2_DATA, arg);
+        ack = mouse_read_ack();
+        if (ack != 0xFA) {
+            kprint("[Mouse] WARN: arg ");
+            kprint_uint(arg);
+            kprint(" ack=");
+            kprint_uint(ack);
+            kprint(" (want FA)\n");
+        }
+    }
+
     void init() {
         // 1. Enable the auxiliary (mouse) port
         controller_wait_write();
@@ -117,29 +150,37 @@ namespace Mouse {
         outb(PS2_DATA, config);
 
 
-        // 3. Mouse handshake: set defaults, then start reporting.
-        //    (Drain anything stale first — aux bytes only.)
+        // 3. Mouse handshake. Drain anything stale first (aux bytes only),
+        //    reset the device, then negotiate the IntelliMouse protocol: the
+        //    sample-rate magic switches a wheel mouse to 4-byte packets with
+        //    a Z byte; the id query tells us whether it took.
         for (int i = 0; i < 16; i++) {
             if (!(inb(PS2_STATUS) & ST_OUTPUT_FULL)) break;
             inb(PS2_DATA);
         }
         mouse_send(MOUSE_SET_DEFAULTS);
-        mouse_send(MOUSE_ENABLE_REPORTING);
+        mouse_send2(MOUSE_SET_SAMPLE_RATE, 200);
+        mouse_send2(MOUSE_SET_SAMPLE_RATE, 100);
+        mouse_send2(MOUSE_SET_SAMPLE_RATE, 80);
 
-        // 4. Diagnostics: identify the device. A healthy PS/2 mouse ACKs
-        // (0xFA) then answers 0x00 (standard mouse). This proves the whole
-        // 0xD4 write path works.
+        // 4. Device id: 0x00 standard 3-byte, 0x03/0x04 IntelliMouse 4-byte.
+        //    This also proves the whole 0xD4 write path works.
         controller_wait_write();
         outb(PS2_COMMAND, CMD_WRITE_AUX);
         controller_wait_write();
         outb(PS2_DATA, MOUSE_IDENTIFY);
         uint8_t a1 = mouse_read_ack();
         uint8_t id = mouse_read_ack();
+        pktsize = (id == 3 || id == 4) ? 4 : 3;
         kprint("[Mouse] identify: ack=");
         kprint_uint(a1);
         kprint(" id=");
         kprint_uint(id);
-        kprint("\n");
+        kprint(pktsize == 4 ? " (wheel, 4-byte)\n" : " (standard, 3-byte)\n");
+
+        // 5. A sane sample rate, then start streaming.
+        mouse_send2(MOUSE_SET_SAMPLE_RATE, 100);
+        mouse_send(MOUSE_ENABLE_REPORTING);
 
         kprint("[Mouse] Initialized (IRQ12, streaming enabled).\n");
 
@@ -158,7 +199,7 @@ namespace Mouse {
 
         packet[cycle++] = byte;
 
-        if (cycle == 3) {
+        if (cycle == pktsize) {
             cycle = 0;
 
             uint8_t flags = packet[0];
@@ -172,6 +213,7 @@ namespace Mouse {
             dy = -dy; // PS/2 reports Y screen-inverted: up is positive
                       // in the raw protocol; screen convention (down
                       // positive) needs the flip
+            int8_t dz = (pktsize == 4) ? (int8_t)packet[3] : 0;
 
             // The cursor advances with EVERY packet, independent of the
             // ring: it stays live even when no task is draining, and a
@@ -186,6 +228,7 @@ namespace Mouse {
                 Packet p;
                 p.dx = dx;
                 p.dy = dy;
+                p.dz = dz;
                 p.buttons = (flags & PACKET_BTN_LEFT  ? 1 : 0) |
                             (flags & PACKET_BTN_RIGHT ? 2 : 0) |
                             (flags & PACKET_BTN_MIDDLE? 4 : 0);
@@ -197,13 +240,14 @@ namespace Mouse {
         }
     }
 
-    bool read_packet(int16_t* dx, int16_t* dy, uint8_t* buttons) {
+    bool read_packet(int16_t* dx, int16_t* dy, uint8_t* buttons, int8_t* dz) {
         if (read_ptr == write_ptr) return false;
         Packet p = packet_buffer[read_ptr];
         read_ptr = (read_ptr + 1) % BUFFER_SIZE;
         if (dx) *dx = p.dx;
         if (dy) *dy = p.dy;
         if (buttons) *buttons = p.buttons;
+        if (dz) *dz = p.dz;
         return true;
     }
 
