@@ -19,6 +19,8 @@ void  free(void* ptr);
 /* Number parsing. */
 long strtol(const char* __restrict, char** __restrict, int base);
 int  atoi(const char*);
+double strtod(const char* __restrict, char** __restrict);
+double atof(const char*);
 
 /* Sort 'count' elements of 'size' bytes by 'compare'. */
 void qsort(void* base, size_t count, size_t size,

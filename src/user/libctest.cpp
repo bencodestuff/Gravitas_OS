@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include <setjmp.h>
 
 // libctest — exercises the libc basics (string, formatted output, allocator,
@@ -70,6 +71,32 @@ int main(int argc, char** argv) {
     check(da + db == 3.75, "double add");
     check(da * 4.0 == 6.0, "double mul");
     check((int)(da * db) == 3, "double truncation");
+
+    // --- strtod ---
+    char* endp = 0;
+    check(strtod("3.5", 0) == 3.5, "strtod simple");
+    check(strtod("-2.5e2", 0) == -250.0, "strtod exponent");
+    check(strtod("1e-3", 0) == 0.001, "strtod negative exponent");
+    endp = 0;
+    check(strtod("abc", &endp) == 0.0 && endp != 0 && *endp == 'a', "strtod no digits");
+    endp = 0;
+    check(strtod("12.5xyz", &endp) == 12.5 && *endp == 'x', "strtod endptr");
+
+    // --- math (x87-backed) ---
+    check(sqrt(4.0) == 2.0, "sqrt");
+    check(pow(2.0, 10.0) == 1024.0, "pow integer exponent");
+    check(fmod(10.0, 3.0) == 1.0, "fmod");
+    check(floor(-1.5) == -2.0 && ceil(-1.5) == -1.0, "floor/ceil");
+    check(trunc(-1.9) == -1.0 && round(2.5) == 3.0, "trunc/round");
+    check(fabs(-3.25) == 3.25, "fabs");
+    check(sin(0.0) == 0.0 && cos(0.0) == 1.0, "sin/cos at 0");
+    check(exp(0.0) == 1.0 && log(1.0) == 0.0, "exp/log at 1");
+    check(fabs(log10(1000.0) - 3.0) < 1e-14, "log10");
+    check(atan2(0.0, 1.0) == 0.0, "atan2");
+    double d2 = sqrt(2.0);
+    check(fabs(d2 * d2 - 2.0) < 1e-15, "sqrt(2) squared");
+    check(fabs(pow(2.0, 0.5) - d2) < 1e-15, "pow(2, 0.5)");
+    check(fabs(sin(1.0) - 0.8414709848078965) < 1e-14, "sin(1)");
 
     int* arr = (int*)calloc(5, sizeof(int));
     check(arr != 0 && arr[0] == 0 && arr[4] == 0, "calloc zeroes");

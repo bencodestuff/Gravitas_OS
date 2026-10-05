@@ -51,20 +51,11 @@ int icos(int a) {
 }
 
 double dsin(double radians) {
-    // normalize into [0, 2pi)
-    if (radians < 0) radians = radians - 6.283185307 * ((long long)(radians / 6.283185307) - 1);
-    radians = radians - 6.283185307 * (long long)(radians / 6.283185307);
-    double t = radians / 6.283185307 * TABLE_SIZE; // turns -> table units
-    int i = (int)t;
-    double frac = t - i;
-    // lerp between adjacent table entries (16-bit table -> decent precision)
-    int s0 = isin(i & TABLE_MASK);
-    int s1 = isin((i + 1) & TABLE_MASK);
-    return (s0 + (s1 - s0) * frac) / (double)SIN_SCALE;
+    return sin(radians);
 }
 
 double dcos(double radians) {
-    return dsin(radians + 1.5707963268);
+    return cos(radians);
 }
 
 unsigned int isqrt(unsigned int x) {
