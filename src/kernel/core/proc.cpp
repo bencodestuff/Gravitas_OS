@@ -248,7 +248,10 @@ namespace Sched {
         }
         uint64_t stack_top_va = stack_base + USER_STACK_PAGES * 4096;
         uint64_t strings_start = (stack_top_va - total_len) & ~(uint64_t)15;
-        uint64_t array_start = strings_start - ((argc + 1) * 8);
+        // Align the argv array down so the initial RSP is 16n+8: the SysV
+        // convention a called function expects after its return address is
+        // pushed. SSE spills need that alignment.
+        uint64_t array_start = (strings_start - ((argc + 1) * 8)) & ~(uint64_t)15;
         uint64_t new_rsp = array_start - 8;
 
         char* dst = (char*)strings_start;

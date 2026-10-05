@@ -7,6 +7,7 @@
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"
+#include "arch/x86_64/cpu.h"
 #include "kernel/io.h"
 #include "kernel/core/heap.h"
 #include "kernel/core/sched.h"
@@ -202,6 +203,11 @@ extern "C" void kmain(void) {
 
     IDT::init();
     kprint("IDT Initialized.\n");
+
+    // x87 + SSE before the scheduler snapshots the FPU template, so every
+    // task's fxsave area starts from a clean, SSE-enabled state.
+    Cpu::enable_fpu_sse();
+    kprint("[CPU] x87 + SSE enabled.\n");
 
     Sched::init();
 

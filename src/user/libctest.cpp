@@ -48,13 +48,18 @@ int main(int argc, char** argv) {
     snprintf(buf, sizeof(buf), "%u", 4294967295u);
     check(strcmp(buf, "4294967295") == 0, "snprintf unsigned");
 
-    // --- stdlib ---
     check(atoi("  -123") == -123, "atoi");
     check(atoi("+7") == 7, "atoi plus");
     check(strtol("ff", 0, 16) == 255, "strtol hex");
     check(strtol("0x1f", 0, 0) == 31, "strtol auto");
     char* end = 0;
     check(strtol("12ab", &end, 10) == 12 && *end == 'a', "strtol endptr");
+
+    // --- floating point (SSE) ---
+    double da = 1.5, db = 2.25;
+    check(da + db == 3.75, "double add");
+    check(da * 4.0 == 6.0, "double mul");
+    check((int)(da * db) == 3, "double truncation");
 
     int* arr = (int*)calloc(5, sizeof(int));
     check(arr != 0 && arr[0] == 0 && arr[4] == 0, "calloc zeroes");
