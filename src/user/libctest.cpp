@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <setjmp.h>
 
 // libctest — exercises the libc basics (string, formatted output, allocator,
 // parsing, sort). Prints PASS/FAIL for the smoke harness.
@@ -13,6 +14,15 @@ static void check(int ok, const char* what) {
 
 static int cmp_int(const void* a, const void* b) {
     return *(const int*)a - *(const int*)b;
+}
+
+// --- setjmp/longjmp ---
+static jmp_buf jb;
+static int jump_seen = -1;
+
+static void jump_deep(int n, int val) {
+    if (n == 0) longjmp(jb, val);
+    jump_deep(n - 1, val);
 }
 
 int main(int argc, char** argv) {
@@ -69,6 +79,17 @@ int main(int argc, char** argv) {
     qsort(arr, 10, sizeof(int), cmp_int);
     check(arr[0] == 1 && arr[9] == 10, "qsort orders");
     free(arr);
+
+    // --- setjmp/longjmp: unwind several frames and land back here ---
+    int sv = setjmp(jb);
+    if (sv == 0) jump_deep(6, 42);
+    else jump_seen = sv;
+    check(jump_seen == 42, "setjmp/longjmp deep unwind");
+
+    sv = setjmp(jb);
+    if (sv == 0) jump_deep(3, 0);
+    else jump_seen = sv;
+    check(jump_seen == 1, "longjmp(env, 0) returns 1");
 
     if (fails == 0) {
         printf("libctest: all checks pass\n");
