@@ -308,8 +308,13 @@ static inline int grv_surface_create(unsigned long w, unsigned long h,
     return (int)syscall3(GRV_SYSCALL_SURFACE_CREATE, (long)w, (long)h, (long)out);
 }
 
+/* Commit damage. The syscall takes an optional surface-local rect in RDI and
+   the target surface id in RSI (0 = every surface the caller owns). Both are
+   always passed explicitly — RSI (the id) is not a syscall number argument,
+   so a syscall1 here would leave it as garbage and the commit would target a
+   random (usually nonexistent) surface and be dropped. */
 static inline void grv_surface_commit(void) {
-    syscall1(GRV_SYSCALL_SURFACE_COMMIT, 0);
+    syscall2(GRV_SYSCALL_SURFACE_COMMIT, 0, 0);
 }
 
 /* Commit only a surface-local rectangle (0,0 = the surface's top-left).
@@ -317,7 +322,7 @@ static inline void grv_surface_commit(void) {
 struct grv_rect { long x, y, w, h; };
 static inline void grv_surface_commit_rect(long x, long y, long w, long h) {
     struct grv_rect r = { x, y, w, h };
-    syscall1(GRV_SYSCALL_SURFACE_COMMIT, (long)&r);
+    syscall2(GRV_SYSCALL_SURFACE_COMMIT, (long)&r, 0);
 }
 
 /* Commit one owned surface (by id) with a surface-local rectangle. Needed

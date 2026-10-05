@@ -59,7 +59,7 @@ command -v python3 >/dev/null || fail "python3 not installed"
 [ -f gravitas.iso ] || fail "gravitas.iso missing — run 'ninja iso' first"
 
 mkdir -p "$ART"
-rm -f "$LOG" "$SHOT.ppm" "$SHOT.png" "$ART/term_before.ppm" "$ART/term_after.ppm"
+rm -f "$LOG" "$SHOT.ppm" "$SHOT.png" "$ART/term_before.ppm" "$ART/term_after.ppm" "$ART/menu_before.ppm" "$ART/menu_after.ppm"
 TMP="$(mktemp -d)"
 SOCK="$TMP/qmon.sock"
 QPID=""
@@ -304,8 +304,12 @@ wait_for(r"wm: close timeout #[0-9]+")
 wait_for(r'window #[0-9]+ gone')
 
 # 10b) Launcher menu + Alt+Tab (cursor now ~426,45). Four menu items:
-# Terminal (y~699), Files (~721), Images (~743), Demo (~765).
+# Terminal (y~699), Files (~721), Images (~743), Demo (~765). The menu must
+# actually be PAINTED, not merely opened in WM state, so screendump before
+# and after and check the menu region changed.
+cmd('screendump test_artifacts/menu_before.ppm')
 mmove(-386, 743); mclick()                   # the "Apps" button (~40,788)
+cmd('screendump test_artifacts/menu_after.ppm')
 mmove(0, -89); mclick()                       # the "Terminal" item (~40,699)
 wait_for("wm: launch 'term.elf'")
 wait_count(r"wm: window #[0-9]+ 'term", 2)    # the launched terminal
@@ -539,6 +543,34 @@ if [ "$(grep -c 'wm: focus task' "$LOG")" -lt 2 ]; then
     fail "Alt+Tab did not cycle focus (hotkey mechanism broken?)"
 fi
 echo "== desktop ok (title protocol, taskbar launcher, Alt+Tab) =="
+
+# Launcher menu visibility: opening the menu must repaint the overlay. A
+# commit that targets the wrong surface id is silently dropped, leaving the
+# menu drawn in memory but never composited — the screen then looks glitchy
+# and the menu cannot be seen or aimed at.
+if ! python3 - "$ART/menu_before.ppm" "$ART/menu_after.ppm" <<'PY'
+import sys
+def load(p):
+    d = open(p, 'rb').read()
+    q = d.split(b'\n', 3)
+    w, h = map(int, q[1].split())
+    return w, h, q[3]
+w, h, a = load(sys.argv[1])
+_, _, b = load(sys.argv[2])
+n = 0
+for y in range(690, 774, 2):        # the menu rectangle: (4,688)-(154,776)
+    row = y * w
+    for x in range(6, 152, 2):
+        j = (row + x) * 3
+        if a[j:j+3] != b[j:j+3]:
+            n += 1
+print("menu region changed pixels (sampled):", n)
+sys.exit(0 if n > 100 else 1)
+PY
+then
+    fail "the Apps menu was opened but not painted (overlay commit dropped?)"
+fi
+echo "== launcher menu ok (painted, not just opened) =="
 
 # Terminal (term.elf): the launcher-spawned terminal hosts the shell, and when
 # focused and typed into it renders the output INSIDE its own window. Keying
