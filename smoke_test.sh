@@ -31,6 +31,8 @@
 #   * popups: undecorated on-top second surface + WM dismissal (popuptest.elf)
 #   * input: typematic key repeat + mouse wheel scrolling
 #   * app lifecycle: cooperative close (veto, live retitle, force-kill backstop)
+#   * Lua prerequisites in libc: SSE doubles, setjmp/longjmp, strtod, math,
+#     and float formatting (%.14g) — exercised by libctest
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker

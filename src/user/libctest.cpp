@@ -59,6 +59,20 @@ int main(int argc, char** argv) {
     snprintf(buf, sizeof(buf), "%u", 4294967295u);
     check(strcmp(buf, "4294967295") == 0, "snprintf unsigned");
 
+    // Float formatting (%.14g is Lua's number format).
+    snprintf(buf, sizeof(buf), "%.14g", 1.5);
+    check(strcmp(buf, "1.5") == 0, "snprintf %.14g");
+    snprintf(buf, sizeof(buf), "%.2f", 3.14159);
+    check(strcmp(buf, "3.14") == 0, "snprintf %.2f");
+    snprintf(buf, sizeof(buf), "%e", 12345.678);
+    check(strcmp(buf, "1.234568e+04") == 0, "snprintf %e");
+    snprintf(buf, sizeof(buf), "%5.2f", -1.5);
+    check(strcmp(buf, "-1.50") == 0, "snprintf width/precision");
+    snprintf(buf, sizeof(buf), "%.14g", 1.0 / 3.0);
+    check(strcmp(buf, "0.33333333333333") == 0, "snprintf 1/3");
+    snprintf(buf, sizeof(buf), "%lld", 1234567890123LL);
+    check(strcmp(buf, "1234567890123") == 0, "snprintf lld");
+
     check(atoi("  -123") == -123, "atoi");
     check(atoi("+7") == 7, "atoi plus");
     check(strtol("ff", 0, 16) == 255, "strtol hex");
