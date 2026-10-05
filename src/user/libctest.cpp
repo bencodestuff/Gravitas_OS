@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <setjmp.h>
+#include <grv/syscall.h>
 
 // libctest — exercises the libc basics (string, formatted output, allocator,
 // parsing, sort). Prints PASS/FAIL for the smoke harness.
@@ -120,6 +121,67 @@ int main(int argc, char** argv) {
     qsort(arr, 10, sizeof(int), cmp_int);
     check(arr[0] == 1 && arr[9] == 10, "qsort orders");
     free(arr);
+
+    // --- allocator: split on reuse, coalesce, realloc in place ---
+    // A freed 32K block must serve 512 small requests without growing the
+    // break: that is the split path (a big free chunk handed out in pieces).
+    void* big = malloc(32768);
+    check(big != 0, "malloc 32K");
+    free(big);
+    void* brk_a = grv_brk((void*)0);
+    void* small[512];
+    for (int i = 0; i < 512; i++) small[i] = malloc(48);
+    check(small[0] != 0 && small[511] != 0, "many small from one big");
+    check((char*)grv_brk((void*)0) <= (char*)brk_a + 4096, "split reuses a freed block");
+    for (int i = 0; i < 512; i++) free(small[i]);
+
+    // Two freed neighbours must coalesce back into one usable block.
+    void* na = malloc(1000);
+    void* nb = malloc(1000);
+    void* brk_b = grv_brk((void*)0);
+    free(na);
+    free(nb);
+    void* merged = malloc(2000);
+    check(merged != 0, "neighbours coalesce");
+    check((char*)grv_brk((void*)0) <= (char*)brk_b, "coalesced without growing");
+    free(merged);
+
+    // realloc keeps contents across grow (in place or copied) and shrink.
+    char* rp = (char*)malloc(64);
+    check(rp != 0, "malloc 64");
+    for (int i = 0; i < 64; i++) rp[i] = (char)i;
+    rp = (char*)realloc(rp, 4096);
+    check(rp != 0, "realloc grow");
+    int intact = 1;
+    for (int i = 0; i < 64; i++) if (rp[i] != (char)i) intact = 0;
+    check(intact, "realloc grow preserves contents");
+    rp = (char*)realloc(rp, 32);
+    check(rp != 0, "realloc shrink");
+    intact = 1;
+    for (int i = 0; i < 32; i++) if (rp[i] != (char)i) intact = 0;
+    check(intact, "realloc shrink preserves contents");
+    free(rp);
+
+    // Churn: allocate/free mixed sizes in rounds; every block must keep its
+    // own pattern (catches merge/split mistakes that corrupt neighbours).
+    static unsigned char* blk[128];
+    for (int round = 0; round < 4; round++) {
+        for (int i = 0; i < 128; i++) {
+            int n = 8 + (i % 7) * 16;
+            blk[i] = (unsigned char*)malloc((size_t)n);
+            if (!blk[i]) break;
+            for (int k = 0; k < n; k++) blk[i][k] = (unsigned char)(i + k);
+        }
+        int bad = 0;
+        for (int i = 0; i < 128; i++) {
+            int n = 8 + (i % 7) * 16;
+            if (!blk[i]) continue;
+            for (int k = 0; k < n; k++)
+                if (blk[i][k] != (unsigned char)(i + k)) bad = 1;
+        }
+        check(!bad, "heap churn keeps blocks intact");
+        for (int i = 0; i < 128; i++) { free(blk[i]); blk[i] = 0; }
+    }
 
     // --- setjmp/longjmp: unwind several frames and land back here ---
     int sv = setjmp(jb);

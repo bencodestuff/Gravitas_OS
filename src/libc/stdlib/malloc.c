@@ -2,16 +2,33 @@
 
 #include <grv/syscall.h>
 
-/* --- Simple first-fit allocator over the program break ---
-   Layout: [chunk header][usable bytes][chunk header][usable bytes]...
-   The break starts at 0x8000000 (128MB, userland VA space) and grows
-   upwards via the brk syscall. The header is exactly 16 bytes and
-   allocations are 16-byte aligned, so a payload never runs into the next
-   header. Free merges with the next chunk only (backward merge is omitted
-   for now — this is a foundation, not a production malloc). */
+/* --- First-fit allocator over the program break ---
+   Layout: [16-byte header][payload][16-byte header][payload]...
+   The header keeps the payload size (16-aligned; bit 0 = used) and the next
+   chunk, so a payload never runs into the next header. The chunks form an
+   address-ordered list, which keeps coalescing simple:
+
+     - free() merges with the chunk before and after it, so neighbouring
+       frees become one usable block again;
+     - a reused free chunk is split when there is enough surplus to matter,
+       so a big freed buffer can serve many small requests instead of being
+       handed out whole;
+     - realloc absorbs the free chunk(s) that follow before falling back to
+       allocate-and-copy.
+
+   Backward coalescing finds the predecessor by walking the list. That is
+   O(n) per free, but it keeps the per-allocation overhead at 16 bytes
+   (a boundary tag/footer would add 8 bytes to every allocation).
+
+   Failure policy: malloc/calloc/realloc return NULL when the break cannot
+   grow; callers must check. No allocation is silently dropped.
+
+   The break is never shrunk on free: the kernel keeps pages mapped when brk
+   moves down, so it would return no memory — the free list is what makes
+   freed space reusable. */
 
 typedef struct chunk {
-    size_t size;          // usable bytes (16-aligned); bit 0 = used
+    size_t size;          // payload bytes (16-aligned); bit 0 = used
     struct chunk* next;
 } chunk_t;
 
@@ -20,22 +37,57 @@ typedef struct chunk {
 #define CHUNK_SIZE(c)  ((c)->size & ~CHUNK_USED)
 #define ALIGN16(x)     (((x) + 15) & ~(size_t)15)
 
+// Smallest surplus worth splitting off (header + one 16-byte payload).
+#define MIN_SPLIT      32
+
 static chunk_t* first_chunk = NULL;
 static void*    current_brk = NULL;
+
+// The chunk immediately before 'c' in address order, or NULL.
+static chunk_t* prev_chunk(chunk_t* c) {
+    if (c == first_chunk) return NULL;
+    for (chunk_t* p = first_chunk; p; p = p->next)
+        if (p->next == c) return p;
+    return NULL;
+}
+
+// Coalesce 'c' with every free chunk directly after it.
+static void merge_forward(chunk_t* c) {
+    while (c->next && !(c->next->size & CHUNK_USED)) {
+        c->size = CHUNK_SIZE(c) + CHUNK_HDR_SIZE + CHUNK_SIZE(c->next);
+        c->next = c->next->next;
+    }
+}
+
+// Hand out 'size' bytes of 'c' and return the surplus (if any) to the list.
+// 'c' ends up marked used.
+static void split(chunk_t* c, size_t size) {
+    size_t csize = CHUNK_SIZE(c);
+    if (csize < size + MIN_SPLIT) {
+        c->size = csize | CHUNK_USED; // too little left over to bother
+        return;
+    }
+    chunk_t* tail = (chunk_t*)((char*)(c + 1) + size);
+    tail->size = csize - size - CHUNK_HDR_SIZE; // free
+    tail->next = c->next;
+    c->next = tail;
+    c->size = size | CHUNK_USED;
+    merge_forward(tail);
+}
 
 void* malloc(size_t size) {
     if (size == 0) size = 1;
     size = ALIGN16(size);
 
-    // First-fit walk
+    // First fit over the free list.
     for (chunk_t* c = first_chunk; c; c = c->next) {
-        if (!(c->size & CHUNK_USED) && CHUNK_SIZE(c) >= size) {
-            c->size |= CHUNK_USED;
-            return (void*)(c + 1);
-        }
+        if (c->size & CHUNK_USED) continue;
+        if (CHUNK_SIZE(c) < size) continue;
+        split(c, size);
+        return (void*)(c + 1);
     }
 
-    // No fit: grow the break
+    // No fit: grow the break.
     if (current_brk == NULL) {
         current_brk = grv_brk((void*)0);
         if ((long)current_brk == -1) return NULL;
@@ -44,7 +96,7 @@ void* malloc(size_t size) {
 
     size_t need = CHUNK_HDR_SIZE + size;
     void* new_break = grv_brk((char*)current_brk + need);
-    if ((long)new_break == -1 || new_break == current_brk) return NULL; // brk refused
+    if ((long)new_break == -1 || new_break == current_brk) return NULL; // refused
 
     // The chunk begins at the OLD break (grv_brk returns the NEW break —
     // using it as the chunk base would place the payload past the mapped
@@ -69,12 +121,21 @@ void free(void* ptr) {
     if (ptr == NULL) return;
     chunk_t* c = (chunk_t*)ptr - 1;
     c->size &= ~CHUNK_USED;
-    // TODO: merge adjacent free chunks
+
+    chunk_t* p = prev_chunk(c);
+    if (p && !(p->size & CHUNK_USED)) {
+        // Fold c into the free chunk before it, then coalesce forward.
+        p->size = CHUNK_SIZE(p) + CHUNK_HDR_SIZE + CHUNK_SIZE(c);
+        p->next = c->next;
+        merge_forward(p);
+    } else {
+        merge_forward(c);
+    }
 }
 
-// Grow in place when the chunk is the last one (extend the break) — the
-// common case for a buffer that is filled by repeated reads/writes — else
-// allocate, copy and free.
+// Grow in place when possible (absorbing free neighbours or extending the
+// break), else allocate, copy and free. Shrinking returns the surplus to the
+// free list.
 void* realloc(void* ptr, size_t size) {
     if (ptr == NULL) return malloc(size);
     if (size == 0) { free(ptr); return NULL; }
@@ -82,7 +143,25 @@ void* realloc(void* ptr, size_t size) {
     chunk_t* c = (chunk_t*)ptr - 1;
     size_t old = CHUNK_SIZE(c);
     size_t need = ALIGN16(size);
-    if (need <= old) return ptr; // already fits (kept in place)
+
+    if (need <= old) {
+        split(c, need); // shrink in place; the tail stays allocatable
+        return ptr;
+    }
+
+    // Absorb the free chunk(s) directly after us when that is enough.
+    size_t avail = old;
+    for (chunk_t* n = c->next; n && !(n->size & CHUNK_USED); n = n->next)
+        avail += CHUNK_HDR_SIZE + CHUNK_SIZE(n);
+    if (avail >= need) {
+        while (c->next && !(c->next->size & CHUNK_USED)) {
+            c->size = CHUNK_SIZE(c) + CHUNK_HDR_SIZE + CHUNK_SIZE(c->next);
+            c->next = c->next->next;
+        }
+        c->size = avail | CHUNK_USED;
+        split(c, need);
+        return ptr;
+    }
 
     if (c->next == NULL && current_brk != NULL) {
         void* nb = grv_brk((char*)current_brk + (need - old));
