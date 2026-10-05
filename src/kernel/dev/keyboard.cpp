@@ -141,6 +141,9 @@ namespace Keyboard {
                 case 0x4D: value = Input::KEY_RIGHT; break;
                 case 0x49: value = Input::KEY_PAGEUP; break;
                 case 0x51: value = Input::KEY_PAGEDOWN; break;
+                case 0x47: value = Input::KEY_HOME; break;
+                case 0x4F: value = Input::KEY_END; break;
+                case 0x53: value = Input::KEY_DELETE; break;
                 default: return;
             }
         } else {

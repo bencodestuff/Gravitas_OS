@@ -22,6 +22,9 @@ namespace Input {
     constexpr uint64_t KEY_RIGHT  = 0x104;
     constexpr uint64_t KEY_PAGEUP = 0x105;
     constexpr uint64_t KEY_PAGEDOWN = 0x106;
+    constexpr uint64_t KEY_HOME   = 0x107;
+    constexpr uint64_t KEY_END    = 0x108;
+    constexpr uint64_t KEY_DELETE = 0x109;
 
     // Modifier bits (EV_KEY's 'b').
     constexpr uint64_t MOD_SHIFT = 1;

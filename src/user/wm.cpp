@@ -37,6 +37,7 @@ static const unsigned int LAUNCH_BG   = 0xFF356B46;
 static const unsigned int MENU_BG     = 0xFF24282E;
 static const unsigned int MENU_EDGE   = 0xFF4A5568;
 static const unsigned int MENU_SEP    = 0xFF343A44;
+static const unsigned int MENU_HOT    = 0xFF35507A;
 
 struct Win {
     int  sid;          // surface id
@@ -316,6 +317,7 @@ static const int MENU_W      = 150;
 static const int MENU_ITEM_H = 22;
 
 static int menu_open = 0;
+static int menu_hot = -1;   // hovered item, -1 = none
 
 static int menu_x() { return 4; }
 static int menu_y() { return (overlay_h - TASKBAR_H) - napps * MENU_ITEM_H; }
@@ -374,9 +376,19 @@ static void draw_menu() {
     fill(x, y, MENU_W, 1, MENU_EDGE);
     for (int i = 0; i < napps; i++) {
         int iy = y + i * MENU_ITEM_H;
+        if (i == menu_hot) fill(x + 1, iy + 1, MENU_W - 2, MENU_ITEM_H - 1, MENU_HOT);
         if (i > 0) fill(x + 6, iy, MENU_W - 12, 1, MENU_SEP);
         text(x + 9, iy + (MENU_ITEM_H - fh) / 2, apps[i].label, TITLE_FG);
     }
+}
+
+// The menu item under a point, or -1.
+static int menu_item_at(int cx, int cy) {
+    if (!menu_open) return -1;
+    int x = menu_x(), y = menu_y();
+    if (cx < x || cx >= x + MENU_W || cy < y) return -1;
+    int i = (cy - y) / MENU_ITEM_H;
+    return (i >= 0 && i < napps) ? i : -1;
 }
 
 // Repaint just the menu's rectangle (open/close), restoring what it covered.
@@ -619,6 +631,7 @@ static void on_press(int cx, int cy) {
             if (i >= 0 && i < napps) launch(apps[i].prog);
         }
         menu_open = 0;
+        menu_hot = -1;
         redraw_menu();
         return;
     }
@@ -640,7 +653,7 @@ static void on_press(int cx, int cy) {
         for (int i = 0; i < ntbtn; i++) {
             const TBtn* b = &tbtns[i];
             if (cx >= b->x && cx < b->x + b->w) {
-                if (b->kind == 0) { menu_open = 1; redraw_menu(); }
+                if (b->kind == 0) { menu_open = 1; menu_hot = -1; redraw_menu(); }
                 else focus_window(&wins[b->idx]);
                 return;
             }
@@ -864,6 +877,13 @@ int main(int argc, char** argv) {
             Win* w = window_body_at(cx, cy);
             if (w && (cx != last_fx || cy != last_fy))
                 forward_mouse(w, btn_prev, cx, cy);
+        }
+
+        // Highlight the launcher item under the pointer (redraw only on a
+        // change, so moving inside one item costs nothing).
+        if (menu_open) {
+            int hot = menu_item_at(cx, cy);
+            if (hot != menu_hot) { menu_hot = hot; redraw_menu(); }
         }
 
         // The wheel scrolls the window under the pointer (menu/taskbar clicks

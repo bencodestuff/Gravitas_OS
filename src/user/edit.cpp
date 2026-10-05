@@ -8,12 +8,12 @@
 
 // edit — a text editor built on Gravity.
 //
-// A viewport over a gravity_text buffer. Arrow keys, Ctrl+A/Ctrl+E (line
-// start/end), PageUp/PageDown and the wheel move the caret; printable keys,
-// Enter, Tab (spaces to the next stop) and Backspace edit; clicking places
-// the caret. Ctrl+S saves, Ctrl+Q quits — and the WM's close box goes
-// through the same unsaved-changes check (the app vetoes once, then discards,
-// which is what Gravity's cooperative-close protocol is for).
+// A viewport over a gravity_text buffer. Arrow keys, Home/End, PageUp/
+// PageDown and the wheel move the caret; printable keys, Enter, Tab (spaces
+// to the next stop), Backspace and Delete edit; clicking places the caret.
+// Ctrl+S saves, Ctrl+Q quits — and the WM's close box goes through the same
+// unsaved-changes check (the app vetoes once, then discards, which is what
+// Gravity's cooperative-close protocol is for).
 //
 // The title tracks the file name and a trailing '*' while modified.
 
@@ -112,6 +112,7 @@ static void edited(void) {
     modified = 1;
     quit_asked = 0;
     goal_col = -1;
+    status[0] = '\0'; // drop a stale "saved"/error line once typing resumes
     update_title();
     ensure_visible();
     refresh();
@@ -130,6 +131,12 @@ static void backspace(void) {
     if (cursor <= 0) return;
     gravity_text_erase(&text, cursor - 1, 1);
     cursor--;
+    edited();
+}
+
+static void delete_forward(void) {
+    if (cursor >= text.len) return;
+    gravity_text_erase(&text, cursor, 1);
     edited();
 }
 
@@ -325,11 +332,11 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         long v = ev->a;
         if (v == CTRL('s')) { save(); refresh(); return; }
         if (v == CTRL('q')) { try_quit(); return; }
-        if (v == CTRL('a')) {
+        if (v == CTRL('a') || v == GRV_KEY_HOME) {
             cursor = gravity_text_line_start(&text, cursor);
             goal_col = -1; ensure_visible(); refresh(); return;
         }
-        if (v == CTRL('e')) {
+        if (v == CTRL('e') || v == GRV_KEY_END) {
             cursor = gravity_text_line_end(&text, cursor);
             goal_col = -1; ensure_visible(); refresh(); return;
         }
@@ -339,6 +346,7 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         if (v == GRV_KEY_DOWN)  { move_lines(1); return; }
         if (v == GRV_KEY_PAGEUP)   { move_lines(-(rows - 1)); return; }
         if (v == GRV_KEY_PAGEDOWN) { move_lines(rows - 1); return; }
+        if (v == GRV_KEY_DELETE)   { delete_forward(); return; }
         if (v == '\n') { insert_text("\n", 1); return; }
         if (v == '\b') { backspace(); return; }
         if (v == '\t') { insert_tab(); return; }

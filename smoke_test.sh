@@ -341,12 +341,13 @@ wait_for(r"wm: title #[0-9]+ 'edit: etest.txt'")
 mclick()                                     # title bar -> focus the editor
 wait_for('wm: focus task')
 type_str('hello world'); key('ret'); type_str('second line')
+key('home'); type_str('x ')                  # Home + prefix: exercises Home
 cmd('sendkey ctrl-s')
 wait_for('edit: saved /tmp/etest.txt')
 cmd('sendkey ctrl-q')                        # exits (saved); WM refocuses console
 wait_window_gone(r'edit\.elf')
 type_dotted('cat /tmp/etest.txt'); key('ret')
-wait_for('second line')
+wait_for('x second line')
 
 # 10b) Launcher menu + Alt+Tab (cursor now ~426,45). One item per app in
 # /apps (Terminal y~677, Files ~699, Text editor ~721, Image viewer ~743,
@@ -577,15 +578,15 @@ echo "== force-close backstop ok (uncooperative client killed) =="
 if ! grep -q 'edit: saved /tmp/etest.txt' "$LOG"; then
     fail "editor did not save (Ctrl+S / file write broken?)"
 fi
-# "hello world\nsecond line" is exactly 23 bytes; a mismatch means dropped or
-# misplaced keystrokes.
-if ! grep -qE "edit: saved /tmp/etest.txt \(23 bytes\)" "$LOG"; then
-    fail "editor saved the wrong byte count (buffer/edit broken?)"
+# "hello world\nx second line" is exactly 25 bytes; a mismatch means dropped
+# or misplaced keystrokes (Home included).
+if ! grep -qE "edit: saved /tmp/etest.txt \(25 bytes\)" "$LOG"; then
+    fail "editor saved the wrong byte count (buffer/edit/Home broken?)"
 fi
-if ! grep -q 'second line' "$LOG"; then
+if ! grep -q 'x second line' "$LOG"; then
     fail "editor's saved file did not read back (buffer or typing broken?)"
 fi
-echo "== editor ok (type, Ctrl+S, read back) =="
+echo "== editor ok (type, Home, Ctrl+S, read back) =="
 
 # Title protocol: the client answered the WM's hello with its own title
 if ! grep -qE "wm: title #[0-9]+ 'Gravity demo'" "$LOG"; then

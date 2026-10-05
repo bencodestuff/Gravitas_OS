@@ -32,6 +32,9 @@ static inline int grv_timer_set(unsigned long ms) {
 #define GRV_KEY_RIGHT  0x104
 #define GRV_KEY_PAGEUP 0x105
 #define GRV_KEY_PAGEDOWN 0x106
+#define GRV_KEY_HOME   0x107
+#define GRV_KEY_END    0x108
+#define GRV_KEY_DELETE 0x109
 
 /* Modifier bits (GRV_EV_KEY's m.b). */
 #define GRV_MOD_SHIFT 1

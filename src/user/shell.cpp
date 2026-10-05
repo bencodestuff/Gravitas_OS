@@ -21,6 +21,7 @@ static void cmd_help() {
     printf("Gravitas commands (commands are programs from the VFS):\n");
     printf("  ls [path]   - list a directory (default: cwd)\n");
     printf("  cat <file>  - print a file's contents\n");
+    printf("  edit <file> - open a file in the text editor\n");
     printf("  bg <prog>   - spawn a program in the background\n");
     printf("  cd <dir>    - change directory (builtin)\n");
     printf("  pwd         - print working directory (builtin)\n");
