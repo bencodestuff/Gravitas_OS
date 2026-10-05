@@ -14,8 +14,8 @@
 //   * draws decorations into one full-screen alpha-transparent overlay
 //     surface, raised above every window (title bars + borders + close box);
 //   * discovers windows from EVT_SURFACE_ADDED/REMOVED, places new ones,
-//     focuses on click, drags by the title bar, closes via the close box
-//     (KILL the owner — teardown removes the surface).
+//     focuses on click, drags by the title bar, and closes via the close box
+//     by asking the client to exit (force-killing one that ignores the ask).
 //
 // It draws no window content: each client owns its pixels and commits them.
 
@@ -25,6 +25,7 @@ static const int CLOSE_W = 12;
 static const int CLOSE_H = 12;
 static const int MAXWIN  = 32;
 static const int TASKBAR_H = 24;
+static const unsigned long CLOSE_GRACE = 75; // ticks a client has to exit (1.5s)
 
 static const unsigned int FOCUS_BAR   = 0xFF3B5A8C;
 static const unsigned int UNFOCUS_BAR = 0xFF4A4A4A;
@@ -43,7 +44,8 @@ struct Win {
     int  x, y;         // surface top-left on screen
     int  w, h;         // surface size
     int  role;         // GRV_WM_ROLE_NORMAL or _POPUP
-    char title[16];
+    unsigned long close_deadline; // tick to force-kill a close request, 0 = none
+    char title[33];
 };
 
 static int   overlay_id = -1;
@@ -494,6 +496,7 @@ static void add_window(int sid) {
     w->w = (int)si->width;
     w->h = (int)si->height;
     w->role = GRV_WM_ROLE_NORMAL;
+    w->close_deadline = 0;
     owner_name(w->owner, w->title);
 
     // Cascade new windows so they do not pile up at (0,0).
@@ -648,8 +651,17 @@ static void on_press(int cx, int cy) {
     for (int i = nwin - 1; i >= 0; i--) {
         Win* w = &wins[i];
         if (in_close(w, cx, cy)) {
+            // Ask the client to exit rather than killing it: it may need to
+            // save. A client that ignores the ask is force-killed once the
+            // grace period runs out.
             printf("wm: close #%d\n", w->sid);
-            grv_kill(w->owner, 0); // teardown posts EVT_SURFACE_REMOVED
+            w->close_deadline = grv_ticks() + CLOSE_GRACE;
+            struct grv_msg cm;
+            cm.from = 0;
+            cm.type = GRV_WM_CLOSE;
+            cm.a = (unsigned long)w->sid;
+            cm.b = 0;
+            grv_send(w->owner, &cm);
             return;
         }
         if (in_title(w, cx, cy)) {
@@ -784,10 +796,26 @@ int main(int argc, char** argv) {
             else if (m.type == GRV_WM_SET_TITLE) {
                 Win* w = find_owner((int)m.from);
                 if (w) {
-                    grv_wm_title_unpack(m.a, m.b, w->title, (int)sizeof(w->title));
+                    grv_wm_title_raw(m.a, m.b, w->title);
+                    w->title[16] = '\0'; // ends here unless TITLE2 follows
                     printf("wm: title #%d '%s'\n", w->sid, w->title);
                     full_redraw();
                 }
+            }
+            else if (m.type == GRV_WM_SET_TITLE2) {
+                Win* w = find_owner((int)m.from);
+                if (w) {
+                    grv_wm_title_raw(m.a, m.b, w->title + 16);
+                    w->title[32] = '\0';
+                    printf("wm: title #%d '%s'\n", w->sid, w->title);
+                    full_redraw();
+                }
+            }
+            else if (m.type == GRV_WM_CLOSE_ACK) {
+                // The client is handling the close (e.g. prompting to save):
+                // stand down the force-kill.
+                Win* w = find_sid((int)m.a);
+                if (w) w->close_deadline = 0;
             }
             else if (m.type == GRV_WM_SET_ROLE) {
                 Win* w = find_sid((int)m.a);
@@ -845,6 +873,18 @@ int main(int argc, char** argv) {
             if (w) forward_scroll(w, wheel);
         }
         last_fx = cx; last_fy = cy;
+
+        // Force-kill a client that ignored its close request.
+        {
+            unsigned long now = grv_ticks();
+            for (int i = 0; i < nwin; i++) {
+                if (wins[i].close_deadline && now >= wins[i].close_deadline) {
+                    printf("wm: close timeout #%d\n", wins[i].sid);
+                    wins[i].close_deadline = 0;
+                    grv_kill(wins[i].owner, 0);
+                }
+            }
+        }
 
         grv_sleep(8);
     }

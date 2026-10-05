@@ -29,6 +29,8 @@
 #   * file API: seek/stat/truncate/create/remove (filetest.elf)
 #   * timed wakeup: one-shot EV_TIMER with no other input (timertest.elf)
 #   * popups: undecorated on-top second surface + WM dismissal (popuptest.elf)
+#   * input: typematic key repeat + mouse wheel scrolling
+#   * app lifecycle: cooperative close (veto, live retitle, force-kill backstop)
 #
 # Timing: the driver never sleeps a fixed amount waiting for a program.
 # Each step types a command, then waits for that step's completion marker
@@ -269,6 +271,28 @@ wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
 wait_for(r'window #[0-9]+ gone')
 
+# 10c) Cooperative close: closing asks the client to exit rather than killing
+# it. closetest vetoes the first request (and retitles itself), accepts the
+# second. It is the only window, so its close box is the same slot (~426,45).
+type_dotted('bg closetest.elf'); key('ret')
+wait_for(r"window #[0-9]+ 'closetest")
+wait_for(r"wm: title #[0-9]+ 'Close test'")
+mclick()                                     # cursor is still on the close box
+wait_for('closetest: vetoed')
+wait_for(r"wm: title #[0-9]+ 'Close test .vetoed.'")  # live retitle
+mclick()                                     # close again -> accepted
+wait_for('closetest: closing')
+wait_for(r'window #[0-9]+ gone')
+
+# 10d) A client that ignores the close request (rawwin never reads its
+# mailbox) is force-killed once the grace period expires.
+type_dotted('bg rawwin.elf'); key('ret')
+wait_for(r"window #[0-9]+ 'rawwin")
+wait_for('rawwin: up as')
+mclick()                                     # close box -> ignored
+wait_for(r"wm: close timeout #[0-9]+")
+wait_for(r'window #[0-9]+ gone')
+
 # 10b) Launcher menu + Alt+Tab (cursor now ~426,45). Four menu items:
 # Terminal (y~699), Files (~721), Images (~743), Demo (~765).
 mmove(-386, 743); mclick()                   # the "Apps" button (~40,788)
@@ -458,6 +482,26 @@ if ! grep -qE "window #[0-9]+ gone" "$LOG"; then
     fail "wm did not close the window"
 fi
 echo "== window manager ok (claim/discover/focus/type/click/close) =="
+
+# Cooperative close (closetest.elf): the close box asks the client, which may
+# veto (and retitle), then accept.
+if ! grep -q 'closetest: vetoed' "$LOG"; then
+    fail "client could not veto the close request (cooperative close broken?)"
+fi
+if ! grep -qE "wm: title #[0-9]+ 'Close test .vetoed.'" "$LOG"; then
+    fail "live title update did not reach the WM"
+fi
+if ! grep -q 'closetest: closing' "$LOG"; then
+    fail "client did not accept the second close request"
+fi
+echo "== cooperative close ok (veto + retitle, then exit) =="
+
+# Force-close backstop (rawwin.elf): a client that ignores the request is
+# killed once the grace period expires.
+if ! grep -qE "wm: close timeout #[0-9]+" "$LOG"; then
+    fail "ignored close request was not force-killed (backstop broken?)"
+fi
+echo "== force-close backstop ok (uncooperative client killed) =="
 
 # Title protocol: the client answered the WM's hello with its own title
 if ! grep -qE "wm: title #[0-9]+ 'Gravity demo'" "$LOG"; then

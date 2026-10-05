@@ -33,9 +33,14 @@ struct gravity_app {
        work that arrives outside the input mailbox — e.g. a terminal
        draining the output of the programs it hosts. */
     void (*on_poll)(struct gravity_app* app);
+    /* Optional: the WM asked us to close. Return nonzero to exit now, 0 to
+       stay open (e.g. after prompting to save). With no handler Gravity
+       exits straight away. */
+    int (*on_close)(struct gravity_app* app);
     const char* title;  /* optional window title (answers the WM's hello) */
     void* user;
     int redraw;   /* set by gravity_refresh; internal */
+    int wm_task;  /* the WM's task id (from its hello); 0 until known */
 };
 
 /* Ask for a redraw. Call from on_event when the app's state changed. */
@@ -57,6 +62,10 @@ void gravity_run(struct gravity_app* app, int w, int h);
 int  gravity_popup_open(struct gravity_app* app, int x, int y, int w, int h);
 void gravity_popup_present(struct gravity_app* app);
 void gravity_popup_close(struct gravity_app* app);
+
+/* Change the window title after startup (the WM updates the taskbar/title
+   bar). Safe to call any time after gravity_run has started. */
+void gravity_set_title(struct gravity_app* app, const char* title);
 
 __END_DECLS
 
