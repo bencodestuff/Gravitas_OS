@@ -27,7 +27,7 @@ namespace Sched {
         int id;
         TaskState state;
         uint64_t wake_timestamp;
-        char name[16];
+        char name[32];
 
         uint64_t kstack_top; // We need this for the TSS!
         uint64_t* kstack_mem; // Base of the heap-allocated kernel stack (for freeing)
@@ -46,6 +46,7 @@ namespace Sched {
         bool event_input;       // wants input as messages, not the GETC ring
         uint64_t user_rip;      // for the userland trampoline
         uint64_t user_rsp;
+        uint64_t user_stack_guard; // unmapped page below the stack (0 = none)
         uint64_t cr3;           // this task's address space
         uint64_t brk;           // program break (malloc arena top), 0 = unset
         uint64_t brk_limit;     // end of the MAPPED brk region (page-aligned)

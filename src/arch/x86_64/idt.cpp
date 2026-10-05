@@ -573,6 +573,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
     // --- IRQ 0: Timer (Interrupt 32) ---
     if (num == 32) {
         Timer::tick(); // Update the counter
+        Sched::check_kernel_stack(); // kernel-stack canary (a bug if broken)
         Sched::timer_tick(); // fire any due userland one-shot timers
         Keyboard::tick(); // typematic repeat for a held key
         Compositor::present(); // repaint pending damage (text/surfaces/cursor)

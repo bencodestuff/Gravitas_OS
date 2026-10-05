@@ -8,6 +8,7 @@
 #   * bare-name program spawn + VFS read (`cat hello.txt`)
 #   * console cell layer scrolling under load (flood.elf, 150 lines)
 #   * fault contract + stack protector (crash.elf / smash.elf)
+#   * stack guard: runaway recursion faults on the guard page (stackoverflow.elf)
 #   * M2 process control: bg spawn (non-blocking), wait, kill (proctest.elf)
 #   * M3 IPC: per-task mailboxes, blocking recv wake, FIFO (msgtest.elf)
 #   * M4 surfaces: destroy/restack/enumerate, the owner check, death
@@ -256,6 +257,13 @@ type_dotted('run surfacetest.elf'); key('ret'); wait_for('surface contract ok')
 # 9) Debugger: mon reads the introspection syscalls and the crash record
 type_dotted('run mon.elf'); key('ret'); wait_for('mon: last fault')
 
+# 9b) Stack guard: unbounded recursion hits the unmapped guard page below the
+# user stack, so the fault is named and only that task dies. After the mon
+# step so the recorded crash is still crash.elf.
+type_dotted('run stackoverflow.elf'); key('ret')
+wait_for('stack overflow detected')
+wait_for('terminating task per the fault contract')
+
 # 10) Window manager: claim, discover a client window, click to focus it,
 # type into it (only the focused task gets keys), then close it.
 type_dotted('bg wm.elf'); key('ret'); wait_for('display authority')
@@ -380,6 +388,15 @@ sed -n '/stack smashing detected/,$p' "$LOG" \
     | grep -q 'program finished' \
     || fail "shell did not survive the stack smash"
 echo "== stack protector ok (smash detected, shell survived) =="
+
+# Stack guard (stackoverflow.elf): the unmapped page below the user stack
+# turns runaway recursion into a named fault instead of silent corruption.
+if ! grep -q 'stack overflow detected' "$LOG"; then
+    fail "stack overflow did not hit the guard page (silent corruption?)"
+fi
+sed -n '/stack overflow detected/,$p' "$LOG" | grep -q 'program finished' \
+    || fail "shell did not survive the stack overflow"
+echo "== stack guard ok (overflow faults cleanly, task killed) =="
 
 # Process control: bg spawn must not block the shell, and reports the pid
 if ! grep -qE "bg: started 'sleeper[.]elf' as task [0-9]+" "$LOG"; then

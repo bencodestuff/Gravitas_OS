@@ -35,6 +35,14 @@ namespace Sched {
     // a few KB of scratch (a WM keeping surface records, a shell's buffers).
     constexpr uint64_t USER_STACK_PAGES = 8;
 
+    // Bounded copy into a fixed-size name field: a program name can be longer
+    // than the field (and `new Task` leaves it uninitialized otherwise).
+    static void copy_name(char* dst, const char* src, int cap) {
+        int i = 0;
+        while (src[i] && i < cap - 1) { dst[i] = src[i]; i++; }
+        dst[i] = '\0';
+    }
+
     // --- WAIT for already-exited tasks ---
     // WAIT is advisory (a parent may wait late or never), so every exit
     // lands in a small ring that WAIT consumes. Bounded: once 8 newer
@@ -152,11 +160,14 @@ namespace Sched {
         new_task->con_notified = false;
         new_task->timer_deadline = 0;
         new_task->timer_armed = false;
+        copy_name(new_task->name, "kernel-thread", (int)sizeof(new_task->name));
 
         // 2. Allocate a Stack for this thread (4KB)
         uint64_t* stack_bottom = new uint64_t[4096]; // 32KB: deep syscalls
                                                      // + nested IRQs live here
+        stack_bottom[0] = KSTACK_CANARY; // verified each tick (see sched.cpp)
         uint64_t* stack_top = stack_bottom + 512;
+        new_task->user_stack_guard = 0; // kernel threads have no user stack
 
         new_task->kstack_top = (uint64_t)stack_top;
 
@@ -202,12 +213,13 @@ namespace Sched {
         new_task->timer_armed = false;
         new_task->exit_code = 0;
         new_task->cr3 = cr3;
-        strcpy(new_task->name, name);
+        copy_name(new_task->name, name, (int)sizeof(new_task->name));
 
         // Kernel stack (interrupts from ring 3 land here via the TSS). 32KB
         // so a deep syscall (printf -> PUTS -> kprint -> compositor present)
         // plus a nested IRQ cannot overrun it.
         uint64_t* stack_bottom = new uint64_t[4096];
+        stack_bottom[0] = KSTACK_CANARY; // verified each tick (see sched.cpp)
         uint64_t* stack_top = stack_bottom + 4096;
         new_task->kstack_top = (uint64_t)stack_top;
         new_task->kstack_mem = stack_bottom;
@@ -215,24 +227,27 @@ namespace Sched {
         // User stack: allocated from the per-space VA allocator (no more
         // id-based fixed slots — two processes can overlap freely since
         // they own separate address spaces, and one process can't).
+        // One extra page is reserved below it and left unmapped: the stack
+        // guard. An overflow faults there instead of silently scribbling.
         uint64_t old_cr3 = VMM::current_pml4();
         bool switched = false;
         if (old_cr3 != new_task->cr3) {
             VMM::switch_pml4(new_task->cr3);
             switched = true;
         }
-        uint64_t stack_base = VMM::alloc_user_range(new_task->cr3, USER_STACK_PAGES);
+        uint64_t stack_base = VMM::alloc_user_range(new_task->cr3, USER_STACK_PAGES + 1);
         if (stack_base == 0) {
             kprint("[Sched] Out of user VA for stack!\n");
             if (switched) VMM::switch_pml4(old_cr3);
             // NOTE: caller must clean up the task on failure (id already used)
             return -1;
         }
+        new_task->user_stack_guard = stack_base; // the unmapped guard page
         // Back every page of the stack: alloc_user_range only reserves the
         // VA range, so the frames must be mapped here. 8 pages (32K) is a
         // comfortable floor — bigger programs put multi-KB frames on it.
         for (uint64_t p = 0; p < USER_STACK_PAGES; p++)
-            VMM::map_page(PMM::alloc_page(), stack_base + p * 4096, 0x07); // P|W|U
+            VMM::map_page(PMM::alloc_page(), stack_base + (p + 1) * 4096, 0x07); // P|W|U
         if (switched) VMM::switch_pml4(old_cr3);
 
         // --- Build the initial user stack (System V argv layout) ---
@@ -246,7 +261,7 @@ namespace Sched {
             while (*s) { total_len++; s++; }
             total_len++; // NUL
         }
-        uint64_t stack_top_va = stack_base + USER_STACK_PAGES * 4096;
+        uint64_t stack_top_va = stack_base + (USER_STACK_PAGES + 1) * 4096;
         uint64_t strings_start = (stack_top_va - total_len) & ~(uint64_t)15;
         // Align the argv array down so the initial RSP is 16n+8: the SysV
         // convention a called function expects after its return address is

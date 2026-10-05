@@ -174,6 +174,13 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
         // Show the dump even if a full-screen window owns the console.
         Compositor::set_console_on_top(true);
         dump("USERLAND", regs, cr2);
+        // A fault on the unmapped page just below a task's user stack is a
+        // stack overflow — the guard page doing its job. Name it clearly.
+        if (regs->interrupt_number == 14) {
+            uint64_t guard = Sched::current_task_stack_guard();
+            if (guard && cr2 >= guard && cr2 < guard + 4096)
+                kprint("[fault] stack overflow detected (user stack guard page)\n");
+        }
         kprint("[fault] terminating task per the fault contract\n");
         // Same teardown as exit(): fds, surfaces, address space, kstack.
         // The dying task's kernel stack stays valid until the next switch

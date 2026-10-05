@@ -117,6 +117,15 @@ namespace Sched {
     // Fire any due user timers. Called from the timer IRQ each tick.
     void timer_tick();
 
+    // --- Stack guards ---
+    // Magic word at the bottom of every heap-allocated kernel stack.
+    constexpr uint64_t KSTACK_CANARY = 0x5A5A5A5ACAFEF00Dull;
+    // VA of the current task's user-stack guard page (0 if it has none).
+    uint64_t current_task_stack_guard();
+    // Verify the current task's kernel-stack canary. A broken canary is a
+    // kernel bug: report and halt rather than continue on a corrupted stack.
+    void check_kernel_stack();
+
     // Current task's address space (syscall layer needs it for fb mapping)
     uint64_t current_task_cr3();
 

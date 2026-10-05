@@ -80,6 +80,8 @@ namespace Sched {
         current_task->timer_armed = false;
         current_task->user_rip = 0;
         current_task->user_rsp = 0;
+        current_task->user_stack_guard = 0;
+        current_task->kstack_mem = nullptr; // the boot stack has no canary
         current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
         for (int i = 0; i < VFS::MAX_FDS; i++) current_task->fds[i] = nullptr;
         // ----------------
@@ -184,6 +186,7 @@ namespace Sched {
             out[n].brk = t->brk;
             out[n].waiting_on = t->waiting_on;
             for (int i = 0; i < 16; i++) out[n].name[i] = t->name[i];
+            out[n].name[15] = '\0'; // TaskInfo::name is 16 bytes; truncate
             n++;
             t = t->next;
         } while (t != ready_queue);
@@ -451,6 +454,22 @@ namespace Sched {
             }
             t = t->next;
         } while (t != ready_queue);
+    }
+
+    // --- Stack guards ---
+    uint64_t current_task_stack_guard() {
+        return current_task ? current_task->user_stack_guard : 0;
+    }
+
+    void check_kernel_stack() {
+        if (current_task == nullptr || current_task->kstack_mem == nullptr) return;
+        if (current_task->kstack_mem[0] != KSTACK_CANARY) {
+            kprint("\n[sched] KERNEL STACK OVERFLOW in task '");
+            kprint(current_task->name);
+            kprint("' — halting (this is a kernel bug)\n");
+            asm volatile("cli; hlt");
+            for (;;) asm("hlt");
+        }
     }
 
     void switch_to_task_cr3(Task* task) {
