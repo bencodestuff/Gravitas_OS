@@ -4,5 +4,6 @@
 # change needed. Lines starting with '#' are ignored.
 term.elf        Terminal
 files.elf       Files
+edit.elf        Text editor
 imageview.elf   Image viewer
 win.elf         Demo window

@@ -7,8 +7,9 @@
 // files — a file browser built on Gravity.
 //
 // A path bar over a scrollable list (the gravity_list widget). Up/Down move
-// the selection, Enter opens it (a directory is entered, a file opens in a
-// new terminal), Backspace goes up, and clicking a directory enters it.
+// the selection, Enter opens it (a directory is entered, a file opens in the
+// editor, an image in the viewer), Backspace goes up, and clicking a
+// directory enters it.
 
 #define W        520
 #define H        380
@@ -123,8 +124,9 @@ static void open_file(const char* name) {
         const char* argv[2] = { "imageview.elf", path };
         grv_spawn_bg("imageview.elf", argv, 2);
     } else {
-        const char* argv[4] = { "term.elf", "cat", path, 0 };
-        grv_spawn_bg("term.elf", argv, 3);
+        // Text (or unknown): hand it to the editor.
+        const char* argv[2] = { "edit.elf", path };
+        grv_spawn_bg("edit.elf", argv, 2);
     }
     printf("files: open %s\n", path);
 }

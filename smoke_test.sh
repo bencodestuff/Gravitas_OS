@@ -32,6 +32,7 @@
 #   * popups: undecorated on-top second surface + WM dismissal (popuptest.elf)
 #   * input: typematic key repeat + mouse wheel scrolling
 #   * app lifecycle: cooperative close (veto, live retitle, force-kill backstop)
+#   * editor: a gravity_text buffer, caret/scroll, Ctrl+S save (edit.elf)
 #   * Lua prerequisites in libc: SSE doubles, setjmp/longjmp, strtod, math,
 #     and float formatting (%.14g) — exercised by libctest
 #
@@ -153,13 +154,15 @@ def type_str(text):
         key('spc' if ch == ' ' else ch)
 
 def type_dotted(text):
-    # Split at each dot: the raw hex make/break is the only reliable way to
-    # send '.' (named keys for it get dropped).
-    segs = text.split('.')
-    for i, seg in enumerate(segs):
-        type_str(seg)
-        if i != len(segs) - 1:
+    # Split at each '.' or '/': the raw hex make/break is the only reliable
+    # way to send those (the named keys for them get dropped).
+    for seg in re.split(r'([./])', text):
+        if seg == '.':
             raw('34', 'b4')
+        elif seg == '/':
+            raw('35', 'b5')
+        else:
+            type_str(seg)
 
 def mmove(dx, dy):
     cmd('mouse_move %d %d' % (dx, dy))
@@ -187,6 +190,31 @@ def wait_count(pat, n, timeout=40.0):
 
 def wait_for(pat, timeout=40.0):
     wait_count(pat, 1, timeout)
+
+def count(pat):
+    return len(re.findall(pat, read_log()))
+
+def wait_window_gone(name_pat):
+    # Wait for THIS window (matched by name) to disappear. Matching a bare
+    # "window #N gone" would hit lines left by earlier closed windows.
+    idx = None
+    for m in re.finditer(r"wm: window (\d+) '([^']*)'", read_log()):
+        if re.search(name_pat, m.group(2)):
+            idx = m.group(1)
+    if idx is not None:
+        wait_for(r"window #%s gone" % idx)
+    time.sleep(0.3)
+
+def wait_more(pat, n, timeout=40.0):
+    # Wait until the log holds at least n matches of pat — used where the
+    # absolute count is not known (e.g. "one more focus change").
+    end = time.time() + timeout
+    while time.time() < end:
+        if count(pat) >= n:
+            return
+        time.sleep(0.03)
+    sys.stderr.write("timed out waiting for %d x %s\n" % (n, pat))
+    sys.exit(1)
 
 # The kernel brings up a window manager and a terminal at boot. Stop both so
 # the low-level surface/damage tests below run against unmanaged surfaces (as
@@ -279,7 +307,7 @@ wait_count(r"win: key 'a'", 4)
 mmove(0, 100); mclick()                      # click the client body -> forwarded
 wait_for(r'win: click [0-9]+,[0-9]+')
 mmove(226, -105); mclick()                   # click the close box (~426,45)
-wait_for(r'window #[0-9]+ gone')
+wait_window_gone('win.elf')
 
 # 10c) Cooperative close: closing asks the client to exit rather than killing
 # it. closetest vetoes the first request (and retitles itself), accepts the
@@ -292,7 +320,7 @@ wait_for('closetest: vetoed')
 wait_for(r"wm: title #[0-9]+ 'Close test .vetoed.'")  # live retitle
 mclick()                                     # close again -> accepted
 wait_for('closetest: closing')
-wait_for(r'window #[0-9]+ gone')
+wait_window_gone('closetest.elf')
 
 # 10d) A client that ignores the close request (rawwin never reads its
 # mailbox) is force-killed once the grace period expires.
@@ -301,20 +329,38 @@ wait_for(r"window #[0-9]+ 'rawwin")
 wait_for('rawwin: up as')
 mclick()                                     # close box -> ignored
 wait_for(r"wm: close timeout #[0-9]+")
-wait_for(r'window #[0-9]+ gone')
+wait_window_gone('rawwin.elf')
 
-# 10b) Launcher menu + Alt+Tab (cursor now ~426,45). Four menu items:
-# Terminal (y~699), Files (~721), Images (~743), Demo (~765). The menu must
-# actually be PAINTED, not merely opened in WM state, so screendump before
-# and after and check the menu region changed.
+# 10e) Editor: type into a new file, save with Ctrl+S, then read the same
+# bytes back through the shell's cat — proving the buffer, key handling and
+# the write path end to end. The cursor is still on the editor's title bar
+# from the previous step (the window lands at 80,60 with no other windows).
+type_dotted('bg edit.elf /tmp/etest.txt'); key('ret')
+wait_for(r"window #[0-9]+ 'edit")
+wait_for(r"wm: title #[0-9]+ 'edit: etest.txt'")
+mclick()                                     # title bar -> focus the editor
+wait_for('wm: focus task')
+type_str('hello world'); key('ret'); type_str('second line')
+cmd('sendkey ctrl-s')
+wait_for('edit: saved /tmp/etest.txt')
+cmd('sendkey ctrl-q')                        # exits (saved); WM refocuses console
+wait_window_gone(r'edit\.elf')
+type_dotted('cat /tmp/etest.txt'); key('ret')
+wait_for('second line')
+
+# 10b) Launcher menu + Alt+Tab (cursor now ~426,45). One item per app in
+# /apps (Terminal y~677, Files ~699, Text editor ~721, Image viewer ~743,
+# Demo ~765). The menu must actually be PAINTED, not merely opened in WM
+# state, so screendump before and after and check the menu region changed.
 cmd('screendump test_artifacts/menu_before.ppm')
 mmove(-386, 743); mclick()                   # the "Apps" button (~40,788)
 cmd('screendump test_artifacts/menu_after.ppm')
-mmove(0, -89); mclick()                       # the "Terminal" item (~40,699)
+mmove(0, -111); mclick()                      # the "Terminal" item (~40,677)
 wait_for("wm: launch 'term.elf'")
 wait_count(r"wm: window #[0-9]+ 'term", 2)    # the launched terminal
+n_focus = count('wm: focus task')
 cmd('sendkey alt-tab')
-wait_count('wm: focus task', 2)              # Alt+Tab focused it
+wait_more('wm: focus task', n_focus + 1)     # Alt+Tab focused it
 
 # 11) Terminal: the focused terminal's window must render the hosted shell's
 # output. Keying 'ls' hits only the focused task, so a change inside the
@@ -326,16 +372,16 @@ cmd('screendump test_artifacts/term_after.ppm')
 wait_for(r"User task 'ls.elf' created")
 
 # 12) File browser: launch it from the menu and confirm its window/title.
-mmove(0, 89); mclick()                        # the "Apps" button (~40,788)
-mmove(0, -67); mclick()                        # the "Files" item (~40,721)
+mmove(0, 111); mclick()                        # the "Apps" button (~40,788)
+mmove(0, -89); mclick()                        # the "Files" item (~40,699)
 wait_for("wm: launch 'files.elf'")
 wait_count(r"wm: window #[0-9]+ 'files", 1)
 wait_for(r"wm: title #[0-9]+ 'Files'")
 
 # 13) Image viewer: launch it; it decodes a picture from /Pictures with the
 # shared grv_image library.
-mmove(0, 67); mclick()                        # the "Apps" button (~40,788)
-mmove(0, -45); mclick()                        # the "Images" item (~40,743)
+mmove(0, 89); mclick()                        # the "Apps" button (~40,788)
+mmove(0, -45); mclick()                        # the "Image viewer" item (~40,743)
 wait_for("wm: launch 'imageview.elf'")
 wait_count(r"wm: window #[0-9]+ 'imageview", 1)
 wait_for(r"wm: title #[0-9]+ 'Images'")
@@ -525,6 +571,21 @@ if ! grep -qE "wm: close timeout #[0-9]+" "$LOG"; then
     fail "ignored close request was not force-killed (backstop broken?)"
 fi
 echo "== force-close backstop ok (uncooperative client killed) =="
+
+# Editor (edit.elf): typing then Ctrl+S must write the file, and the shell
+# must read the same bytes back.
+if ! grep -q 'edit: saved /tmp/etest.txt' "$LOG"; then
+    fail "editor did not save (Ctrl+S / file write broken?)"
+fi
+# "hello world\nsecond line" is exactly 23 bytes; a mismatch means dropped or
+# misplaced keystrokes.
+if ! grep -qE "edit: saved /tmp/etest.txt \(23 bytes\)" "$LOG"; then
+    fail "editor saved the wrong byte count (buffer/edit broken?)"
+fi
+if ! grep -q 'second line' "$LOG"; then
+    fail "editor's saved file did not read back (buffer or typing broken?)"
+fi
+echo "== editor ok (type, Ctrl+S, read back) =="
 
 # Title protocol: the client answered the WM's hello with its own title
 if ! grep -qE "wm: title #[0-9]+ 'Gravity demo'" "$LOG"; then

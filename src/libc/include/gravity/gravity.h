@@ -9,5 +9,6 @@
 #include <gravity/widget.h>
 #include <gravity/list.h>
 #include <gravity/term.h>
+#include <gravity/text.h>
 
 #endif
