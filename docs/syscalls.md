@@ -19,6 +19,60 @@ The kernel follows the project rule: **mechanisms only**. Syscalls move
 bytes, map frames and schedule tasks. What a message `type` means, which
 surface is a "window", and what is drawn are all userland policy.
 
+## Errors
+
+A syscall reports failure by returning a **negated errno**. The C wrappers in
+`grv/syscall.h` turn that into `-1`/`NULL` and set the global `errno`, so a
+program uses the usual C idiom. The complete set lives in `<errno.h>`
+(userland) and `src/kernel/core/errno.h` (kernel); the two must match this
+table.
+
+| code | value | meaning |
+|---|---|---|
+| `EPERM` | 1 | operation not permitted |
+| `ENOENT` | 2 | no such file/directory, or no such task (IPC) |
+| `EIO` | 5 | backend failure with no better code |
+| `EBADF` | 9 | bad file descriptor |
+| `EAGAIN` | 11 | would block (mailbox full, or an empty non-blocking poll) |
+| `ENOMEM` | 12 | out of memory |
+| `EACCES` | 13 | not readable with this handle |
+| `EFAULT` | 14 | bad address |
+| `EEXIST` | 17 | already exists |
+| `ENOTDIR` | 20 | not a directory |
+| `EISDIR` | 21 | is a directory |
+| `EINVAL` | 22 | invalid argument |
+| `EMFILE` | 24 | per-task fd table full |
+| `ENOSPC` | 28 | no space left |
+| `EROFS` | 30 | read-only filesystem |
+
+A successful call never clears `errno` (check the return value, as in C).
+Not every syscall distinguishes every reason yet: the filesystem backends
+report 0/−1, so the VFS maps their failures to the closest code above.
+
+## Paths
+
+A path is absolute (`/Pictures/x.bmp`) or relative to the task's working
+directory, which children inherit when they are spawned. A **bare name** (no
+`/`) is a lookup convenience for existing files: `OPEN` and `STAT` try the
+CWD first and then `/bin` (an embryonic PATH — `run ls` finds `ls.elf`).
+`MKDIR` and `UNLINK` never search: they resolve against the CWD (or an
+absolute path) only, so a typo cannot land in the read-only system tree.
+
+## Message types
+
+`SEND`/`RECV` carry a free-form `type`; the kernel only reserves the values
+it posts itself, and everything in between is userland policy. The registry:
+
+| range | owner | values |
+|---|---|---|
+| `0x01–0x0F` | kernel input/console | `EV_KEY` 1, `EV_MOUSE` 2, `EV_CONSOLE_OUT` 3, `EV_TIMER` 4, `EV_SCROLL` 5 |
+| `0x10–0x1F` | WM protocol (`grv/wm.h`) | `HELLO` 0x10, `SET_TITLE` 0x11, `SET_ROLE` 0x12, `DISMISS` 0x13, `CLOSE` 0x14, `CLOSE_ACK` 0x15, `SET_TITLE2` 0x16 |
+| `0x20–0x2F` | kernel surface lifecycle | `EVT_SURFACE_ADDED` 0x20, `EVT_SURFACE_REMOVED` 0x21 |
+| `0x100+` | applications | anything (no registry) |
+
+Add new platform messages inside the range they belong to; never reuse a
+value with a different meaning.
+
 ## Calls
 
 | # | name | args | returns |

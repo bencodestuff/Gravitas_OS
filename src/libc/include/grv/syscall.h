@@ -9,6 +9,7 @@
    Kernel side: src/arch/x86_64/idt.cpp interrupt_dispatcher(). */
 
 #include <sys/cdefs.h>
+#include <errno.h>
 
 __BEGIN_DECLS
 
@@ -99,6 +100,14 @@ static inline long syscall3(long n, long a, long b, long c) {
 
 /* --- Convenience wrappers --- */
 
+/* Syscalls report failure as a negated errno (see <errno.h>). This maps it
+   to the usual -1 and records the code in errno; a successful call leaves
+   errno untouched, as in C. */
+static inline long grv_err(long ret) {
+    if (ret < 0) { errno = (int)(-ret); return -1; }
+    return ret;
+}
+
 static inline void grv_putc(char c) {
     syscall1(GRV_SYSCALL_PUTC, (unsigned char)c);
 }
@@ -121,15 +130,15 @@ static inline void grv_readdir(const char* path, char* buf, unsigned long max) {
 }
 
 /* Spawn a program from the tarfs (blocks until it exits).
-   Returns child pid, or -1. */
+   Returns child pid, or -1 (errno set). */
 static inline long grv_spawn(const char* name, const char* const* argv, int argc) {
-    return syscall3(GRV_SYSCALL_SPAWN, (long)name, (long)argv, (long)argc);
+    return grv_err(syscall3(GRV_SYSCALL_SPAWN, (long)name, (long)argv, (long)argc));
 }
 
 /* Spawn in the background: returns immediately with the child pid (blocks
    nothing). Child exit is observable via grv_wait(pid). */
 static inline long grv_spawn_bg(const char* name, const char* const* argv, int argc) {
-    return syscall3(GRV_SYSCALL_SPAWN_BG, (long)name, (long)argv, (long)argc);
+    return grv_err(syscall3(GRV_SYSCALL_SPAWN_BG, (long)name, (long)argv, (long)argc));
 }
 
 /* Wait for the task to exit; returns its exit code, or -1 if it never
@@ -140,9 +149,9 @@ static inline long grv_wait(long pid) {
 }
 
 /* Forcibly terminate another task; its exit code becomes 'code'.
-   Returns 0 or -1. */
+   Returns 0 or -1 (errno set). */
 static inline long grv_kill(long pid, long code) {
-    return syscall2(GRV_SYSCALL_KILL, pid, code);
+    return grv_err(syscall2(GRV_SYSCALL_KILL, pid, code));
 }
 
 /* --- IPC (M3): per-task mailboxes --- */
@@ -155,15 +164,17 @@ struct grv_msg {
 };
 
 /* Send to task 'dst'. The kernel overwrites m->from with our pid.
-   Returns 0 delivered, -1 no such/dead task, -2 mailbox full. */
+   Returns 0 delivered, or -1 with errno (ENOENT no such task, EAGAIN
+   mailbox full). */
 static inline long grv_send(long dst, struct grv_msg* m) {
-    return syscall2(GRV_SYSCALL_SEND, dst, (long)m);
+    return grv_err(syscall2(GRV_SYSCALL_SEND, dst, (long)m));
 }
 
 /* Take the next message addressed to us. When 'block' is nonzero, sleep
-   until one arrives. Returns 0 and fills m, or -1 (empty/none). */
+   until one arrives. Returns 0 and fills m, or -1 with errno (EAGAIN when
+   a non-blocking poll finds nothing). */
 static inline long grv_recv(struct grv_msg* m, long block) {
-    return syscall2(GRV_SYSCALL_RECV, (long)m, block);
+    return grv_err(syscall2(GRV_SYSCALL_RECV, (long)m, block));
 }
 
 static inline __attribute__((__noreturn__)) void grv_exit(int code) {
@@ -177,18 +188,20 @@ static inline void* grv_brk(void* addr) {
     return (void*)syscall1(GRV_SYSCALL_BRK, (long)addr);
 }
 
-/* --- File descriptors --- */
+/* --- File descriptors ---
+   Failures return -1 and set errno (ENOENT, EISDIR, EMFILE, EBADF, EACCES,
+   EROFS, EINVAL, EIO — see <errno.h>). */
 
 static inline int grv_open(const char* path, int flags) {
-    return (int)syscall2(GRV_SYSCALL_OPEN, (long)path, (long)flags);
+    return (int)grv_err(syscall2(GRV_SYSCALL_OPEN, (long)path, (long)flags));
 }
 
 static inline long grv_read_fd(int fd, void* buf, unsigned long count) {
-    return syscall3(GRV_SYSCALL_READFD, (long)fd, (long)buf, (long)count);
+    return grv_err(syscall3(GRV_SYSCALL_READFD, (long)fd, (long)buf, (long)count));
 }
 
 static inline long grv_write_fd(int fd, const void* buf, unsigned long count) {
-    return syscall3(GRV_SYSCALL_WRITEFD, (long)fd, (long)buf, (long)count);
+    return grv_err(syscall3(GRV_SYSCALL_WRITEFD, (long)fd, (long)buf, (long)count));
 }
 
 static inline void grv_close(int fd) {
@@ -197,9 +210,9 @@ static inline void grv_close(int fd) {
 
 /* --- File positioning / metadata --- */
 /* Seek an fd's offset. 'whence': 0=SET, 1=CUR, 2=END. Returns the new
-   offset (clamped to the file), or -1. */
+   offset (clamped to the file), or -1 with errno. */
 static inline long grv_lseek(int fd, long offset, int whence) {
-    return syscall3(GRV_SYSCALL_LSEEK, (long)fd, offset, (long)whence);
+    return grv_err(syscall3(GRV_SYSCALL_LSEEK, (long)fd, offset, (long)whence));
 }
 
 struct grv_stat {
@@ -207,29 +220,29 @@ struct grv_stat {
     long          is_dir;
 };
 
-/* Metadata for a path. Returns 0 on success and fills *out, else -1. */
+/* Metadata for a path. Returns 0 and fills *out, or -1 with errno. */
 static inline int grv_stat(const char* path, struct grv_stat* out) {
-    return (int)syscall2(GRV_SYSCALL_STAT, (long)path, (long)out);
+    return (int)grv_err(syscall2(GRV_SYSCALL_STAT, (long)path, (long)out));
 }
 
-/* Create a directory / remove a file, by path. 0 or -1 (read-only fs
-   refuses). */
+/* Create a directory / remove a file, by path. 0, or -1 with errno
+   (EROFS on a read-only filesystem). */
 static inline int grv_mkdir(const char* path) {
-    return (int)syscall1(GRV_SYSCALL_MKDIR, (long)path);
+    return (int)grv_err(syscall1(GRV_SYSCALL_MKDIR, (long)path));
 }
 static inline int grv_unlink(const char* path) {
-    return (int)syscall1(GRV_SYSCALL_UNLINK, (long)path);
+    return (int)grv_err(syscall1(GRV_SYSCALL_UNLINK, (long)path));
 }
 
-/* Set an open file's length. Returns 0 or -1. */
+/* Set an open file's length. Returns 0, or -1 with errno. */
 static inline int grv_ftruncate(int fd, unsigned long size) {
-    return (int)syscall2(GRV_SYSCALL_FTRUNCATE, (long)fd, (long)size);
+    return (int)grv_err(syscall2(GRV_SYSCALL_FTRUNCATE, (long)fd, (long)size));
 }
 
-/* chdir: change the process working directory (0 = ok, -1 = no such dir).
+/* chdir: change the process working directory (0, or -1 with errno).
    getcwd: copies the CWD into buf, returns its length. */
 static inline int grv_chdir(const char* path) {
-    return (int)syscall1(GRV_SYSCALL_CHDIR, (long)path);
+    return (int)grv_err(syscall1(GRV_SYSCALL_CHDIR, (long)path));
 }
 
 static inline long grv_getcwd(char* buf, unsigned long max) {

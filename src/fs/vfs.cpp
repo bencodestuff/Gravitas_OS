@@ -2,6 +2,7 @@
 #include "kernel/gfx/framebuffer.h"
 #include "kernel/core/heap.h"
 #include "kernel/core/sched.h"
+#include "kernel/core/errno.h"
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value);
@@ -288,6 +289,8 @@ int fd_slot_alloc(Filesystem* fs, void* fs_handle, uint64_t size) {
 }
 
 // --- fd operations ---
+// Failures return a negated Errno code (see kernel/core/errno.h); libc turns
+// them into -1 + errno.
 int open_fd(const char* path, int flags) {
     static char fixed[256];
     const char* effective = nullptr;
@@ -295,22 +298,30 @@ int open_fd(const char* path, int flags) {
 
     const char* rel = nullptr;
     Filesystem* fs = resolve(effective, &rel);
-    if (fs == nullptr || fs->open == nullptr) return -1;
+    if (fs == nullptr || fs->open == nullptr) return -Errno::ENOENT;
 
     uint64_t size = 0;
     void* h = fs->open(fs->priv, rel, flags, &size);
-    if (h == nullptr) return -1;
+    if (h == nullptr) {
+        // The backend refused. Callers care about the two common reasons:
+        // a directory, or a creation the filesystem cannot do.
+        if (flags & O_CREATE) return fs->write ? -Errno::EIO : -Errno::EROFS;
+        if (fs->is_dir && fs->is_dir(fs->priv, rel)) return -Errno::EISDIR;
+        return -Errno::ENOENT;
+    }
 
     int fd = fd_slot_alloc(fs, h, size);
     if (fd == -1) {
         fs->close(fs->priv, h); // don't leak the backend handle
+        return -Errno::EMFILE;
     }
     return fd;
 }
 
 long read_fd(int fd, void* buf, uint64_t count) {
     FileHandle* h = fd_slot_get(fd);
-    if (h == nullptr || h->fs->read == nullptr) return -1;
+    if (h == nullptr) return -Errno::EBADF;
+    if (h->fs->read == nullptr) return -Errno::EACCES;
     // Clamp against the file size reported at open (protects zero-copy
     // backends like tarfs whose read can't know its own bounds)
     if (h->offset >= h->size) return 0;
@@ -322,7 +333,8 @@ long read_fd(int fd, void* buf, uint64_t count) {
 
 long write_fd(int fd, const void* buf, uint64_t count) {
     FileHandle* h = fd_slot_get(fd);
-    if (h == nullptr || h->fs->write == nullptr) return -1;
+    if (h == nullptr) return -Errno::EBADF;
+    if (h->fs->write == nullptr) return -Errno::EROFS;
     uint64_t n = h->fs->write(h->fs->priv, h->fs_handle, buf, count, h->offset);
     h->offset += n;
     return (long)n;
@@ -344,12 +356,12 @@ void close_fd(int fd) {
 
 long lseek_fd(int fd, long offset, int whence) {
     FileHandle* h = fd_slot_get(fd);
-    if (h == nullptr) return -1;
+    if (h == nullptr) return -Errno::EBADF;
     long base;
     if (whence == 0) base = 0;                 // SET
     else if (whence == 1) base = (long)h->offset; // CUR
     else if (whence == 2) base = (long)h->size;   // END
-    else return -1;
+    else return -Errno::EINVAL;
 
     long pos = base + offset;
     if (pos < 0) pos = 0;
@@ -358,42 +370,53 @@ long lseek_fd(int fd, long offset, int whence) {
     return pos;
 }
 
+// Path rule (see vfs.h): lookups (open/stat) accept a bare name and search
+// the CWD then /bin; creation and removal are always CWD-relative, so a
+// typo never lands in the read-only system tree.
 int mkdir(const char* path) {
     const char* rel = nullptr;
     Filesystem* fs = resolve(path, &rel);
-    if (fs == nullptr || fs->mkdir == nullptr) return -1;
-    return fs->mkdir(fs->priv, rel);
+    if (fs == nullptr) return -Errno::ENOENT;
+    if (fs->mkdir == nullptr) return -Errno::EROFS;
+    return fs->mkdir(fs->priv, rel) == 0 ? 0 : -Errno::EIO;
 }
 
 int unlink(const char* path) {
     const char* rel = nullptr;
     Filesystem* fs = resolve(path, &rel);
-    if (fs == nullptr || fs->unlink == nullptr) return -1;
-    return fs->unlink(fs->priv, rel);
+    if (fs == nullptr) return -Errno::ENOENT;
+    if (fs->unlink == nullptr) return -Errno::EROFS;
+    return fs->unlink(fs->priv, rel) == 0 ? 0 : -Errno::ENOENT;
 }
 
 int ftruncate_fd(int fd, uint64_t size) {
     FileHandle* h = fd_slot_get(fd);
-    if (h == nullptr || h->fs->truncate == nullptr) return -1;
+    if (h == nullptr) return -Errno::EBADF;
+    if (h->fs->truncate == nullptr) return -Errno::EROFS;
     int r = h->fs->truncate(h->fs->priv, h->fs_handle, size);
     if (r == 0) h->size = size;
-    return r;
+    return r == 0 ? 0 : -Errno::EIO;
 }
 
 int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
+    // A lookup: same resolution as open (CWD, then /bin for a bare name).
+    static char fixed[256];
+    const char* effective = nullptr;
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+
     const char* rel = nullptr;
-    Filesystem* fs = resolve(path, &rel);
-    if (fs == nullptr) return -1;
+    Filesystem* fs = resolve(effective, &rel);
+    if (fs == nullptr) return -Errno::ENOENT;
 
     if (fs->is_dir && fs->is_dir(fs->priv, rel)) {
         if (out_size) *out_size = 0;
         if (out_is_dir) *out_is_dir = true;
         return 0;
     }
-    if (fs->open == nullptr) return -1;
+    if (fs->open == nullptr) return -Errno::ENOENT;
     uint64_t size = 0;
     void* h = fs->open(fs->priv, rel, O_RDONLY, &size);
-    if (h == nullptr) return -1;
+    if (h == nullptr) return -Errno::ENOENT;
     fs->close(fs->priv, h);
     if (out_size) *out_size = size;
     if (out_is_dir) *out_is_dir = false;

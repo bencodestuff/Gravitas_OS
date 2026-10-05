@@ -85,12 +85,18 @@ void init();
 // Register a filesystem at a mount point (e.g. "/bin")
 bool mount(const char* path, Filesystem* fs);
 
-// fd operations (fd tables live in the current task)
-int  open_fd(const char* path, int flags);            // fd or -1
-long read_fd(int fd, void* buf, uint64_t count);      // bytes or -1
-long write_fd(int fd, const void* buf, uint64_t count); // bytes or -1
+// fd operations (fd tables live in the current task).
+// Failures return a negated errno (see kernel/core/errno.h): ENOENT, EISDIR,
+// EMFILE, EBADF, EACCES, EROFS, EINVAL, EIO.
+int  open_fd(const char* path, int flags);            // fd or -errno
+long read_fd(int fd, void* buf, uint64_t count);      // bytes or -errno
+long write_fd(int fd, const void* buf, uint64_t count); // bytes or -errno
 void close_fd(int fd);
 void close_fd_for(FileHandle** fds, int fd);          // arbitrary table (task exit)
+
+// Path rule: lookups (open/stat) accept a bare name — the CWD is tried
+// first, then /bin. Creation and removal (mkdir/unlink) never search: they
+// resolve against the CWD (or an absolute path) only.
 
 // Resolve a path to (filesystem, fs-relative path). Longest mount-prefix
 // wins. Relative paths resolve against the current task's CWD.
@@ -111,19 +117,18 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size);
 uint64_t readdir(const char* path, char* buf, uint64_t max);
 
 // Seek an fd's read/write offset. 'whence' is 0=SET, 1=CUR, 2=END. Returns
-// the new offset, or -1.
+// the new offset, or -errno (EBADF/EINVAL).
 long lseek_fd(int fd, long offset, int whence);
 
-// Create a directory / remove a file, by path. Return 0 or -1 (read-only fs
-// and missing paths fail).
+// Create a directory / remove a file, by path. Return 0 or -errno
+// (ENOENT/EROFS/EIO).
 int mkdir(const char* path);
 int unlink(const char* path);
 
-// Set a file's length by fd. Returns 0 or -1.
+// Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO).
 int ftruncate_fd(int fd, uint64_t size);
 
-// Look up a path's size and type without opening it. Returns 0, or -1 if the
-// path does not exist.
+// Look up a path's size and type without opening it. Returns 0, or -ENOENT.
 int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir);
 
 // fd table plumbing (implemented against the current task in sched.cpp)

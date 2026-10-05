@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <setjmp.h>
+#include <errno.h>
 #include <grv/syscall.h>
 
 // libctest — exercises the libc basics (string, formatted output, allocator,
@@ -112,6 +113,25 @@ int main(int argc, char** argv) {
     check(fabs(d2 * d2 - 2.0) < 1e-15, "sqrt(2) squared");
     check(fabs(pow(2.0, 0.5) - d2) < 1e-15, "pow(2, 0.5)");
     check(fabs(sin(1.0) - 0.8414709848078965) < 1e-14, "sin(1)");
+
+    // --- errno: syscalls return -errno; wrappers map to -1 + errno ---
+    struct grv_stat st;
+    errno = 0;
+    check(grv_open("/no/such/file", GRV_O_RDONLY) == -1 && errno == ENOENT,
+          "open missing -> ENOENT");
+    errno = 0;
+    check(grv_stat("/no/such/file", &st) == -1 && errno == ENOENT,
+          "stat missing -> ENOENT");
+    errno = 0;
+    check(grv_read_fd(99, buf, 4) == -1 && errno == EBADF,
+          "read bad fd -> EBADF");
+    errno = 0;
+    check(grv_mkdir("/bin/nope") == -1 && errno == EROFS,
+          "mkdir on the read-only tarfs -> EROFS");
+    errno = 0;
+    struct grv_msg em;
+    check(grv_recv(&em, 0) == -1 && errno == EAGAIN,
+          "empty poll -> EAGAIN");
 
     int* arr = (int*)calloc(5, sizeof(int));
     check(arr != 0 && arr[0] == 0 && arr[4] == 0, "calloc zeroes");

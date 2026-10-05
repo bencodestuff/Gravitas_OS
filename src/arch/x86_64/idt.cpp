@@ -16,6 +16,7 @@
 #include "fs/vfs.h"
 #include "kernel/core/pmm.h"
 #include "kernel/core/sysinfo.h"
+#include "kernel/core/errno.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
@@ -225,14 +226,14 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              VFS::readdir((const char*)regs->rdi, (char*)regs->rsi, regs->rdx);
              regs->rax = 0;
         }
-        else if (syscall_id == 12) { // CHDIR: rdi = path -> rax = 0 or -1
+        else if (syscall_id == 12) { // CHDIR: rdi = path -> rax = 0 or -errno
              const char* path = (const char*)regs->rdi;
 
 
 
              // Must exist and be a directory
              if (!VFS::is_directory(path)) {
-                 regs->rax = (uint64_t)-1;
+                 regs->rax = (uint64_t)-Errno::ENOENT;
              } else {
                  // Store the canonical path (cwd-relative + ./.. resolved)
                  static char canon[64];
@@ -510,7 +511,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
                  }
                  if (regs->rsi == 0) {
                      asm volatile("sti");
-                     regs->rax = (uint64_t)-1; // poll found nothing
+                     regs->rax = (uint64_t)-Errno::EAGAIN; // poll found nothing
                      return;
                  }
                  Ipc::recv_wait();   // register + SLEEP (IF still off)
@@ -540,7 +541,7 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
              if (want == 0) {
                  regs->rax = Sched::current_task_brk();
              } else if (want < BRK_BASE) {
-                 regs->rax = (uint64_t)-1;
+                 regs->rax = (uint64_t)-Errno::EINVAL;
              } else {
                  // Grow: map [brk_limit, round_up(want)) — brk_limit is the
                  // true mapped top, so nothing gets skipped when brk isn't

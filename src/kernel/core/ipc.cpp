@@ -1,6 +1,7 @@
 #include "kernel/core/ipc.h"
 #include "kernel/klib/klib.h"
 #include "kernel/core/sched.h"
+#include "kernel/core/errno.h"
 
 
 // IPC implementation — see ipc.h for the contract.
@@ -57,11 +58,11 @@ static Box* claim_box(int owner) {
 int send(int dst, const Msg& m) {
     // Zero/negative ids are never userland tasks ('-1' would collide with
     // the kernel-post stamp, 0 is the kernel task itself).
-    if (dst <= 0) return -1;
-    if (!Sched::task_exists(dst)) return -1;
+    if (dst <= 0) return -Errno::ENOENT;
+    if (!Sched::task_exists(dst)) return -Errno::ENOENT;
     Box* b = claim_box(dst);
-    if (b == nullptr) return -1;
-    if (b->count == BOX_CAP) return -2;
+    if (b == nullptr) return -Errno::ENOMEM;
+    if (b->count == BOX_CAP) return -Errno::EAGAIN;
 
     Msg* slot = &b->ring[(b->head + b->count) % BOX_CAP];
     slot->from = m.from;
