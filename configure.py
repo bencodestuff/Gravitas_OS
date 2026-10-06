@@ -18,7 +18,7 @@ TEST_PROGRAMS = {
     "closetest", "consoletest", "crash", "damagetest", "echoprog",
     "filetest", "flood", "libctest", "mouse", "msgecho", "msgtest",
     "popuptest", "proctest", "rawwin", "sleeper", "smash",
-    "stackoverflow", "surfacetest", "surfhelper", "timertest",
+    "stackoverflow", "surfacetest", "surfhelper", "timertest", "stdiotest",
 }
 
 # Flags

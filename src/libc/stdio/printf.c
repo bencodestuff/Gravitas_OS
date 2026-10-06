@@ -5,17 +5,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <grv/syscall.h>
+#include "fmt_internal.h"
 
-// One formatter behind printf and snprintf/sprintf. Each call supplies an
-// emit function; printf's emit batches into a chunk and prints it with
-// grv_puts() (which the kernel prints atomically), so a task switch cannot
-// interleave another task's characters into the middle of a line.
+// One formatter behind printf and snprintf/sprintf, and (via fmt_internal.h)
+// behind fprintf. Each call supplies an emit function; printf's emit batches
+// into a chunk and prints it with grv_puts() (which the kernel prints
+// atomically), so a task switch cannot interleave another task's characters
+// into the middle of a line.
 //
 // Supported: flags '0' and '-', width, precision, the 'l'/'ll' length
 // modifiers, and the d/i/u/x/X/o/c/s/p/f/e/E/g/G conversions. Width and
 // precision are capped (200 / 30) — a fixed scratch buffer keeps this small.
-
-typedef void (*emit_fn)(void* ctx, const char* s, size_t len);
 
 #define FMT_BUF 256
 #define MAXWIDTH 200
@@ -142,8 +142,8 @@ static void strip_zeros(char* s) {
 
 // --- the formatter ------------------------------------------------------
 
-static int vformat(emit_fn emit, void* ctx, const char* format,
-                   va_list parameters) {
+int __vformat(fmt_emit emit, void* ctx, const char* format,
+              va_list parameters) {
     int written = 0;
 
     while (*format != '\0') {
@@ -382,7 +382,7 @@ int printf(const char* restrict format, ...) {
     o.n = 0;
     va_list parameters;
     va_start(parameters, format);
-    int n = vformat(put_emit, &o, format, parameters);
+    int n = __vformat(put_emit, &o, format, parameters);
     va_end(parameters);
     put_flush(&o);
     return n;
@@ -402,7 +402,7 @@ static void sn_emit(void* ctx, const char* s, size_t len) {
 
 int vsnprintf(char* buf, size_t size, const char* format, va_list parameters) {
     struct sn_ctx o = { buf, size, 0 };
-    int n = vformat(sn_emit, &o, format, parameters);
+    int n = __vformat(sn_emit, &o, format, parameters);
     if (size) {
         size_t end = (o.len < size) ? o.len : size - 1;
         buf[end] = '\0';
@@ -429,7 +429,7 @@ static void sp_emit(void* ctx, const char* s, size_t len) {
 
 int vsprintf(char* buf, const char* format, va_list parameters) {
     struct sp_ctx o = { buf, 0 };
-    int n = vformat(sp_emit, &o, format, parameters);
+    int n = __vformat(sp_emit, &o, format, parameters);
     buf[o.len] = '\0';
     return n;
 }

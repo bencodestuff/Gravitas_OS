@@ -58,6 +58,14 @@ def file_api(g):
 
 
 @test
+def stdio(g):
+    # The FILE* layer: buffered file I/O on the ramfs, fgets/fseek/ftell, the
+    # console streams, and the ENOENT / EROFS error paths.
+    g.shell("run stdiotest.elf")
+    g.wait_for("stdiotest: all checks pass")
+
+
+@test
 def timer_wakeup(g):
     g.shell("run timertest.elf")
     g.wait_for("timertest: PASS")
