@@ -1,21 +1,21 @@
 #include <gravity/canvas.h>
 #include <grv/syscall.h>
-#include <grv/text.h>
+#include <gravity/font.h>
 
-static struct grv_font g_font;
+static struct gravity_font g_font;
 static int g_font_ok = 0;
 static int g_font_tried = 0;
 
 int gravity_init(void) {
     if (!g_font_tried) {
         g_font_tried = 1;
-        g_font_ok = grv_font_load(&g_font, "/fonts/bizcat.psf");
+        g_font_ok = gravity_font_load(&g_font, "/fonts/bizcat.psf");
     }
     return g_font_ok;
 }
 
 int gravity_font_height(void) { return g_font_ok ? (int)g_font.height : 8; }
-int gravity_text_width_of(const char* s) { return grv_text_width(s); }
+int gravity_text_width_of(const char* s) { return gravity_font_width(s); }
 
 int gravity_canvas_init(struct gravity_canvas* c, int w, int h) {
     struct grv_surface_info si;
@@ -83,8 +83,8 @@ void gravity_border(struct gravity_canvas* c, int x, int y, int w, int h,
 void gravity_text(struct gravity_canvas* c, int x, int y, const char* s,
                   unsigned int fg) {
     if (!gravity_init()) return;
-    grv_text_draw(&g_font, c->px, c->w, c->w, c->h, x, y, s, fg);
-    gravity_invalidate(c, x, y, grv_text_width(s), (int)g_font.height);
+    gravity_font_draw(&g_font, c->px, c->w, c->w, c->h, x, y, s, fg);
+    gravity_invalidate(c, x, y, gravity_font_width(s), (int)g_font.height);
 }
 
 void gravity_cell(struct gravity_canvas* c, int x, int y, unsigned char ch,

@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <grv/syscall.h>
-#include <grv/text.h>
+#include <gravity/font.h>
 #include <grv/input.h>
 #include <grv/wm.h>
-#include <grv/image.h>
+#include <gravity/image.h>
 
 // wm — the Gravitas window manager (userland policy).
 //
@@ -53,7 +53,7 @@ static int   overlay_id = -1;
 static unsigned int* overlay_px = 0;
 static int   overlay_w = 0, overlay_h = 0;
 
-static struct grv_font font;
+static struct gravity_font font;
 static int   font_ok = 0;
 
 static Win   wins[MAXWIN];
@@ -404,16 +404,16 @@ static void launch(const char* prog) {
 }
 
 // --- wallpaper ------------------------------------------------------
-// Decode a picture (grv_image) and scale it to COVER the screen (crop the
+// Decode a picture (gravity_image) and scale it to COVER the screen (crop the
 // overflow) into an opaque full-screen surface at the bottom of the stack.
 
 static int load_wallpaper(const char* path, int sw, int sh) {
-    struct grv_image img;
-    if (grv_image_load(&img, path) != 0) return -1;
+    struct gravity_image img;
+    if (gravity_image_load(&img, path) != 0) return -1;
 
     struct grv_surface_info si;
     int sid = grv_surface_create((unsigned long)sw, (unsigned long)sh, &si);
-    if (sid < 0) { grv_image_free(&img); return -1; }
+    if (sid < 0) { gravity_image_free(&img); return -1; }
 
     // Cover: scale by the larger ratio, centre the overflow.
     unsigned long rx = ((unsigned long)sw << 16) / (unsigned long)img.w;
@@ -439,7 +439,7 @@ static int load_wallpaper(const char* path, int sw, int sh) {
         unsigned int* drow = px + (unsigned long)y * (unsigned long)sw;
         for (int x = 0; x < sw; x++) drow[x] = srow[colmap[x]];
     }
-    grv_image_free(&img);
+    gravity_image_free(&img);
     grv_surface_lower(sid); // behind every window
     return sid;
 }
@@ -754,7 +754,7 @@ int main(int argc, char** argv) {
 
     load_apps(); // the launcher menu's contents (from /apps)
 
-    font_ok = grv_font_load(&font, "/fonts/bizcat.psf");
+    font_ok = gravity_font_load(&font, "/fonts/bizcat.psf");
 
     struct grv_sysinfo si;
     grv_sysinfo(&si);

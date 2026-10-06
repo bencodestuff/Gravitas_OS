@@ -26,7 +26,7 @@
 #define CTRL(c)  ((c) - 'a' + 1)
 
 static struct gravity_app app;
-static struct gravity_text text;
+static struct gravity_buffer text;
 
 static char path[160] = "/tmp/untitled.txt";
 static char status[96];
@@ -87,7 +87,7 @@ static void update_title(void) {
 static int lines_between(int a, int b) {
     int n = 0, off = a;
     while (off < b) {
-        int e = gravity_text_line_end(&text, off);
+        int e = gravity_buffer_line_end(&text, off);
         if (e >= text.len) break;
         off = e + 1;
         n++;
@@ -96,11 +96,11 @@ static int lines_between(int a, int b) {
 }
 
 static void ensure_visible(void) {
-    int ls = gravity_text_line_start(&text, cursor);
-    while (top > ls) top = gravity_text_prev_line(&text, top);
+    int ls = gravity_buffer_line_start(&text, cursor);
+    while (top > ls) top = gravity_buffer_prev_line(&text, top);
     while (top < ls && lines_between(top, ls) >= rows)
-        top = gravity_text_next_line(&text, top);
-    int col = gravity_text_col(&text, cursor);
+        top = gravity_buffer_next_line(&text, top);
+    int col = gravity_buffer_col(&text, cursor);
     if (col < left) left = col;
     if (col >= left + cols) left = col - cols + 1;
     if (left < 0) left = 0;
@@ -119,7 +119,7 @@ static void edited(void) {
 }
 
 static void insert_text(const char* s, int n) {
-    if (gravity_text_insert(&text, cursor, s, n) != 0) {
+    if (gravity_buffer_insert(&text, cursor, s, n) != 0) {
         set_status("out of memory");
         return;
     }
@@ -129,21 +129,21 @@ static void insert_text(const char* s, int n) {
 
 static void backspace(void) {
     if (cursor <= 0) return;
-    gravity_text_erase(&text, cursor - 1, 1);
+    gravity_buffer_erase(&text, cursor - 1, 1);
     cursor--;
     edited();
 }
 
 static void delete_forward(void) {
     if (cursor >= text.len) return;
-    gravity_text_erase(&text, cursor, 1);
+    gravity_buffer_erase(&text, cursor, 1);
     edited();
 }
 
 static void insert_tab(void) {
-    int col = gravity_text_col(&text, cursor);
-    int n = GRAVITY_TEXT_TAB - (col % GRAVITY_TEXT_TAB);
-    char sp[GRAVITY_TEXT_TAB];
+    int col = gravity_buffer_col(&text, cursor);
+    int n = GRAVITY_BUFFER_TAB - (col % GRAVITY_BUFFER_TAB);
+    char sp[GRAVITY_BUFFER_TAB];
     for (int i = 0; i < n; i++) sp[i] = ' ';
     insert_text(sp, n);
 }
@@ -158,18 +158,18 @@ static void move_h(int d) {
 
 /* Move the caret 'n' lines (negative = up), holding the target column. */
 static void move_lines(int n) {
-    if (goal_col < 0) goal_col = gravity_text_col(&text, cursor);
+    if (goal_col < 0) goal_col = gravity_buffer_col(&text, cursor);
     while (n > 0) {
-        int ls = gravity_text_line_start(&text, cursor);
-        int t = gravity_text_next_line(&text, ls);
+        int ls = gravity_buffer_line_start(&text, cursor);
+        int t = gravity_buffer_next_line(&text, ls);
         if (t == ls) break;
-        cursor = gravity_text_offset_at_col(&text, t, goal_col);
+        cursor = gravity_buffer_offset_at_col(&text, t, goal_col);
         n--;
     }
     while (n < 0) {
-        int ls = gravity_text_line_start(&text, cursor);
+        int ls = gravity_buffer_line_start(&text, cursor);
         if (ls == 0) break;
-        cursor = gravity_text_offset_at_col(&text, gravity_text_prev_line(&text, ls), goal_col);
+        cursor = gravity_buffer_offset_at_col(&text, gravity_buffer_prev_line(&text, ls), goal_col);
         n++;
     }
     ensure_visible();
@@ -191,7 +191,7 @@ static void load(void) {
     char chunk[1024];
     long n;
     while ((n = grv_read_fd(fd, chunk, sizeof(chunk))) > 0) {
-        if (gravity_text_insert(&text, text.len, chunk, (int)n) != 0) {
+        if (gravity_buffer_insert(&text, text.len, chunk, (int)n) != 0) {
             set_status("out of memory");
             break;
         }
@@ -241,7 +241,7 @@ static int on_close(struct gravity_app* a) {
 /* --- drawing --- */
 
 static void draw_scrollbar(int track) {
-    int total = gravity_text_line_count(&text);
+    int total = gravity_buffer_line_count(&text);
     if (total <= rows) return;
     int x = W - SB_W;
     gravity_fill(&app.canvas, x, 0, SB_W, track, SB_BG);
@@ -260,12 +260,12 @@ static void draw_view(void) {
     for (int row = 0; row < rows; row++) {
         int y = row * g_ch;
         if (off > text.len) break;
-        int e = gravity_text_line_end(&text, off);
+        int e = gravity_buffer_line_end(&text, off);
 
         int col = 0;
         for (int i = off; i < e; i++) {
             int w = (text.buf[i] == '\t')
-                        ? GRAVITY_TEXT_TAB - (col % GRAVITY_TEXT_TAB) : 1;
+                        ? GRAVITY_BUFFER_TAB - (col % GRAVITY_BUFFER_TAB) : 1;
             int vcol = col - left;
             if (vcol >= 0 && vcol < cols) {
                 int x = vcol * CW;
@@ -283,7 +283,7 @@ static void draw_view(void) {
 
         // The caret draws on its own line, including the empty one.
         if (cursor >= off && cursor <= e) {
-            int ccol = gravity_text_col(&text, cursor) - left;
+            int ccol = gravity_buffer_col(&text, cursor) - left;
             if (ccol >= 0 && ccol < cols) {
                 unsigned char under = (cursor < e) ? (unsigned char)text.buf[cursor] : ' ';
                 gravity_cell(c, ccol * CW, y, under, BG, CURSOR);
@@ -311,8 +311,8 @@ static void draw_status(void) {
     }
 
     char buf[32];
-    int line = lines_between(0, gravity_text_line_start(&text, cursor)) + 1;
-    int col = gravity_text_col(&text, cursor) + 1;
+    int line = lines_between(0, gravity_buffer_line_start(&text, cursor)) + 1;
+    int col = gravity_buffer_col(&text, cursor) + 1;
     snprintf(buf, sizeof(buf), "%d:%d%s", line, col, modified ? " *" : "");
     gravity_text(c, W - MARGIN - gravity_text_width_of(buf), ty, buf, STAT_FG);
 }
@@ -333,11 +333,11 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         if (v == CTRL('s')) { save(); refresh(); return; }
         if (v == CTRL('q')) { try_quit(); return; }
         if (v == CTRL('a') || v == GRV_KEY_HOME) {
-            cursor = gravity_text_line_start(&text, cursor);
+            cursor = gravity_buffer_line_start(&text, cursor);
             goal_col = -1; ensure_visible(); refresh(); return;
         }
         if (v == CTRL('e') || v == GRV_KEY_END) {
-            cursor = gravity_text_line_end(&text, cursor);
+            cursor = gravity_buffer_line_end(&text, cursor);
             goal_col = -1; ensure_visible(); refresh(); return;
         }
         if (v == GRV_KEY_LEFT)  { move_h(-1); return; }
@@ -356,9 +356,9 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
 
     if (ev->type == GRV_EV_SCROLL) {
         int d = grv_scroll_delta(ev->b);
-        while (d > 0 && top > 0) { top = gravity_text_prev_line(&text, top); d--; }
+        while (d > 0 && top > 0) { top = gravity_buffer_prev_line(&text, top); d--; }
         while (d < 0) {
-            int t = gravity_text_next_line(&text, top);
+            int t = gravity_buffer_next_line(&text, top);
             if (t == top) break;
             top = t; d++;
         }
@@ -372,11 +372,11 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         if (row >= 0 && row < rows) {
             int off = top;
             for (int r = 0; r < row; r++) {
-                int e = gravity_text_line_end(&text, off);
+                int e = gravity_buffer_line_end(&text, off);
                 if (e >= text.len) { off = text.len; break; }
                 off = e + 1;
             }
-            cursor = gravity_text_offset_at_col(&text, off, col);
+            cursor = gravity_buffer_offset_at_col(&text, off, col);
             goal_col = -1;
             ensure_visible();
             refresh();
@@ -400,7 +400,7 @@ int main(int argc, char** argv) {
     if (rows < 1) rows = 1;
     if (cols < 1) cols = 1;
 
-    if (gravity_text_init(&text, 4096) != 0) {
+    if (gravity_buffer_init(&text, 4096) != 0) {
         printf("edit: out of memory\n");
         return 1;
     }

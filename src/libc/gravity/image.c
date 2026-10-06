@@ -1,4 +1,4 @@
-#include <grv/image.h>
+#include <gravity/image.h>
 #include <grv/syscall.h>
 #include <stdlib.h>
 
@@ -50,7 +50,7 @@ static unsigned char* read_file(const char* path, unsigned long* out_size) {
 }
 
 // BMP: 24- or 32-bit uncompressed, bottom-up (positive height) or top-down.
-static int decode_bmp(struct grv_image* img, const unsigned char* d,
+static int decode_bmp(struct gravity_image* img, const unsigned char* d,
                       unsigned long size) {
     if (size < 54 || d[0] != 'B' || d[1] != 'M') return -1;
 
@@ -89,7 +89,7 @@ static int decode_bmp(struct grv_image* img, const unsigned char* d,
     return 0;
 }
 
-int grv_image_load(struct grv_image* img, const char* path) {
+int gravity_image_load(struct gravity_image* img, const char* path) {
     img->px = 0;
     img->w = 0;
     img->h = 0;
@@ -107,14 +107,14 @@ int grv_image_load(struct grv_image* img, const char* path) {
     return rc;
 }
 
-void grv_image_free(struct grv_image* img) {
+void gravity_image_free(struct gravity_image* img) {
     if (img->px) free(img->px);
     img->px = 0;
     img->w = 0;
     img->h = 0;
 }
 
-int grv_image_supported(const char* path) {
+int gravity_image_supported(const char* path) {
     int n = 0;
     while (path[n]) n++;
     if (n < 4) return 0;

@@ -1,4 +1,5 @@
-#include <grv/text.h>
+#include <gravity/font.h>
+#include <grv/syscall.h>
 #include <stdlib.h>
 #include <stdint.h>
 
@@ -13,7 +14,7 @@ static uint32_t rd32(const unsigned char* d, int o) {
          | ((uint32_t)d[o + 3] << 24);
 }
 
-int grv_font_load(struct grv_font* f, const char* path) {
+int gravity_font_load(struct gravity_font* f, const char* path) {
     int fd = grv_open(path, GRV_O_RDONLY);
     if (fd < 0) return 0;
 
@@ -54,8 +55,9 @@ int grv_font_load(struct grv_font* f, const char* path) {
     return 1;
 }
 
-void grv_text_draw(const struct grv_font* f, unsigned int* px, int stride,
-                   int w, int h, int x, int y, const char* s, unsigned int fg) {
+void gravity_font_draw(const struct gravity_font* f, unsigned int* px,
+                       int stride, int w, int h, int x, int y, const char* s,
+                       unsigned int fg) {
     if (f == 0 || f->glyphs == 0) return;
     unsigned gh = f->height;
 

@@ -2,9 +2,9 @@
 #include <gravity/gravity.h>
 #include <grv/syscall.h>
 #include <grv/input.h>
-#include <grv/image.h>
+#include <gravity/image.h>
 
-// imageview — a basic image viewer built on the grv_image library.
+// imageview — a basic image viewer built on the gravity_image library.
 //
 // Opens argv[1] if given, otherwise the first picture in /Pictures, and
 // shows it scaled to fit the window. Left/Right step through the other
@@ -23,7 +23,7 @@ static const char* items[MAXI];
 static int  nimages = 0;
 static int  cur = 0;
 
-static struct grv_image img;
+static struct gravity_image img;
 static int have_img = 0;
 
 static const char* base_name(const char* p) {
@@ -38,8 +38,8 @@ static void show(int idx) {
     if (idx >= nimages) idx = 0;
     cur = idx;
 
-    if (have_img) { grv_image_free(&img); have_img = 0; }
-    if (grv_image_load(&img, items[cur]) == 0) have_img = 1;
+    if (have_img) { gravity_image_free(&img); have_img = 0; }
+    if (gravity_image_load(&img, items[cur]) == 0) have_img = 1;
     printf("imageview: %s (%d/%d)\n", items[cur], cur + 1, nimages);
 }
 
@@ -86,7 +86,7 @@ static void build_list(const char* start) {
             int k = 0;
             for (int i = 0; i < len && k < 79; i++) name[k++] = p[i];
             name[k] = '\0';
-            if (grv_image_supported(name)) {
+            if (gravity_image_supported(name)) {
                 int off = 0;
                 for (int i = 0; dir[i] && off < 180; i++) paths[nimages][off++] = dir[i];
                 if (off == 0 || paths[nimages][off - 1] != '/')
