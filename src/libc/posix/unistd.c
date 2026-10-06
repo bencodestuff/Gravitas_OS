@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <grv/syscall.h>
+#include "../stdio/stdio_io.h"   // the console read seam (it echoes)
 
 // Descriptors 0/1/2 are the console (see unistd.h); every other fd is a VFS
 // file, where the grv_ wrappers already report failure as -1 + errno.
@@ -8,10 +9,10 @@
 ssize_t read(int fd, void* buf, size_t count) {
     if (fd == STDIN_FILENO) {
         // The console has no EOF, so this reads until the newline or the count
-        // — a terminal's line discipline.
+        // — a terminal's line discipline. __stdio_getc echoes the input.
         char* p = (char*)buf;
         for (size_t i = 0; i < count; i++) {
-            p[i] = grv_getc();
+            p[i] = (char)__stdio_getc();
             if (p[i] == '\n') return (ssize_t)(i + 1);
         }
         return (ssize_t)count;

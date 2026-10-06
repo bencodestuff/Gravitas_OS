@@ -217,8 +217,22 @@ namespace Sched {
         if (t == nullptr) return;
 
         if (focus_task != -1) {
+            // The foreground job owns the console: when the focused task is
+            // blocked on a child — the shell running `lua`, say — the child is
+            // the reader, so the key goes to it rather than to the parent
+            // (which is not reading; it is waiting for the child to exit).
+            int reader = focus_task;
+            Task* f = ready_queue;
             do {
-                if (t->getc_waiting && t->id == focus_task) {
+                if (f->id == focus_task) {
+                    if (f->waiting_on >= 0) reader = f->waiting_on;
+                    break;
+                }
+                f = f->next;
+            } while (f != ready_queue);
+
+            do {
+                if (t->getc_waiting && t->id == reader) {
                     t->state = READY;
                     return;
                 }

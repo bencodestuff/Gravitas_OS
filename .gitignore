@@ -28,3 +28,7 @@ __pycache__/
 files/Pictures
 
 test_artifacts/
+
+# Third-party sources: fetched by configure.py, not committed (see third_party/README.md)
+third_party/lua-*/
+third_party/*.tar.gz

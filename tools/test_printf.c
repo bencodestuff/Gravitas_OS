@@ -75,6 +75,11 @@ int main(void) {
     CMP("%.14g", 1.5);
     CMP("%.14g", 0.1);
     CMP("%.14g", 3.141592653589793);
+    /* Trailing zeros are stripped by %g — the length must shrink with them
+       (Lua's 2^10 prints as "1024", not "1024" plus a stale tail). */
+    CMP("%.14g", 1024.0);
+    CMP("%.14g", 100000.0);
+    CMP("%.14g", 0.0001);
     CMP("%.3g", 12345.0);
     CMP("%g", 0.0001);
     CMP("%g", 0.00001);

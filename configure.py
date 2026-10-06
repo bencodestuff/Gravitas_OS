@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import hashlib
 import subprocess
 import shutil
 
@@ -9,6 +10,20 @@ PROJECT_NAME = "gravitas"
 KERNEL_FILE = f"bin/{PROJECT_NAME}.elf"
 COMPILER = "clang++"
 LINKER = "ld.lld"
+
+# Third-party Lua: fetched and checksum-verified at configure time, never
+# committed (see third_party/README.md). Built into bin/lua.elf.
+LUA_VERSION = "5.4.9"
+LUA_SHA256  = "2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6"
+LUA_DIR     = f"third_party/lua-{LUA_VERSION}"
+LUA_SRC     = f"{LUA_DIR}/src"
+LUA_CORE = ["lapi", "lcode", "lctype", "ldebug", "ldo", "ldump", "lfunc",
+            "lgc", "llex", "lmem", "lobject", "lopcodes", "lparser",
+            "lstate", "lstring", "ltable", "ltm", "lundump", "lvm", "lzio"]
+LUA_LIB  = ["lauxlib", "lbaselib", "lcorolib", "ldblib", "liolib",
+            "lmathlib", "loadlib", "loslib", "lstrlib", "ltablib",
+            "lutf8lib", "linit"]
+LUA_SOURCES = LUA_CORE + LUA_LIB + ["lua"]   # lua.c = the standalone interpreter
 
 # Programs that exist to exercise the platform rather than to be used by a
 # user. They ship under /bin/tests so `ls /bin` reads like a real system;
@@ -92,6 +107,23 @@ def ensure_limine():
     run_command("make", cwd="limine")
     shutil.copy("limine/limine.h", "src/limine.h")
 
+def ensure_lua():
+    """Fetch Lua once, checksum-verified. Not committed (third_party/README.md)."""
+    if os.path.exists(f"{LUA_SRC}/lua.c"):
+        return
+    print(f"--- [Setup] Lua {LUA_VERSION} not found. Fetching... ---")
+    os.makedirs("third_party", exist_ok=True)
+    tgz = f"third_party/lua-{LUA_VERSION}.tar.gz"
+    run_command(f"curl -sSL -o {tgz} https://www.lua.org/ftp/lua-{LUA_VERSION}.tar.gz")
+    with open(tgz, "rb") as f:
+        got = hashlib.sha256(f.read()).hexdigest()
+    if got != LUA_SHA256:
+        os.remove(tgz)
+        print(f"Error: Lua {LUA_VERSION} checksum mismatch:\n  got  {got}\n  want {LUA_SHA256}")
+        sys.exit(1)
+    run_command(f"tar xzf {tgz} -C third_party")
+    os.remove(tgz)
+
 def find_sources(directory, extensions):
     sources = []
     for root, dirs, files in os.walk(directory):
@@ -104,6 +136,7 @@ def find_sources(directory, extensions):
 
 def main():
     ensure_limine()
+    ensure_lua()
     
     cpp_sources = find_sources("src", [".cpp"])
     asm_sources = find_sources("src", [".S"])
@@ -163,6 +196,25 @@ def main():
         ninja.write(f"  deps = gcc\n")
         ninja.write(f"  description = LIBC-CXX $out\n\n")
 
+        # Third-party Lua: compiled with our userland flags and configured
+        # entirely with -D (the vendored tree stays pristine). No POSIX,
+        # dlopen or readline; modules come from /lua/ in the image.
+        lua_cflags = [f for f in USER_CFLAGS if f not in ("-Wall", "-Wextra")] + [
+            "-std=c11",
+            f"-I{LUA_SRC}",
+            "-DLUA_PATH_DEFAULT='\"/lua/?.lua;/lua/?/init.lua\"'",
+            "-DLUA_CPATH_DEFAULT='\"./?.so\"'",
+        ]
+        ninja.write(f"rule lua_c\n")
+        ninja.write(f"  command = clang {' '.join(lua_cflags)} -MMD -MF $out.d -c $in -o $out\n")
+        ninja.write(f"  depfile = $out.d\n")
+        ninja.write(f"  deps = gcc\n")
+        ninja.write(f"  description = LUA-C $out\n\n")
+
+        ninja.write(f"rule lua_link\n")
+        ninja.write(f"  command = {COMPILER} {' '.join(USER_CFLAGS + ['-std=c++20', '-fno-rtti', '-fno-exceptions'])} {user_link_flags} $in -o $out\n")
+        ninja.write(f"  description = LINK $out\n\n")
+
         ninja.write(f"rule iso\n")
         ninja.write(f"  command = ./build_iso.sh\n")
         ninja.write(f"  description = ISO gravitas.iso\n\n")
@@ -186,6 +238,11 @@ def main():
 
         crt0_obj = "obj/libc/src_libc_cxx_crt0.cpp.o"
         ninja.write(f"build {crt0_obj}: libc_cxx {libc_dir}/cxx/crt0.cpp\n")
+
+        # A second startup for third-party C programs: same as crt0.cpp but it
+        # calls an unmangled C main (C++ mangles its main on this target).
+        crt0_c_obj = "obj/libc/src_libc_cxx_crt0_c.cpp.o"
+        ninja.write(f"build {crt0_c_obj}: libc_cxx {libc_dir}/cxx/crt0_c.cpp\n")
 
         # --- THE FIX IS HERE ---
         # Note the spaces inside the quotes for 'command', 'description', and 'pool'
@@ -256,6 +313,18 @@ def main():
             ninja.write(f"build {out}: userelf {src} {crt0_obj} {' '.join(libc_objects)}\n")
             ninja.write(f"  base = {user_bases[stem]:#x}\n")
             user_elfs.append(out)
+
+        # Lua: its own load base, continuing the allocation above. The objects
+        # are compiled once and linked with crt0 + the shared libc objects.
+        lua_objs = []
+        for name in LUA_SOURCES:
+            obj = f"obj/lua/{name}.o"
+            ninja.write(f"build {obj}: lua_c {LUA_SRC}/{name}.c\n")
+            lua_objs.append(obj)
+
+        ninja.write(f"build bin/lua.elf: lua_link {crt0_c_obj} {' '.join(lua_objs)} {' '.join(libc_objects)}\n")
+        ninja.write(f"  base = {next_base:#x}\n")
+        user_elfs.append("bin/lua.elf")
 
         # The ISO needs the kernel AND every userland ELF (packed into the tar)
         ninja.write(f"build iso: iso {KERNEL_FILE} {' '.join(user_elfs)}\n")

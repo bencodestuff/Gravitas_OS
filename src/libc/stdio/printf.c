@@ -308,6 +308,7 @@ int __vformat(fmt_emit emit, void* ctx, const char* format,
                         n += fmt_fixed(out + n, v, fp);
                     }
                     strip_zeros(out + start);
+                    n = (int)strlen(out);   // strip_zeros shortened it
                 }
             }
             numeric = true;

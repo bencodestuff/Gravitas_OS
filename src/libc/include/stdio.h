@@ -7,6 +7,10 @@
 
 #define EOF (-1)
 
+/* tmpnam() needs at most this many bytes, and can produce TMP_MAX names. */
+#define L_tmpnam 32
+#define TMP_MAX  1000
+
 /* setvbuf buffer modes. */
 #define _IOFBF 0
 #define _IOLBF 1

@@ -33,7 +33,7 @@ namespace Sched {
 
     // Per-task user stack: 8 pages (32 KB). Big enough for frames that hold
     // a few KB of scratch (a WM keeping surface records, a shell's buffers).
-    constexpr uint64_t USER_STACK_PAGES = 8;
+    constexpr uint64_t USER_STACK_PAGES = 32;
 
     // Bounded copy into a fixed-size name field: a program name can be longer
     // than the field (and `new Task` leaves it uninitialized otherwise).

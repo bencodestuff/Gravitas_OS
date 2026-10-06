@@ -6,6 +6,9 @@
 
 __BEGIN_DECLS
 
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+
 __attribute__((__noreturn__))
 void abort(void);
 
