@@ -3,7 +3,7 @@
 #include <grv/syscall.h>
 
 // filetest — exercises seek/stat/truncate/create/remove on the writable
-// ramfs (/tmp). Prints PASS/FAIL for the smoke harness.
+// ramfs (/tmp). Prints PASS/FAIL for the test harness.
 
 static int fails = 0;
 static void check(int ok, const char* what) {

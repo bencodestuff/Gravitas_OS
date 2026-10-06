@@ -7,7 +7,7 @@
 // around, and destroys it. Visually: the window appears and moves, and
 // each move restores the text/background it uncovered (no ghosting, no
 // stale pixels). It samples the compositor's pixel counter around ONLY the
-// surface operations (no console output in between), so the smoke harness
+// surface operations (no console output in between), so the test harness
 // can assert the window repainted far less than a full-screen repaint per
 // operation regardless of how full the screen is.
 

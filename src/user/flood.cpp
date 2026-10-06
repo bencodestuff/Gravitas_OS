@@ -4,7 +4,7 @@
 // flood — prints 150 numbered lines, forcing many scroll events on any
 // realistic console (the 8x16 font gives ~50 rows on this framebuffer).
 // The visual test: the console keeps its last screenful and stays
-// responsive; the smoke harness guards that all 150 lines go through.
+// responsive; the test suite guards that all 150 lines go through.
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;

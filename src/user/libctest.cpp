@@ -7,7 +7,7 @@
 #include <grv/syscall.h>
 
 // libctest — exercises the libc basics (string, formatted output, allocator,
-// parsing, sort). Prints PASS/FAIL for the smoke harness.
+// parsing, sort). Prints PASS/FAIL for the test harness.
 
 static int fails = 0;
 

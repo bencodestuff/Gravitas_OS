@@ -6,7 +6,7 @@
 
 // popuptest — exercises a real popup: click the window (or any key) to open
 // an undecorated, on-top surface beside it; a key (or a click in the popup)
-// closes it. Prints markers the smoke asserts on.
+// closes it. Prints markers the test suite asserts on.
 
 static struct gravity_app app;
 
@@ -58,7 +58,7 @@ static void on_draw(struct gravity_app* a) {
                  a->popup_open ? "popup open" : "click for popup", 0xFFFFFFFF);
 }
 
-// Open the popup on the first loop so the smoke can drive it with no input.
+// Open the popup on the first loop so the test suite can drive it with no input.
 static void on_poll(struct gravity_app* a) {
     (void)a;
     static int started = 0;

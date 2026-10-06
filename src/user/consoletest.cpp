@@ -5,7 +5,7 @@
 // program, bind its console to us, send it a line, and confirm the reply
 // arrives here instead of the kernel console. This covers both directions:
 // owner -> task (CONSOLE_WRITE feeding GETC) and task -> owner (output
-// captured by CONSOLE_READ). Prints PASS/FAIL for the smoke harness.
+// captured by CONSOLE_READ). Prints PASS/FAIL for the test harness.
 
 static int contains(const char* hay, const char* needle) {
     for (const char* h = hay; *h; h++) {

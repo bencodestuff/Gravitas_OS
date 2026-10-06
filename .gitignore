@@ -21,6 +21,9 @@ limine/
 limine-cd-efi.bin
 limine.sys
 
+# Python (test harness)
+__pycache__/
+
 # Images
 files/Pictures
 

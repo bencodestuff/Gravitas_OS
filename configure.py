@@ -201,15 +201,17 @@ def main():
         ninja.write(f"  description = RUN gravitas.iso\n")
         ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
-        ninja.write(f"rule smoke\n")
-        ninja.write(f"  command = ./smoke_test.sh\n")
-        ninja.write(f"  description = SMOKE TEST\n")
-        ninja.write(f"  pool = console\n\n")
-
         # Host unit tests: the libc pieces that run natively (no QEMU).
         ninja.write(f"rule check\n")
         ninja.write(f"  command = ./tests/host/run.sh\n")
         ninja.write(f"  description = HOST TESTS\n")
+        ninja.write(f"  pool = console\n\n")
+
+        # Guest test groups: tests/run.py drives each one through its own QEMU
+        # boot (one boot per group, so a wedged group cannot hide the rest).
+        ninja.write(f"rule testgroups\n")
+        ninja.write(f"  command = ./tests/run.py $select\n")
+        ninja.write(f"  description = TEST GROUPS\n")
         ninja.write(f"  pool = console\n\n")
 
         ninja.write(f"rule clean\n")
@@ -257,13 +259,18 @@ def main():
         # The ISO needs the kernel AND every userland ELF (packed into the tar)
         ninja.write(f"build iso: iso {KERNEL_FILE} {' '.join(user_elfs)}\n")
         ninja.write(f"build run: run iso\n")
-        ninja.write(f"build test: smoke iso\n")
+        ninja.write(f"build test: testgroups iso check\n")
+        ninja.write(f"  select =\n")
+        ninja.write(f"build test-kernel: testgroups iso\n")
+        ninja.write(f"  select = kernel\n")
+        ninja.write(f"build test-ui: testgroups iso\n")
+        ninja.write(f"  select = ui\n")
         ninja.write(f"build check: check\n")
         ninja.write(f"build clean: clean\n")
 
         ninja.write(f"\ndefault {KERNEL_FILE}\n")
 
-    print("Configuration complete. Run 'ninja run' to boot, 'ninja test' to smoke-test.")
+    print("Configuration complete. Run 'ninja run' to boot, 'ninja check' or 'ninja test' to test.")
 
 if __name__ == "__main__":
     main()
