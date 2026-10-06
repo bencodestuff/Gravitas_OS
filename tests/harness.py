@@ -297,6 +297,11 @@ class Guest:
         self.cmd("sendkey alt-" + name)
         time.sleep(self.PACE)
 
+    def chord(self, *keys):
+        """A modifier chord, e.g. chord("ctrl", "shift", "c")."""
+        self.cmd("sendkey " + "-".join(keys))
+        time.sleep(self.PACE)
+
     # --- monitor: pointer ----------------------------------------------
 
     def move_to(self, x, y, step=200):

@@ -146,6 +146,13 @@ task's **foreground job** — the task it is blocked on (a foreground `SPAWN` or
 to the bytes it injects, so a terminal that forwards Ctrl+C to its hosted shell
 makes it work end to end; the kernel console applies it to the focused task.
 
+### The clipboard
+
+There is no clipboard syscall: it is a file (`/tmp/.clipboard`, see
+`<grv/clipboard.h>`) that any app can read and write, and Ctrl+Shift+C /
+Ctrl+Shift+V is the convention for using it. The Shift is what separates the
+chord from the interrupt key, so the keyboard keeps the letter intact for it.
+
 ## Structures
 
 Layouts are shared with `grv/syscall.h`; on x86_64 LP64 every field is 8
@@ -293,7 +300,9 @@ working for it.
 
 - **Key values**: printable ASCII as-is; specials above ASCII
   (`GRV_KEY_ESCAPE` 0x100, `GRV_KEY_UP/DOWN/LEFT/RIGHT` 0x101–0x104).
-  Ctrl+letter arrives as its control code (^C = 3) with `GRV_MOD_CTRL` set.
+  Ctrl+letter arrives as its control code (^C = 3) with `GRV_MOD_CTRL` set —
+  **except** Ctrl+Shift+letter, which keeps the letter (uppercase) so an app can
+  tell Ctrl+Shift+C (copy) from Ctrl+C (interrupt).
 - **Modifiers**: `GRV_MOD_SHIFT/CTRL/ALT/CAPS` (1/2/4/8).
 - **Buttons**: `GRV_BTN_LEFT/RIGHT/MIDDLE` (1/2/4).
 

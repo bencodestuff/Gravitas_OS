@@ -2,6 +2,7 @@
 #include <gravity/gravity.h>
 #include <grv/syscall.h>
 #include <grv/input.h>
+#include <grv/clipboard.h>
 
 // term — the Gravitas terminal: a Gravity text grid that hosts the userland
 // shell. The kernel console endpoint carries the shell's stdio here (see the
@@ -93,6 +94,20 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         return;
     }
     if (shell_pid < 0) return;
+
+    // Ctrl+Shift+V pastes the file clipboard into the hosted shell's stdin —
+    // the same path as typing, so a pasted command runs.
+    if ((ev->b & GRV_MOD_CTRL) && (ev->b & GRV_MOD_SHIFT) &&
+        (v == 'V' || v == 'v')) {
+        static char buf[GRV_CLIPBOARD_MAX];
+        int n = grv_clip_paste(buf, (int)sizeof(buf));
+        if (n > 0) {
+            gravity_term_snap_bottom(&term);
+            grv_console_write(shell_pid, buf, (unsigned long)n);
+            gravity_refresh(a);
+        }
+        return;
+    }
 
     // Everything else is a byte for the hosted shell's stdin. Typing snaps
     // the scrollback back to the live screen.

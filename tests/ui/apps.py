@@ -59,6 +59,35 @@ def editor(g):
 
 
 @test
+def editor_selection(g):
+    # The selection + the file clipboard: Shift+Home selects the line,
+    # Ctrl+Shift+C copies it, Ctrl+Shift+V pastes it at the caret. The Shift is
+    # what keeps Ctrl+Shift+C apart from Ctrl+C (the interrupt key).
+    g.shell("bg edit.elf /seltest.txt")
+    g.wait_for(r"window #[0-9]+ 'edit")
+    g.wait_for(r"wm: title #[0-9]+ 'edit: seltest\.txt'")
+    w = g.await_window("edit")
+
+    n = g.count("wm: focus task")
+    g.click_title(w)
+    g.wait_more("wm: focus task", n + 1)
+
+    g.type("hello")
+    g.chord("shift", "home")         # anchor at the caret, move to line start
+    g.chord("ctrl", "shift", "c")    # copy the selection
+    g.key("end")                     # caret to the end (drops the selection)
+    g.chord("ctrl", "shift", "v")    # paste it
+    g.key("ret")                     # a newline, so cat's output is its own line
+    g.ctrl("s")
+    g.wait_for(r"edit: saved /seltest\.txt \(11 bytes\)")
+    g.ctrl("q")
+    g.wait_window_gone("edit")
+
+    g.shell("cat /seltest.txt")
+    g.wait_for(r"^hellohello$")      # copied once, pasted once
+
+
+@test
 def launcher_menu(g):
     before = os.path.join(g.art, "menu_before.ppm")
     after = os.path.join(g.art, "menu_after.ppm")
@@ -194,6 +223,23 @@ def terminal_lua(g):
 
     g.ctrl("c")
     g.wait_for(r"Task 'lua\.elf' (terminated \(killed\)|exited)")
+
+
+@test
+def terminal_paste(g):
+    # The terminal pastes the file clipboard into its hosted shell's stdin, the
+    # same path as typing — so a pasted command runs. Focus is the launched
+    # terminal from the tests above.
+    term = g.await_window("term")
+    g.click_title(term)
+
+    # Put a command in the clipboard (Lua writes the file for us).
+    g.shell("run lua.elf -e io.open('/tmp/.clipboard','w'):write('ls\\n')")
+    g.wait_for(r"\[shell\] program finished")
+
+    n = g.count(r"User task 'ls\.elf' created")
+    g.chord("ctrl", "shift", "v")   # paste "ls\n" -> the shell runs it
+    g.wait_count(r"User task 'ls\.elf' created", n + 1)
 
 
 @test

@@ -5,15 +5,20 @@
 #include <gravity/gravity.h>
 #include <grv/syscall.h>
 #include <grv/input.h>
+#include <grv/clipboard.h>
 
 // edit — a text editor built on Gravity.
 //
 // A viewport over a gravity_text buffer. Arrow keys, Home/End, PageUp/
 // PageDown and the wheel move the caret; printable keys, Enter, Tab (spaces
 // to the next stop), Backspace and Delete edit; clicking places the caret.
-// Ctrl+S saves, Ctrl+Q quits — and the WM's close box goes through the same
-// unsaved-changes check (the app vetoes once, then discards, which is what
-// Gravity's cooperative-close protocol is for).
+// Shift with a movement key, or a mouse drag, makes a selection. Ctrl+S saves,
+// Ctrl+Q quits — and the WM's close box goes through the same unsaved-changes
+// check (the app vetoes once, then discards, which is what Gravity's
+// cooperative-close protocol is for).
+//
+// Ctrl+Shift+C/X/V copy, cut and paste through the file clipboard
+// (<grv/clipboard.h>); the Shift is what distinguishes them from Ctrl+C.
 //
 // The title tracks the file name and a trailing '*' while modified.
 
@@ -31,6 +36,7 @@ static struct gravity_buffer text;
 static char path[160] = "/tmp/untitled.txt";
 static char status[96];
 static int  cursor = 0;
+static int  sel = -1;       /* selection anchor, -1 = no selection */
 static int  top = 0;        /* byte offset of the first visible line */
 static int  left = 0;       /* first visible display column */
 static int  goal_col = -1;  /* target column while moving vertically */
@@ -44,6 +50,8 @@ static int  stat_h = 22;
 static const unsigned int BG      = 0xFF1E1E2E; // base
 static const unsigned int FG      = 0xFFCDD6F4; // text
 static const unsigned int CURSOR  = 0xFF89B4FA; // blue
+static const unsigned int SEL_BG  = 0xFF585B70; // surface2
+static const unsigned int SEL_FG  = 0xFFCDD6F4; // text
 static const unsigned int STAT_BG = 0xFF313244; // surface0
 static const unsigned int STAT_FG = 0xFFA6ADC8; // subtext0
 static const unsigned int SB_BG   = 0xFF181825; // mantle
@@ -106,6 +114,14 @@ static void ensure_visible(void) {
     if (left < 0) left = 0;
 }
 
+/* --- selection --- */
+
+/* The selection is [sel_lo, sel_hi): the anchor 'sel' and the caret, either
+   order. has_sel() is false for a bare anchor (a click that never dragged). */
+static int sel_lo(void) { return (sel < cursor) ? sel : cursor; }
+static int sel_hi(void) { return (sel < cursor) ? cursor : sel; }
+static int has_sel(void) { return sel >= 0 && sel != cursor; }
+
 /* --- editing --- */
 
 static void edited(void) {
@@ -127,7 +143,20 @@ static void insert_text(const char* s, int n) {
     edited();
 }
 
+/* Insert 's' at the caret, replacing the selection if there is one. */
+static void replace_sel(const char* s, int n) {
+    if (has_sel()) {
+        int lo = sel_lo();
+        gravity_buffer_erase(&text, lo, sel_hi() - lo);
+        cursor = lo;
+        sel = -1;
+    }
+    if (n > 0) { insert_text(s, n); return; }
+    edited();
+}
+
 static void backspace(void) {
+    if (has_sel()) { replace_sel(0, 0); return; }
     if (cursor <= 0) return;
     gravity_buffer_erase(&text, cursor - 1, 1);
     cursor--;
@@ -135,6 +164,7 @@ static void backspace(void) {
 }
 
 static void delete_forward(void) {
+    if (has_sel()) { replace_sel(0, 0); return; }
     if (cursor >= text.len) return;
     gravity_buffer_erase(&text, cursor, 1);
     edited();
@@ -145,10 +175,59 @@ static void insert_tab(void) {
     int n = GRAVITY_BUFFER_TAB - (col % GRAVITY_BUFFER_TAB);
     char sp[GRAVITY_BUFFER_TAB];
     for (int i = 0; i < n; i++) sp[i] = ' ';
-    insert_text(sp, n);
+    replace_sel(sp, n);
 }
 
-static void move_h(int d) {
+/* --- clipboard (Ctrl+Shift+C/X/V; a file, see <grv/clipboard.h>) --- */
+
+static void copy_sel(void) {
+    if (!has_sel()) { set_status("nothing selected"); refresh(); return; }
+    int lo = sel_lo();
+    int n = sel_hi() - lo;
+    if (grv_clip_copy(text.buf + lo, n) != 0) {
+        set_status("copy failed");
+        refresh();
+        return;
+    }
+    snprintf(status, sizeof(status), "copied %d bytes", n);
+    refresh();
+}
+
+static void cut_sel(void) {
+    if (!has_sel()) { set_status("nothing selected"); refresh(); return; }
+    int lo = sel_lo();
+    int n = sel_hi() - lo;
+    if (grv_clip_copy(text.buf + lo, n) != 0) {
+        set_status("cut failed");
+        refresh();
+        return;
+    }
+    gravity_buffer_erase(&text, lo, n);
+    cursor = lo;
+    sel = -1;
+    edited();
+    snprintf(status, sizeof(status), "cut %d bytes", n);
+    refresh();
+}
+
+static void paste(void) {
+    static char buf[GRV_CLIPBOARD_MAX];
+    int n = grv_clip_paste(buf, (int)sizeof(buf));
+    if (n <= 0) { set_status("clipboard empty"); refresh(); return; }
+    replace_sel(buf, n);
+    snprintf(status, sizeof(status), "pasted %d bytes", n);
+    refresh();
+}
+
+/* A shifted movement extends the selection from the current caret; an
+   unshifted one drops it. */
+static void anchor_for(int shift) {
+    if (shift) { if (sel < 0) sel = cursor; }
+    else sel = -1;
+}
+
+static void move_h(int d, int shift) {
+    anchor_for(shift);
     if (d < 0 && cursor > 0) cursor--;
     else if (d > 0 && cursor < text.len) cursor++;
     goal_col = -1;
@@ -157,7 +236,8 @@ static void move_h(int d) {
 }
 
 /* Move the caret 'n' lines (negative = up), holding the target column. */
-static void move_lines(int n) {
+static void move_lines(int n, int shift) {
+    anchor_for(shift);
     if (goal_col < 0) goal_col = gravity_buffer_col(&text, cursor);
     while (n > 0) {
         int ls = gravity_buffer_line_start(&text, cursor);
@@ -181,6 +261,7 @@ static void move_lines(int n) {
 static void load(void) {
     text.len = 0;
     cursor = 0; top = 0; left = 0; goal_col = -1;
+    sel = -1;
     modified = 0; quit_asked = 0;
 
     int fd = grv_open(path, GRV_O_RDONLY);
@@ -253,6 +334,21 @@ static void draw_scrollbar(int track) {
 }
 
 static int sb_drag = 0;   // dragging the scrollbar thumb
+static int mouse_held = 0; // the left button was down on the previous event
+
+/* The buffer offset under a canvas point, or -1 if outside the text area. */
+static int offset_at(int mx, int my) {
+    int row = my / g_ch;
+    if (row < 0 || row >= rows) return -1;
+    int col = mx / CW + left;
+    int off = top;
+    for (int r = 0; r < row; r++) {
+        int e = gravity_buffer_line_end(&text, off);
+        if (e >= text.len) { off = text.len; break; }
+        off = e + 1;
+    }
+    return gravity_buffer_offset_at_col(&text, off, col);
+}
 
 // Map a point in the scrollbar strip to the first visible line, centring the
 // thumb on it (so a click jumps and a held drag follows).
@@ -284,6 +380,9 @@ static void draw_view(void) {
     struct gravity_canvas* c = &app.canvas;
     gravity_clear(c, BG);
 
+    int slo = has_sel() ? sel_lo() : -1;
+    int shi = has_sel() ? sel_hi() : -1;
+
     int off = top;
     for (int row = 0; row < rows; row++) {
         int y = row * g_ch;
@@ -298,11 +397,14 @@ static void draw_view(void) {
             if (vcol >= 0 && vcol < cols) {
                 int x = vcol * CW;
                 unsigned char gc = (unsigned char)text.buf[i];
+                int isel = (slo >= 0 && i >= slo && i < shi);
+                unsigned int bg = isel ? SEL_BG : BG;
+                unsigned int fg = isel ? SEL_FG : FG;
                 if (gc == '\t') {
                     for (int k = 0; k < w && vcol + k < cols; k++)
-                        gravity_fill(c, x + k * CW, y, CW, g_ch, BG);
+                        gravity_fill(c, x + k * CW, y, CW, g_ch, bg);
                 } else if (gc >= 32 && gc < 127) {
-                    gravity_cell(c, x, y, gc, FG, BG);
+                    gravity_cell(c, x, y, gc, fg, bg);
                 }
             }
             col += w;
@@ -358,27 +460,41 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
 
     if (ev->type == GRV_EV_KEY) {
         long v = ev->a;
+        int mods = (int)ev->b;
+        int shift = (mods & GRV_MOD_SHIFT) != 0;
+
+        // Ctrl+Shift+<letter>: the clipboard chords. The kernel leaves the
+        // letter intact (and uppercase) when Shift is held, so this cannot be
+        // confused with Ctrl+C, which stays the interrupt key.
+        if ((mods & GRV_MOD_CTRL) && shift) {
+            if (v == 'C') { copy_sel(); return; }
+            if (v == 'X') { cut_sel(); return; }
+            if (v == 'V') { paste(); return; }
+        }
+
         if (v == CTRL('s')) { save(); refresh(); return; }
         if (v == CTRL('q')) { try_quit(); return; }
         if (v == CTRL('a') || v == GRV_KEY_HOME) {
+            anchor_for(shift);
             cursor = gravity_buffer_line_start(&text, cursor);
             goal_col = -1; ensure_visible(); refresh(); return;
         }
         if (v == CTRL('e') || v == GRV_KEY_END) {
+            anchor_for(shift);
             cursor = gravity_buffer_line_end(&text, cursor);
             goal_col = -1; ensure_visible(); refresh(); return;
         }
-        if (v == GRV_KEY_LEFT)  { move_h(-1); return; }
-        if (v == GRV_KEY_RIGHT) { move_h(1); return; }
-        if (v == GRV_KEY_UP)    { move_lines(-1); return; }
-        if (v == GRV_KEY_DOWN)  { move_lines(1); return; }
-        if (v == GRV_KEY_PAGEUP)   { move_lines(-(rows - 1)); return; }
-        if (v == GRV_KEY_PAGEDOWN) { move_lines(rows - 1); return; }
+        if (v == GRV_KEY_LEFT)  { move_h(-1, shift); return; }
+        if (v == GRV_KEY_RIGHT) { move_h(1, shift); return; }
+        if (v == GRV_KEY_UP)    { move_lines(-1, shift); return; }
+        if (v == GRV_KEY_DOWN)  { move_lines(1, shift); return; }
+        if (v == GRV_KEY_PAGEUP)   { move_lines(-(rows - 1), shift); return; }
+        if (v == GRV_KEY_PAGEDOWN) { move_lines(rows - 1, shift); return; }
         if (v == GRV_KEY_DELETE)   { delete_forward(); return; }
-        if (v == '\n') { insert_text("\n", 1); return; }
+        if (v == '\n') { replace_sel("\n", 1); return; }
         if (v == '\b') { backspace(); return; }
         if (v == '\t') { insert_tab(); return; }
-        if (v >= 32 && v < 127) { char ch2 = (char)v; insert_text(&ch2, 1); return; }
+        if (v >= 32 && v < 127) { char ch2 = (char)v; replace_sel(&ch2, 1); return; }
         return;
     }
 
@@ -404,25 +520,27 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         // arriving even if it leaves the strip.
         if (held && (sb_drag || mx >= W - SB_W)) {
             sb_drag = 1;
+            mouse_held = 1;
             scrollbar_drag_to(my);
             return;
         }
-        if (!held) { sb_drag = 0; return; }
-
-        int row = my / g_ch;
-        int col = mx / CW + left;
-        if (row >= 0 && row < rows) {
-            int off = top;
-            for (int r = 0; r < row; r++) {
-                int e = gravity_buffer_line_end(&text, off);
-                if (e >= text.len) { off = text.len; break; }
-                off = e + 1;
-            }
-            cursor = gravity_buffer_offset_at_col(&text, off, col);
-            goal_col = -1;
-            ensure_visible();
-            refresh();
+        if (!held) {
+            sb_drag = 0;
+            mouse_held = 0;
+            if (sel >= 0 && sel == cursor) sel = -1; // a click, not a drag
+            return;
         }
+
+        // Press or drag inside the text. The press sets the anchor, so a drag
+        // from it selects; a drag on its own keeps the anchor and moves the
+        // caret, which is what extends the selection.
+        int pos = offset_at(mx, my);
+        if (pos < 0) return;
+        if (!mouse_held) { mouse_held = 1; sel = pos; }
+        cursor = pos;
+        goal_col = -1;
+        ensure_visible();
+        refresh();
         return;
     }
 }

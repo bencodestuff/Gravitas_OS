@@ -161,8 +161,9 @@ namespace Keyboard {
             bool shift = shift_left || shift_right;
             char c = shift ? scan_set_1_shift[code] : scan_set_1[code];
             if (c == 0) return;
-            // Caps lock flips LETTER case only: uppercase iff shift XOR caps.
-            if (is_letter(c) && (shift != caps_lock)) {
+            // Caps lock flips LETTER case only. The table already gives the
+            // shifted case, so caps toggles it — uppercase iff shift XOR caps.
+            if (is_letter(c) && caps_lock) {
                 c = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c - 'A' + 'a');
             }
             if (c == 27) value = Input::KEY_ESCAPE;
@@ -180,8 +181,10 @@ namespace Keyboard {
                       | (caps_lock ? Input::MOD_CAPS : 0);
 
         // Ctrl+letter -> the control code (a terminal wants ^C, ^D, ...).
-        if (ctrl && value >= 'a' && value <= 'z') value = value - 'a' + 1;
-        else if (ctrl && value >= 'A' && value <= 'Z') value = value - 'A' + 1;
+        // Ctrl+Shift+letter is a *chord* instead: the letter is kept so an app
+        // can tell Ctrl+Shift+C (copy) from Ctrl+C (the interrupt key).
+        if (ctrl && !shift && value >= 'a' && value <= 'z') value = value - 'a' + 1;
+        else if (ctrl && !shift && value >= 'A' && value <= 'Z') value = value - 'A' + 1;
 
         // What, if anything, the console ring should see.
         char ring_char = 0;
