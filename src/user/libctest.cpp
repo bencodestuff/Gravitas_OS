@@ -165,6 +165,10 @@ int main(int argc, char** argv) {
     struct grv_msg em;
     check(grv_recv(&em, 0) == -1 && errno == EAGAIN,
           "empty poll -> EAGAIN");
+    // The dispatcher is a number->handler table: a retired or unknown number
+    // is reported rather than echoed back.
+    check(syscall1(999, 0) == -ENOSYS, "unknown syscall -> ENOSYS");
+    check(syscall1(2, 0) == -ENOSYS, "retired syscall 2 -> ENOSYS");
 
     int* arr = (int*)calloc(5, sizeof(int));
     check(arr != 0 && arr[0] == 0 && arr[4] == 0, "calloc zeroes");

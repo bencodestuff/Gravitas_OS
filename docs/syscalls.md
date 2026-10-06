@@ -44,6 +44,7 @@ table.
 | `EMFILE` | 24 | per-task fd table full |
 | `ENOSPC` | 28 | no space left |
 | `EROFS` | 30 | read-only filesystem |
+| `ENOSYS` | 38 | no such syscall (a retired hole or an unknown number) |
 
 A successful call never clears `errno` (check the return value, as in C).
 Not every syscall distinguishes every reason yet: the filesystem backends
@@ -125,7 +126,9 @@ value with a different meaning.
 | 46 | `TIMER_SET` | `ms` (0 cancels) | 0; posts `GRV_EV_TIMER` on expiry |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
-by the VFS).
+by the VFS). The kernel dispatches through a number→handler table
+(`syscall_table` in `src/arch/x86_64/idt.cpp`); a retired hole or an unknown
+number returns `-ENOSYS`, and adding a call is one handler plus one row.
 
 ## Structures
 

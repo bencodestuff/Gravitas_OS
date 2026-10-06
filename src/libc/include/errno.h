@@ -25,6 +25,7 @@ extern int errno;
 #define EMFILE  24  /* per-task fd table full               */
 #define ENOSPC  28  /* no space left                        */
 #define EROFS   30  /* read-only filesystem                 */
+#define ENOSYS  38  /* no such syscall (retired/unknown id) */
 
 __END_DECLS
 
