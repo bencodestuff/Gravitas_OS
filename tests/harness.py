@@ -16,6 +16,7 @@ Hard-won rules baked in here:
 """
 import os
 import re
+import json
 import shutil
 import socket
 import subprocess
@@ -69,13 +70,39 @@ class Guest:
             os.remove(self.log_path)
         self.tmp = tempfile.mkdtemp(prefix="gravitas-")
         self.sock_path = os.path.join(self.tmp, "qmon.sock")
+        self.qmp_path = os.path.join(self.tmp, "qmp.sock")
         self.qemu = None
         self.sock = None
+        self.qmp = None
         # The kernel starts the pointer at the screen centre (src/kernel/dev/mouse.cpp).
         self.cursor = [SCREEN_W // 2, SCREEN_H // 2]
         self._boot()
 
     # --- lifecycle -----------------------------------------------------
+
+    def _connect(self, path, timeout=10.0):
+        end = time.time() + timeout
+        while True:
+            try:
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.connect(path)
+                return s
+            except OSError:
+                if time.time() > end:
+                    fail("QEMU socket never appeared: %s" % path)
+                time.sleep(0.05)
+
+    def _qmp(self, obj):
+        """Send one QMP command and drain its reply (best effort)."""
+        try:
+            self.qmp.sendall((json.dumps(obj) + "\n").encode())
+            self.qmp.settimeout(1.0)
+            try:
+                self.qmp.recv(65536)
+            except OSError:
+                pass
+        finally:
+            self.qmp.settimeout(None)
 
     def _boot(self):
         iso = os.path.join(ROOT, "gravitas.iso")
@@ -89,25 +116,25 @@ class Guest:
             "-display", "none", "-no-reboot", *accel,
             "-serial", "file:" + self.log_path,
             "-monitor", "unix:%s,server,nowait" % self.sock_path,
+            # QMP is needed for input the HMP cannot express (the wheel).
+            "-qmp", "unix:%s,server,nowait" % self.qmp_path,
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        end = time.time() + 10
-        while True:
-            try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.connect(self.sock_path)
-                break
-            except OSError:
-                if time.time() > end:
-                    fail("QEMU monitor socket never appeared")
-                time.sleep(0.05)
-        self.sock = s
+        self.sock = self._connect(self.sock_path)
         self.sock.settimeout(1.0)
         try:
             self.sock.recv(65536)   # monitor banner
         except OSError:
             pass
         self.sock.settimeout(None)
+
+        self.qmp = self._connect(self.qmp_path)
+        self.qmp.settimeout(2.0)
+        try:
+            self.qmp.recv(65536)    # QMP greeting
+        except OSError:
+            pass
+        self._qmp({"execute": "qmp_capabilities"})
 
         # Shared boot preconditions. A failure here is a boot failure, reported
         # the same way for every group.
@@ -120,6 +147,11 @@ class Guest:
         try:
             if self.sock:
                 self.sock.close()
+        except OSError:
+            pass
+        try:
+            if self.qmp:
+                self.qmp.close()
         except OSError:
             pass
         if self.qemu:
@@ -289,9 +321,19 @@ class Guest:
         self.cmd("mouse_button 0")
         time.sleep(0.35)
 
-    def wheel(self, dz):
-        self.cmd("mouse_button 4" if dz > 0 else "mouse_button 5")
-        time.sleep(0.15)
+    def wheel(self, notches):
+        """Inject wheel notches: positive = up/away.
+
+        The HMP has no wheel command (its mouse_button is L/R/M only), so this
+        goes through QMP's input-send-event."""
+        button = "wheel-up" if notches > 0 else "wheel-down"
+        for _ in range(abs(int(notches))):
+            self._qmp({"execute": "input-send-event",
+                       "arguments": {"events": [
+                           {"type": "btn",
+                            "data": {"down": True, "button": button}}]}})
+            time.sleep(0.05)
+        time.sleep(0.2)
 
     def desktop(self):
         """Click empty desktop: focuses the console shell (dismisses popups)."""
