@@ -206,6 +206,12 @@ def main():
         ninja.write(f"  description = SMOKE TEST\n")
         ninja.write(f"  pool = console\n\n")
 
+        # Host unit tests: the libc pieces that run natively (no QEMU).
+        ninja.write(f"rule check\n")
+        ninja.write(f"  command = ./tests/host/run.sh\n")
+        ninja.write(f"  description = HOST TESTS\n")
+        ninja.write(f"  pool = console\n\n")
+
         ninja.write(f"rule clean\n")
         ninja.write(f"  command = rm -rf bin obj iso_root gravitas.iso\n")
         ninja.write(f"  description = CLEAN\n\n")
@@ -252,6 +258,7 @@ def main():
         ninja.write(f"build iso: iso {KERNEL_FILE} {' '.join(user_elfs)}\n")
         ninja.write(f"build run: run iso\n")
         ninja.write(f"build test: smoke iso\n")
+        ninja.write(f"build check: check\n")
         ninja.write(f"build clean: clean\n")
 
         ninja.write(f"\ndefault {KERNEL_FILE}\n")
