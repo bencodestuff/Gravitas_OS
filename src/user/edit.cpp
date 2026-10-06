@@ -252,6 +252,34 @@ static void draw_scrollbar(int track) {
     gravity_fill(&app.canvas, x, thumb_y, SB_W, thumb_h, SB_FG);
 }
 
+static int sb_drag = 0;   // dragging the scrollbar thumb
+
+// Map a point in the scrollbar strip to the first visible line, centring the
+// thumb on it (so a click jumps and a held drag follows).
+static void scrollbar_drag_to(int my) {
+    int total = gravity_buffer_line_count(&text);
+    if (total <= rows) return;
+    int track = H - stat_h;
+    int thumb_h = track * rows / total;
+    if (thumb_h < 16) thumb_h = 16;
+    int span = track - thumb_h;
+    if (span <= 0) return;
+
+    int ty = my - thumb_h / 2;
+    if (ty < 0) ty = 0;
+    if (ty > span) ty = span;
+
+    int want = (int)((long)ty * total / span);   // line index from the top
+    int off = 0;
+    for (int i = 0; i < want; i++) {
+        int nx = gravity_buffer_next_line(&text, off);
+        if (nx == off) break;
+        off = nx;
+    }
+    top = off;
+    refresh();
+}
+
 static void draw_view(void) {
     struct gravity_canvas* c = &app.canvas;
     gravity_clear(c, BG);
@@ -366,9 +394,23 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         return;
     }
 
-    if (ev->type == GRV_EV_MOUSE && (ev->a & GRV_BTN_LEFT)) {
-        int row = grv_mouse_y(ev->b) / g_ch;
-        int col = grv_mouse_x(ev->b) / CW + left;
+    if (ev->type == GRV_EV_MOUSE) {
+        int mx = grv_mouse_x(ev->b);
+        int my = grv_mouse_y(ev->b);
+        int held = (ev->a & GRV_BTN_LEFT) != 0;
+
+        // The strip on the right is the scrollbar: click or drag it. The WM
+        // captures the pointer while the button is held, so the drag keeps
+        // arriving even if it leaves the strip.
+        if (held && (sb_drag || mx >= W - SB_W)) {
+            sb_drag = 1;
+            scrollbar_drag_to(my);
+            return;
+        }
+        if (!held) { sb_drag = 0; return; }
+
+        int row = my / g_ch;
+        int col = mx / CW + left;
         if (row >= 0 && row < rows) {
             int off = top;
             for (int r = 0; r < row; r++) {

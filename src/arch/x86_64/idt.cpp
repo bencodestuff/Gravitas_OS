@@ -476,9 +476,12 @@ static void spawn_impl(IDT::Registers* regs, bool background) {
     if (child < 0) { asm volatile("sti"); regs->rax = (uint64_t)-1; return; }
 
     if (!background) {
-        // Foreground: block on the child BEFORE it can run. IRQs are still off
-        // from stage_spawn, so no timer can switch to the new task until
+        // Foreground: the child takes over the console the parent is using
+        // (the kernel console, or a terminal's hosted one), so it can read and
+        // write it. Then block on the child BEFORE it can run — IRQs are still
+        // off from stage_spawn, so no timer can switch to the new task until
         // yield(); yield re-enables interrupts once the child's exit resumes us.
+        Sched::inherit_console(child);
         Sched::block_current(child);
         Sched::yield();   // returns when the child wakes us
         asm volatile("sti");

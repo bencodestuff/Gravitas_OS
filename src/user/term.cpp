@@ -34,11 +34,49 @@ static void on_poll(struct gravity_app* a) {
     if (got) gravity_refresh(a);
 }
 
+static int sb_drag = 0;   // dragging the scrollbar thumb
+
+// Map a point in the scrollbar strip to a scrollback position, centring the
+// thumb on it (so a click jumps and a held drag follows).
+static void scrollbar_drag_to(int my) {
+    int max = gravity_term_maxview(&term);
+    if (max <= 0) return;
+    int h = ROWS * CELL_H;
+    int total = max + ROWS;
+    int thumb = h * ROWS / total;
+    if (thumb < 16) thumb = 16;
+    int span = h - thumb;
+    if (span <= 0) return;
+
+    int top = my - thumb / 2;
+    if (top < 0) top = 0;
+    if (top > span) top = span;
+
+    int view = max - top * max / span;
+    gravity_term_scrollback(&term, view - gravity_term_view(&term));
+}
+
 static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     if (ev->type == GRV_EV_SCROLL) {
         // Wheel: three lines per notch (positive = up/back in time).
         gravity_term_scrollback(&term, grv_scroll_delta(ev->b) * 3);
         gravity_refresh(a);
+        return;
+    }
+    if (ev->type == GRV_EV_MOUSE) {
+        // The strip right of the grid is the scrollbar: click or drag it. The
+        // WM captures the pointer while the button is held, so a drag keeps
+        // arriving even if it leaves the strip.
+        int mx = grv_mouse_x(ev->b);
+        int my = grv_mouse_y(ev->b);
+        int held = (ev->a & GRV_BTN_LEFT) != 0;
+        if (held && (sb_drag || mx >= COLS * CELL_W)) {
+            sb_drag = 1;
+            scrollbar_drag_to(my);
+            gravity_refresh(a);
+        } else if (!held) {
+            sb_drag = 0;
+        }
         return;
     }
     if (ev->type != GRV_EV_KEY) return;

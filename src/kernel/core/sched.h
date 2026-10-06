@@ -86,6 +86,10 @@ namespace Sched {
     bool console_detach(int task_id);            // caller must be the owner
     int  console_read(char* buf, int max);       // owner: drain the out ring
     int  console_write(int task_id, const char* buf, int n); // owner -> in ring
+
+    // A foreground child inherits the parent's console binding, so it reads and
+    // writes the same console (the kernel one, or a terminal's hosted console).
+    void inherit_console(int child_id);
     int  console_ring_getc();                    // owned GETC: one byte, or -1
     void console_emit(char c);                   // PUTC: route or kprint
     void console_emit_str(const char* s, int n); // a whole string, same rules

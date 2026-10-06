@@ -213,7 +213,17 @@ namespace Mouse {
             dy = -dy; // PS/2 reports Y screen-inverted: up is positive
                       // in the raw protocol; screen convention (down
                       // positive) needs the flip
-            int8_t dz = (pktsize == 4) ? (int8_t)packet[3] : 0;
+            // The wheel byte's low nibble is a 4-bit two's-complement delta
+            // and its high nibble is zero, so bit 3 must be sign-extended
+            // explicitly. The wire convention (and QEMU) calls a notch *away
+            // from the user* negative; the rest of the system uses
+            // positive = up/away, so flip it.
+            int8_t dz = 0;
+            if (pktsize == 4) {
+                uint8_t w = packet[3] & 0x0F;
+                int8_t d = (int8_t)((w & 0x08) ? (w | 0xF0) : w);
+                dz = (int8_t)(-d);
+            }
 
             // The cursor advances with EVERY packet, independent of the
             // ring: it stays live even when no task is draining, and a

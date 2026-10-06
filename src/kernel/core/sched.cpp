@@ -340,6 +340,11 @@ namespace Sched {
         return true;
     }
 
+    void inherit_console(int child_id) {
+        Task* c = find_task(child_id);
+        if (c != nullptr) c->console_owner = current_task->console_owner;
+    }
+
     bool console_detach(int task_id) {
         Task* t = find_task(task_id);
         if (t == nullptr || t->console_owner != current_task->id) return false;
@@ -438,6 +443,16 @@ namespace Sched {
         if (buf == nullptr || n <= 0) return 0;
         Task* t = find_task(task_id);
         if (t == nullptr || t->console_owner != current_task->id) return -1;
+
+        // The foreground job is the reader: a hosted shell delegates to the
+        // child it is blocked on (running `lua`), so its input goes to the
+        // child's ring rather than the shell's.
+        Task* dst = t;
+        if (t->waiting_on >= 0) {
+            Task* c = find_task(t->waiting_on);
+            if (c != nullptr) dst = c;
+        }
+
         int written = 0;
         uint64_t f = irq_save();
         for (int i = 0; i < n; i++) {
@@ -445,13 +460,13 @@ namespace Sched {
             // the hosted task's foreground job instead of being queued as input
             // (so a terminal that forwards keys makes Ctrl+C work end to end).
             if (buf[i] == 0x03) { interrupt_foreground(task_id); continue; }
-            int next = (t->con_in_head + 1) % CONSOLE_RING;
-            if (next == t->con_in_tail) break; // full: stop
-            t->con_in[t->con_in_head] = buf[i];
-            t->con_in_head = next;
+            int next = (dst->con_in_head + 1) % CONSOLE_RING;
+            if (next == dst->con_in_tail) break; // full: stop
+            dst->con_in[dst->con_in_head] = buf[i];
+            dst->con_in_head = next;
             written++;
         }
-        if (written > 0 && t->getc_waiting) t->state = READY;
+        if (written > 0 && dst->getc_waiting) dst->state = READY;
         irq_restore(f);
         return written;
     }

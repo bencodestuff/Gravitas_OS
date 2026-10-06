@@ -19,7 +19,7 @@ namespace Sched {
     // (the terminal). Bytes, not messages — a byte stream needs no framing,
     // and a full ring simply drops (a tty with a full buffer), which is
     // gentler than failing the writer.
-    constexpr int CONSOLE_RING = 256;
+    constexpr int CONSOLE_RING = 4096;
 
     struct Task {
         uint64_t rsp;
