@@ -702,8 +702,11 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
 
     // --- IRQ 1: Keyboard ---
     if (num == 33) {
-        Keyboard::handle_interrupt(); // Just delegate to the driver
+        // EOI first: handling a key can interrupt the foreground job, which
+        // switches away from this task — and this handler would then never
+        // reach a later send_eoi.
         PIC::send_eoi(1);
+        Keyboard::handle_interrupt();
         Sched::wake_keyboard_waiter(); // a key may have arrived — wake getc
         return;
     }

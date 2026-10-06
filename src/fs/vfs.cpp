@@ -281,7 +281,9 @@ FileHandle* fd_slot_get(int fd) {
 
 int fd_slot_alloc(Filesystem* fs, void* fs_handle, uint64_t size) {
     FileHandle** fds = fds_of_current();
-    for (int i = 0; i < MAX_FDS; i++) {
+    // Start at FD_STD_STREAMS: slots 0..2 are reserved for the standard
+    // streams, so the first descriptor a program opens is 3.
+    for (int i = FD_STD_STREAMS; i < MAX_FDS; i++) {
         if (fds[i] == nullptr) {
             // grab a kernel-wide handle slot
             FileHandle* h = nullptr;

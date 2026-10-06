@@ -239,9 +239,11 @@ class Guest:
 
     def ctrl(self, name):
         self.cmd("sendkey ctrl-" + name)
+        time.sleep(self.PACE)
 
     def alt(self, name):
         self.cmd("sendkey alt-" + name)
+        time.sleep(self.PACE)
 
     # --- monitor: pointer ----------------------------------------------
 

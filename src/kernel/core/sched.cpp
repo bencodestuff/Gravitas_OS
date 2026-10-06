@@ -299,7 +299,19 @@ namespace Sched {
         if (task_id < 0) return false;
         Task* t = find_task(task_id);
         if (t == nullptr || t->waiting_on < 0) return false;
-        return kill_task(t->waiting_on, 130) == 0;
+
+        int child = t->waiting_on;
+
+        // The victim is usually the running task: the parent is blocked, so the
+        // scheduler is on the child. kill_task refuses to kill current_task, and
+        // its synchronous teardown would free the stack we are standing on —
+        // go through the exit path instead, which switches away and lets the
+        // scheduler reap it.
+        if (current_task != nullptr && child == current_task->id) {
+            exit_current(130);
+            return true;
+        }
+        return kill_task(child, 130) == 0;
     }
 
     int console_owner_of_current() {

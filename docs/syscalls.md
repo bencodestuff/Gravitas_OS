@@ -84,7 +84,7 @@ value with a different meaning.
 | 4 | `SPAWN` | `name, argv, argc` | child id (blocks until it exits) |
 | 5 | `EXIT` | `code` | never returns |
 | 6 | `BRK` | `addr` (0 = query) | new break, or `(void*)-1` |
-| 7 | `OPEN` | `path, flags` | fd, or −1 |
+| 7 | `OPEN` | `path, flags` | fd (≥ 3; 0–2 are the standard streams), or −1 |
 | 8 | `READFD` | `fd, buf, count` | bytes read |
 | 9 | `WRITEFD` | `fd, buf, count` | bytes written |
 | 10 | `CLOSE` | `fd` | — |

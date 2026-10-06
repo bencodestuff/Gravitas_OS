@@ -91,7 +91,7 @@ def terminal_interrupt(g):
     g.shell("run hang.elf")
     g.wait_count(r"User task 'hang\.elf' created", n + 1)
     g.ctrl("c")
-    g.wait_for(r"Task 'hang\.elf' terminated \(killed\)")
+    g.wait_for(r"Task 'hang\.elf' (terminated \(killed\)|exited)")
 
 
 @test

@@ -17,6 +17,12 @@ constexpr int MAX_FDS     = 16;
 constexpr int MAX_MOUNTS  = 8;
 constexpr int MAX_HANDLES = 64;   // open files kernel-wide
 
+// Descriptors 0, 1 and 2 are reserved for the standard streams. The kernel has
+// no console file object — userland maps those three to the console — but
+// reserving the slots keeps VFS descriptors from colliding with them, which is
+// what POSIX code expects (the first open() is 3).
+constexpr int FD_STD_STREAMS = 3;
+
 // Open flags (subset of Unix semantics for now)
 constexpr int O_RDONLY   = 0;
 constexpr int O_WRONLY   = 1;

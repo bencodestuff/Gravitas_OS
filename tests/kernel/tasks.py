@@ -32,7 +32,9 @@ def ctrl_c_interrupt(g):
     g.shell("run hang.elf")
     g.wait_for("hang: running")
     g.ctrl("c")
-    g.wait_for(r"Task 'hang\.elf' terminated \(killed\)")
+    # Two paths: the scheduler was on another task, so kill_task ran; or it was
+    # on the victim itself, so it exited through the zombie path.
+    g.wait_for(r"Task 'hang\.elf' (terminated \(killed\)|exited)")
     g.wait_count(r"\[shell\] program finished", finished + 1)
 
 
@@ -76,6 +78,14 @@ def stdio(g):
     # console streams, and the ENOENT / EROFS error paths.
     g.shell("run stdiotest.elf")
     g.wait_for("stdiotest: all checks pass")
+
+
+@test
+def posix_facade(g):
+    # The POSIX facade: open/read/write/close/lseek, stat, the console
+    # descriptors, getcwd/chdir, and opendir/readdir/closedir.
+    g.shell("run posixtest.elf")
+    g.wait_for("posixtest: all checks pass")
 
 
 @test
