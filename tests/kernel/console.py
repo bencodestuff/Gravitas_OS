@@ -3,9 +3,10 @@
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from harness import test, run_module
+from harness import ppm, test, run_module
 
 
 @test
@@ -25,6 +26,29 @@ def wall_clock(g):
         g.fail("the RTC was not read at boot (no boot epoch)")
     if int(m.group(1)) < 1000000000:
         g.fail("RTC boot epoch looks wrong: " + m.group(1))
+
+
+@test
+def taskbar_clock(g):
+    # The WM shows the RTC-backed time at the right end of the taskbar.
+    g.wait_for(r"wm: clock \d\d:\d\d")
+
+    # Give the compositor a moment to present the first paint.
+    time.sleep(1.0)
+    shot = os.path.join(g.art, "taskbar.ppm")
+    g.screendump(shot)
+
+    w, h, data = ppm(shot)
+    bar_bg = (0x17, 0x19, 0x1C)          # the WM's BAR_BG
+    hits = 0
+    for y in range(h - 24 + 2, h - 2):   # inside the 24 px bar, every row
+        row = y * w
+        for x in range(w - 52, w - 6):   # the clock's slot at the right end
+            j = (row + x) * 3
+            if (data[j], data[j + 1], data[j + 2]) != bar_bg:
+                hits += 1
+    if hits < 20:
+        g.fail("the taskbar clock is not painted (%d non-background pixels)" % hits)
 
 
 @test

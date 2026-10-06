@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 #include <grv/syscall.h>
 #include <gravity/font.h>
 #include <grv/input.h>
@@ -25,6 +27,7 @@ static const int CLOSE_W = 12;
 static const int CLOSE_H = 12;
 static const int MAXWIN  = 32;
 static const int TASKBAR_H = 24;
+static const int CLOCK_W   = 40;   // "HH:MM" at 8 px per glyph
 static const unsigned long CLOSE_GRACE = 75; // ticks a client has to exit (1.5s)
 
 static const unsigned int FOCUS_BAR   = 0xFF3B5A8C;
@@ -346,6 +349,29 @@ static void taskbar_layout() {
     }
 }
 
+// --- the taskbar clock -------------------------------------------------
+// The main loop already wakes every 8 ms, so the clock is recomputed each pass
+// and the bar repainted only when the displayed text changes.
+static char clock_str[8] = "";
+
+static int clock_refresh() {
+    time_t now = time(0);
+    struct tm* t = localtime(&now);
+    char buf[8];
+    if (strftime(buf, sizeof(buf), "%H:%M", t) == 0) return 0;
+    if (strcmp(buf, clock_str) == 0) return 0;
+
+    int i = 0;
+    while (buf[i] && i < (int)sizeof(clock_str) - 1) { clock_str[i] = buf[i]; i++; }
+    clock_str[i] = '\0';
+    return 1;
+}
+
+static void clock_redraw() {
+    int y = overlay_h - TASKBAR_H;
+    redraw(overlay_w - CLOCK_W - 10, y, overlay_w, y + TASKBAR_H);
+}
+
 static void draw_taskbar() {
     int fh = font_ok ? (int)font.height : 8;
     int y = overlay_h - TASKBAR_H;
@@ -366,6 +392,11 @@ static void draw_taskbar() {
         fill(b->x, y + 3, b->w, TASKBAR_H - 6, bg);
         text(b->x + 7, y + (TASKBAR_H - fh) / 2, label, TITLE_FG);
     }
+
+    // The clock sits at the right end of the bar.
+    if (clock_str[0])
+        text(overlay_w - gravity_font_width(clock_str) - 8,
+             y + (TASKBAR_H - fh) / 2, clock_str, TITLE_FG);
 }
 
 static void draw_menu() {
@@ -774,7 +805,9 @@ int main(int argc, char** argv) {
     }
     overlay_px = (unsigned int*)oi.address;
     raise_overlay();
+    clock_refresh();   // so the first paint includes the time
     full_redraw();
+    printf("wm: clock %s\n", clock_str);
 
     printf("wm: display authority, screen %dx%d, overlay #%d, font %s\n",
            overlay_w, overlay_h, overlay_id, font_ok ? "yes" : "no");
@@ -905,6 +938,9 @@ int main(int argc, char** argv) {
                 }
             }
         }
+
+        // Keep the taskbar clock current (repaint only when the minute flips).
+        if (clock_refresh()) clock_redraw();
 
         grv_sleep(8);
     }
