@@ -24,6 +24,11 @@ int vsprintf(char* __restrict, const char* __restrict, va_list);
 int putchar(int);
 int puts(const char*);
 
+/* Filesystem operations, in their stdio spelling. remove() unlinks a file or
+   empty directory; rename() moves within one filesystem. */
+int remove(const char* path);
+int rename(const char* from, const char* to);
+
 #ifdef __cplusplus
 }
 #endif

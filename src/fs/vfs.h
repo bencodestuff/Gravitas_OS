@@ -61,6 +61,9 @@ struct Filesystem {
 
     // Remove a file/dir by path (ramfs only; nullptr if read-only).
     int (*unlink)(void* priv, const char* path);
+
+    // Rename/move a path within this fs (ramfs only; nullptr if read-only).
+    int (*rename)(void* priv, const char* from, const char* to);
 };
 
 // --- An open file (referenced by an fd) ---
@@ -124,6 +127,10 @@ long lseek_fd(int fd, long offset, int whence);
 // (ENOENT/EROFS/EIO).
 int mkdir(const char* path);
 int unlink(const char* path);
+
+// Rename/move a path. Both sides must live on the same filesystem. Returns 0
+// or -errno (ENOENT/EINVAL/EROFS).
+int rename(const char* from, const char* to);
 
 // Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO).
 int ftruncate_fd(int fd, uint64_t size);

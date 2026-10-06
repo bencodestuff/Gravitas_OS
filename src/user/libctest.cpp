@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <locale.h>
 #include <setjmp.h>
 #include <errno.h>
 #include <grv/syscall.h>
@@ -169,6 +170,19 @@ int main(int argc, char** argv) {
     // is reported rather than echoed back.
     check(syscall1(999, 0) == -ENOSYS, "unknown syscall -> ENOSYS");
     check(syscall1(2, 0) == -ENOSYS, "retired syscall 2 -> ENOSYS");
+
+    // --- strerror / getenv / locale (the C-locale surface) ---
+    check(strcmp(strerror(ENOENT), "No such file or directory") == 0, "strerror ENOENT");
+    check(strcmp(strerror(EROFS), "Read-only filesystem") == 0, "strerror EROFS");
+    check(strerror(9999) != 0 && strerror(9999)[0] != '\0', "strerror unknown readable");
+    check(getenv("PATH") == 0, "getenv miss -> NULL (no environment)");
+    check(setlocale(LC_ALL, NULL) != 0, "setlocale query");
+    check(setlocale(LC_ALL, "C") != 0, "setlocale C");
+    check(setlocale(LC_ALL, "POSIX") != 0, "setlocale POSIX");
+    check(setlocale(LC_ALL, "") != 0, "setlocale empty -> C");
+    check(setlocale(LC_ALL, "xx_YY") == 0, "setlocale unknown -> NULL");
+    check(localeconv() != 0 && localeconv()->decimal_point[0] == '.',
+          "localeconv decimal point");
 
     int* arr = (int*)calloc(5, sizeof(int));
     check(arr != 0 && arr[0] == 0 && arr[4] == 0, "calloc zeroes");

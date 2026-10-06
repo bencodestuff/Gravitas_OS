@@ -436,6 +436,10 @@ static void sys_unlink(IDT::Registers* regs) {
     regs->rax = (uint64_t)VFS::unlink((const char*)regs->rdi);
 }
 
+static void sys_rename(IDT::Registers* regs) {
+    regs->rax = (uint64_t)VFS::rename((const char*)regs->rdi, (const char*)regs->rsi);
+}
+
 static void sys_ftruncate(IDT::Registers* regs) {
     regs->rax = (uint64_t)VFS::ftruncate_fd((int)regs->rdi, (uint64_t)regs->rsi);
 }
@@ -640,6 +644,7 @@ static const SyscallFn syscall_table[] = {
     /* 44 UNLINK          */ sys_unlink,
     /* 45 FTRUNCATE       */ sys_ftruncate,
     /* 46 TIMER_SET       */ sys_timer_set,
+    /* 47 RENAME          */ sys_rename,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

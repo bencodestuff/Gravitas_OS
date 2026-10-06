@@ -402,6 +402,29 @@ int unlink(const char* path) {
     return fs->unlink(fs->priv, rel) == 0 ? 0 : -Errno::ENOENT;
 }
 
+// Rename resolves like mkdir/unlink: against the CWD (or an absolute path)
+// only, never through the program search path. Both sides must be on the same
+// filesystem — there is no cross-device move.
+//
+// resolve() hands back a pointer into one static buffer, so the relative paths
+// must be copied out before the second call overwrites it.
+int rename(const char* from, const char* to) {
+    static char from_rel[256], to_rel[256];
+
+    const char* r = nullptr;
+    Filesystem* from_fs = resolve(from, &r);
+    if (from_fs == nullptr) return -Errno::ENOENT;
+    for (int i = 0; i < 255; i++) { from_rel[i] = r[i]; if (r[i] == '\0') break; }
+
+    Filesystem* to_fs = resolve(to, &r);
+    if (to_fs == nullptr) return -Errno::ENOENT;
+    for (int i = 0; i < 255; i++) { to_rel[i] = r[i]; if (r[i] == '\0') break; }
+
+    if (from_fs != to_fs) return -Errno::EINVAL;
+    if (from_fs->rename == nullptr) return -Errno::EROFS;
+    return from_fs->rename(from_fs->priv, from_rel, to_rel) == 0 ? 0 : -Errno::ENOENT;
+}
+
 int ftruncate_fd(int fd, uint64_t size) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;

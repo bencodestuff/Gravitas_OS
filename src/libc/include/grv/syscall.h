@@ -80,6 +80,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_UNLINK         44
 #define GRV_SYSCALL_FTRUNCATE      45
 #define GRV_SYSCALL_TIMER_SET      46
+#define GRV_SYSCALL_RENAME         47
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -232,6 +233,11 @@ static inline int grv_mkdir(const char* path) {
 }
 static inline int grv_unlink(const char* path) {
     return (int)grv_err(syscall1(GRV_SYSCALL_UNLINK, (long)path));
+}
+
+/* Rename/move a path within the same filesystem. 0, or -1 with errno. */
+static inline int grv_rename(const char* from, const char* to) {
+    return (int)grv_err(syscall2(GRV_SYSCALL_RENAME, (long)from, (long)to));
 }
 
 /* Set an open file's length. Returns 0, or -1 with errno. */

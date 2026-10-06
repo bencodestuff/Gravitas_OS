@@ -11,6 +11,7 @@
 #include <strings.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <errno.h>
 
 /* glibc defines several of these as (function-like) macros; clear them so the
    my_* renames below do not collide. The same names are cleared again after
@@ -65,6 +66,7 @@
 #define strtoul     my_strtoul
 #define atoi        my_atoi
 #define abs         my_abs
+#define strerror    my_strerror
 #define isdigit     my_isdigit
 #define isspace     my_isspace
 #define isalpha     my_isalpha
@@ -85,6 +87,7 @@
 #include "../src/libc/string/strcasecmp.c"
 #include "../src/libc/stdlib/strtol.c"
 #include "../src/libc/stdlib/abs.c"
+#include "../src/libc/errno/strerror.c"
 #include "../src/libc/ctype/ctype.c"
 
 #undef memcmp
@@ -118,6 +121,7 @@
 #undef iscntrl
 #undef toupper
 #undef tolower
+#undef strerror
 
 static int checks = 0;
 static int fails = 0;
@@ -219,6 +223,12 @@ int main(void) {
     ck("strtol value", v == -42);
     cks("strtol end", e, "abc");
     ck("atoi", my_atoi("  99") == 99);
+
+    // strerror: a stable, non-empty message for every code
+    cks("strerror ENOENT", my_strerror(ENOENT), "No such file or directory");
+    cks("strerror ENOSYS", my_strerror(ENOSYS), "Function not implemented");
+    ck("strerror stable", my_strerror(ENOENT) == my_strerror(ENOENT));
+    ck("strerror unknown", my_strerror(9999) != NULL && my_strerror(9999)[0] != '\0');
 
     printf("string host test: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

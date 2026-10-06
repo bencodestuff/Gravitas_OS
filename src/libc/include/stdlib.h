@@ -25,6 +25,10 @@ double atof(const char*);
 
 int abs(int);
 
+/* Environment lookup. There is no environment block yet, so this always
+   returns NULL (a miss). Lua's os.getenv therefore returns nil. */
+char* getenv(const char* name);
+
 /* Sort 'count' elements of 'size' bytes by 'compare'. */
 void qsort(void* base, size_t count, size_t size,
            int (*compare)(const void*, const void*));

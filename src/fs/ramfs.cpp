@@ -180,42 +180,86 @@ static int ramfs_truncate(void* priv, void* handle, uint64_t size) {
     return 0;
 }
 
-static int ramfs_unlink(void* priv, const char* path) {
-    (void)priv;
-    // Split into parent dir + final name.
+// Split a path into its parent directory node and final component name.
+// parent_out needs 128 bytes, name_out 32. Returns the parent node (the root
+// for a top-level name), or nullptr if the parent does not exist.
+static Node* split_parent(const char* path, char* parent_out, char* name_out) {
     int i = 0;
     while (path[i]) i++;
     while (i > 0 && path[i - 1] == '/') i--;
     int slash = -1;
     for (int j = 0; j < i; j++) if (path[j] == '/') slash = j;
 
-    static char parent[128];
     int plen = (slash < 0) ? 0 : slash;
-    for (int k = 0; k < plen && k < 127; k++) parent[k] = path[k];
-    parent[plen] = '\0';
+    for (int k = 0; k < plen && k < 127; k++) parent_out[k] = path[k];
+    parent_out[plen] = '\0';
 
     const char* name = path + (slash < 0 ? 0 : slash + 1);
-    int nlen = 0;
-    while (name[nlen] && name[nlen] != '/' && nlen < 31) nlen++;
+    int ni = 0;
+    while (name[ni] && name[ni] != '/' && ni < 31) { name_out[ni] = name[ni]; ni++; }
+    name_out[ni] = '\0';
 
-    Node* dir = walk(root, parent, false);
-    if (dir == nullptr || !dir->is_dir) return -1;
+    return walk(root, parent_out, false);
+}
 
+// Unlink a child from its parent's child list.
+static void detach(Node* dir, Node* node) {
     Node* prev = nullptr;
     for (Node* c = dir->first_child; c; prev = c, c = c->next_sibling) {
-        bool eq = true;
-        for (int k = 0; k < nlen; k++)
-            if (c->name[k] != name[k]) { eq = false; break; }
-        if (!eq || c->name[nlen] != '\0') continue;
-        if (c->is_dir && c->first_child) return -1; // non-empty dir
-
+        if (c != node) continue;
         if (prev) prev->next_sibling = c->next_sibling;
         else dir->first_child = c->next_sibling;
-        if (c->data) delete[] c->data;
-        delete c;
-        return 0;
+        return;
     }
-    return -1;
+}
+
+static int ramfs_unlink(void* priv, const char* path) {
+    (void)priv;
+    static char parent[128], name[32];
+    Node* dir = split_parent(path, parent, name);
+    if (dir == nullptr || !dir->is_dir) return -1;
+
+    Node* c = find_child(dir, name);
+    if (c == nullptr) return -1;
+    if (c->is_dir && c->first_child) return -1;   // non-empty dir
+
+    detach(dir, c);
+    if (c->data) delete[] c->data;
+    delete c;
+    return 0;
+}
+
+// Rename/move within the ramfs. Replaces an existing destination file; refuses
+// to clobber a non-empty directory. (Moving a directory into its own subtree is
+// not detected: nodes carry no parent pointer.)
+static int ramfs_rename(void* priv, const char* from, const char* to) {
+    (void)priv;
+    static char from_parent[128], to_parent[128], from_name[32], to_name[32];
+    Node* fdir = split_parent(from, from_parent, from_name);
+    Node* tdir = split_parent(to, to_parent, to_name);
+    if (fdir == nullptr || !fdir->is_dir) return -1;
+    if (tdir == nullptr || !tdir->is_dir) return -1;
+    if (from_name[0] == '\0' || to_name[0] == '\0') return -1;
+
+    Node* src = find_child(fdir, from_name);
+    if (src == nullptr) return -1;
+
+    Node* dst = find_child(tdir, to_name);
+    if (dst != nullptr && dst != src) {
+        if (dst->is_dir && dst->first_child) return -1;   // non-empty dir
+        detach(tdir, dst);
+        if (dst->data) delete[] dst->data;
+        delete dst;
+    }
+
+    detach(fdir, src);
+
+    int i = 0;
+    while (to_name[i] && i < 31) { src->name[i] = to_name[i]; i++; }
+    src->name[i] = '\0';
+    src->next_sibling = tdir->first_child;
+    tdir->first_child = src;
+    return 0;
 }
 
 // --- The filesystem instance ---
@@ -231,6 +275,7 @@ static VFS::Filesystem fs = {
     .mkdir    = ramfs_mkdir,
     .truncate = ramfs_truncate,
     .unlink   = ramfs_unlink,
+    .rename   = ramfs_rename,
 };
 
 VFS::Filesystem* instance() {

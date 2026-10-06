@@ -57,8 +57,8 @@ directory, which children inherit when they are spawned. A **bare name** (no
 `/`) is a lookup convenience for existing files: `OPEN` and `STAT` try the
 CWD first and then each program directory on the search path — `/bin`, then
 `/bin/tests` for the test suite (`run ls` finds `ls.elf`).
-`MKDIR` and `UNLINK` never search: they resolve against the CWD (or an
-absolute path) only, so a typo cannot land in the read-only system tree.
+`MKDIR`, `UNLINK` and `RENAME` never search: they resolve against the CWD (or
+an absolute path) only, so a typo cannot land in the read-only system tree.
 
 ## Message types
 
@@ -124,6 +124,7 @@ value with a different meaning.
 | 44 | `UNLINK` | `path` | 0 or −1 |
 | 45 | `FTRUNCATE` | `fd, size` | 0 or −1 |
 | 46 | `TIMER_SET` | `ms` (0 cancels) | 0; posts `GRV_EV_TIMER` on expiry |
+| 47 | `RENAME` | `from, to` | 0 or −1 (both sides must be on the same filesystem) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

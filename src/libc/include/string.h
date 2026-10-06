@@ -41,6 +41,9 @@ char* strsep(char**, const char*);
 
 char* strdup(const char*);
 
+/* A readable message for an errno value (never NULL). */
+char* strerror(int);
+
 #ifdef __cplusplus
 }
 #endif
