@@ -291,6 +291,17 @@ namespace Sched {
         return nullptr;
     }
 
+    // Ctrl+C. A task blocked on a child (a foreground SPAWN or WAIT) carries
+    // that child in waiting_on; killing the child wakes the blocked task, which
+    // is exactly "interrupt the foreground job". The exit code is the shell
+    // convention 128 + SIGINT(2).
+    bool interrupt_foreground(int task_id) {
+        if (task_id < 0) return false;
+        Task* t = find_task(task_id);
+        if (t == nullptr || t->waiting_on < 0) return false;
+        return kill_task(t->waiting_on, 130) == 0;
+    }
+
     int console_owner_of_current() {
         return current_task ? current_task->console_owner : -1;
     }
@@ -404,6 +415,10 @@ namespace Sched {
         int written = 0;
         uint64_t f = irq_save();
         for (int i = 0; i < n; i++) {
+            // Ctrl+C in a hosted console's input is the interrupt key: it kills
+            // the hosted task's foreground job instead of being queued as input
+            // (so a terminal that forwards keys makes Ctrl+C work end to end).
+            if (buf[i] == 0x03) { interrupt_foreground(task_id); continue; }
             int next = (t->con_in_head + 1) % CONSOLE_RING;
             if (next == t->con_in_tail) break; // full: stop
             t->con_in[t->con_in_head] = buf[i];

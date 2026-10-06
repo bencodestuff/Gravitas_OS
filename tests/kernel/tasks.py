@@ -24,6 +24,19 @@ def background_spawn(g):
 
 
 @test
+def ctrl_c_interrupt(g):
+    # A foreground program that never exits would block the shell forever. The
+    # interrupt key kills the foreground job (the child the shell is blocked on)
+    # and the prompt comes back.
+    finished = g.count(r"\[shell\] program finished")
+    g.shell("run hang.elf")
+    g.wait_for("hang: running")
+    g.ctrl("c")
+    g.wait_for(r"Task 'hang\.elf' terminated \(killed\)")
+    g.wait_count(r"\[shell\] program finished", finished + 1)
+
+
+@test
 def process_control(g):
     g.shell("run proctest.elf")
     g.wait_for("all process-control checks pass")

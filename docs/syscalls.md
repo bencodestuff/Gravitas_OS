@@ -131,6 +131,14 @@ by the VFS). The kernel dispatches through a number→handler table
 (`syscall_table` in `src/arch/x86_64/idt.cpp`); a retired hole or an unknown
 number returns `-ENOSYS`, and adding a call is one handler plus one row.
 
+### The interrupt key
+
+`0x03` (Ctrl+C) in a task's console input is not text: it terminates that
+task's **foreground job** — the task it is blocked on (a foreground `SPAWN` or
+`WAIT`), which resumes it with exit code 130. `CONSOLE_WRITE` applies this rule
+to the bytes it injects, so a terminal that forwards Ctrl+C to its hosted shell
+makes it work end to end; the kernel console applies it to the focused task.
+
 ## Structures
 
 Layouts are shared with `grv/syscall.h`; on x86_64 LP64 every field is 8

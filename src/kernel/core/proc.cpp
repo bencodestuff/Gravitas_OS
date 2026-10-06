@@ -85,12 +85,24 @@ namespace Sched {
     // surfaces, stacks — no zombie hop needed.
     //   code: what its exit_code becomes (callers blocked on it receive it)
     //   Returns 0, or -1 for unknown/kernel-self/self-kill.
+    // Save/restore the interrupt flag. kill_task runs both from the KILL
+    // syscall (IF off) and from the keyboard IRQ (IF off), so it must never
+    // switch interrupts back on in the middle of an interrupt handler.
+    static inline uint64_t irq_save() {
+        uint64_t f;
+        asm volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
+        return f;
+    }
+    static inline void irq_restore(uint64_t f) {
+        if (f & (1ull << 9)) asm volatile("sti"); else asm volatile("cli");
+    }
+
     int kill_task(int id, uint64_t code) {
         if (id <= 0) return -1;                       // kernel task / invalid
         if (current_task != nullptr && id == current_task->id)
             return -1;                                // use exit(), not kill()
 
-        asm volatile("cli");  // list surgery must not interleave with the timer's yield
+        uint64_t iflags = irq_save(); // list surgery must not interleave with the timer's yield
         Task* victim = nullptr;
         Task* prev = ready_queue;
         do {
@@ -98,7 +110,7 @@ namespace Sched {
             prev = prev->next;
         } while (prev != ready_queue);
 
-        if (victim == nullptr) { asm volatile("sti"); return -1; }
+        if (victim == nullptr) { irq_restore(iflags); return -1; }
         victim->exit_code = code;
 
         char namebuf[16];
@@ -142,7 +154,7 @@ namespace Sched {
         kprint("[Sched] Task '");
         kprint(namebuf);
         kprint("' terminated (killed).\n");
-        asm volatile("sti");
+        irq_restore(iflags);
         return 0;
     }
 

@@ -83,6 +83,18 @@ def terminal(g):
 
 
 @test
+def terminal_interrupt(g):
+    # The previous test focused the launched terminal, so typing goes to its
+    # hosted shell. Ctrl+C must reach that shell's foreground job through the
+    # terminal's CONSOLE_WRITE — the kernel applies the interrupt rule there.
+    n = g.count(r"User task 'hang\.elf' created")
+    g.shell("run hang.elf")
+    g.wait_count(r"User task 'hang\.elf' created", n + 1)
+    g.ctrl("c")
+    g.wait_for(r"Task 'hang\.elf' terminated \(killed\)")
+
+
+@test
 def file_browser(g):
     g.launch("Files")
     g.wait_for("wm: launch 'files.elf'")

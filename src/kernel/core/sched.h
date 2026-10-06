@@ -148,6 +148,12 @@ namespace Sched {
     // exit code. Returns 0 or -1.
     int kill_task(int id, uint64_t code);
 
+    // Ctrl+C: interrupt the foreground job of 'task_id' — the task it is
+    // blocked on (a foreground SPAWN or WAIT). Killing that child resumes the
+    // blocked task. Returns true if a job was interrupted, false if there was
+    // nothing to interrupt (e.g. the task sits at a prompt).
+    bool interrupt_foreground(int task_id);
+
     // Does a task with this id exist? (WAIT uses it to decide between
     // blocking on a live task and failing on an unknown one.)
     bool task_exists(int id);

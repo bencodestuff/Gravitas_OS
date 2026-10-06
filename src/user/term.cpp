@@ -61,6 +61,7 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     char c;
     if (v >= 32 && v < 127) c = (char)v;
     else if (v == '\n' || v == '\b' || v == '\t') c = (char)v;
+    else if (v == 3) c = 3;   // Ctrl+C: the kernel interrupts the shell's job
     else return;
 
     gravity_term_snap_bottom(&term);

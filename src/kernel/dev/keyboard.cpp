@@ -80,6 +80,16 @@ namespace Keyboard {
             return;
         }
         int target = Sched::input_focus();
+
+        // Ctrl+C is the interrupt key, not text: it kills the focused task's
+        // foreground job and is consumed. An event-input task (a terminal) still
+        // receives it as an event so it can forward it to its hosted console,
+        // where CONSOLE_WRITE applies the same rule.
+        if (value == 3 && !(target != -1 && Sched::task_event_input(target))) {
+            Sched::interrupt_foreground(target);
+            return;
+        }
+
         if (target != -1 && Sched::task_event_input(target)) {
             Ipc::post_kernel(target, Input::EV_KEY, value, mods);
             return;
