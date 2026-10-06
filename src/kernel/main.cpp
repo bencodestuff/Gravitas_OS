@@ -61,6 +61,12 @@ volatile struct limine_kernel_address_request kernel_address_request = {
 #define HEAP_PHYS_BASE  0x08000000
 #define HEAP_SIZE       0x2000000 // 32MB (holds the compositor's 4MB shadow)
 
+// Boot diagnostics. The scratch self-checks in kmain (PMM page addresses, a
+// throwaway VMM mapping, a heap round-trip) are bring-up aids: once the
+// machine is known good they are pure noise, so they are compiled but skipped.
+// Flip to true when porting to new hardware.
+static constexpr bool BOOT_VERBOSE = false;
+
 // Load a program from the tarfs into a fresh address space and start it as
 // a ring-3 task. Returns the new task id, or -1 on any failure.
 static int spawn_program(const char* path, const char* name) {
@@ -120,7 +126,6 @@ extern "C" void kmain(void) {
     kprint("[init] global ctors run: ");
     kprint_uint(ctor_count);
     kprint("\n");
-    kprint("If you can read this, the kernel is alive!\n");
 
     // Check Memory Map
     if (memmap_request.response == NULL) {
@@ -130,75 +135,46 @@ extern "C" void kmain(void) {
 
     struct limine_memmap_response *memmap = memmap_request.response;
     uint64_t usable_ram = 0;
-
-    kprint("Scanning Memory Map...\n");
-
-    // Loop through memory
     for (uint64_t i = 0; i < memmap->entry_count; i++) {
         struct limine_memmap_entry *entry = memmap->entries[i];
-
         if (entry->type == LIMINE_MEMMAP_USABLE) {
             usable_ram += entry->length;
         }
     }
-
-    // Print the findings
-    kprint("Total Usable RAM: ");
-    kprint_uint(usable_ram);
-    kprint(" bytes (");
+    kprint("[mem] usable RAM: ");
     kprint_uint(usable_ram / 1024 / 1024);
-    kprint(" MB)\n");
-    kprint("=== END OF REPORT ===\n");
+    kprint(" MB\n");
 
-    kprint("Initializing PMM...\n");
     PMM::init(memmap); // pass the memmap struct we got from Limine
-    kprint("PMM Initialized.\n");
 
-// --- TEST ALLOCATION ---
-    kprint("\nTesting Allocation...\n");
-    
-    // 1. Ask for a page
-    uint64_t page_1 = PMM::alloc_page();
-    kprint("Page 1 allocated at: ");
-    kprint_uint(page_1);           // Print to serial
-    kprint("\n");
-
-    // 2. Ask for another page
-    uint64_t page_2 = PMM::alloc_page();
-    kprint("Page 2 allocated at: ");
-    kprint_uint(page_2);
-    kprint("\n");
-
-    // 3. Verify they are different
-    if (page_2 > page_1) {
-        kprint("SUCCESS: Allocator is handing out sequential RAM!\n");
-    } else {
-        kprint("ERROR: Allocator returned weird addresses.\n");
-    }
-    VMM::init(memmap_request.response);    // TEST: Try to map a fake address
-    // We will map Physical 0x1000 to Virtual 0xDEADBEEF000
-    kprint("Mapping test page...\n");
-    
+    VMM::init(memmap_request.response);
     GDT::init();
     kprint("GDT Initialized.\n");
-    // Flags: Present (1) | Writable (2) = 3
-    VMM::map_page(0x1000, 0xDEADBEEF000, 3);
-    
-    kprint("Page mapped successfully (No Crash).\n");
 
     // Heap: lives in the HHDM window at a reserved physical range — visible
     // from every address space (the kernel half is shared), no mapping needed
     uint64_t heap_va = hhdm_request.response->offset + HEAP_PHYS_BASE;
     Heap::init((void*)heap_va, HEAP_SIZE);
 
-    // TEST: Dynamic Allocation
-    int* test_ptr = new int;
-    *test_ptr = 999;
-    kprint("Heap Test: ");
-    if (*test_ptr == 999) {
-        kprint("SUCCESS! 'new' operator works.\n");
-    } else {
-        kprint("FAILED.\n");
+    // Bring-up self-checks (see BOOT_VERBOSE): two PMM pages must be distinct,
+    // a scratch mapping must not fault, and 'new' must hand back usable memory.
+    if (BOOT_VERBOSE) {
+        uint64_t page_1 = PMM::alloc_page();
+        uint64_t page_2 = PMM::alloc_page();
+        kprint("[boot] PMM pages: ");
+        kprint_uint(page_1); kprint(" and "); kprint_uint(page_2); kprint("\n");
+        kprint(page_2 > page_1 ? "[boot] PMM hands out sequential RAM\n"
+                               : "[boot] PMM returned out-of-order pages!\n");
+
+        // Flags: Present (1) | Writable (2) = 3
+        VMM::map_page(0x1000, 0xDEADBEEF000, 3);
+        kprint("[boot] scratch page mapped\n");
+
+        int* probe = new int;
+        *probe = 999;
+        kprint(*probe == 999 ? "[boot] heap 'new' works\n"
+                             : "[boot] heap 'new' FAILED\n");
+        delete probe;
     }
 
     IDT::init();
@@ -267,27 +243,7 @@ extern "C" void kmain(void) {
             }
             kprint(ok ? "[VFS] SELF-TEST OK: ramfs write+read round-trip\n"
                       : "[VFS] SELF-TEST FAIL: data mismatch\n");
-
-            // readdir listing
-            char listing[256];
-            VFS::readdir("/tmp", listing, sizeof(listing));
-            kprint("[VFS] /tmp contains: ");
-            kprint(listing);
-            kprint("\n");
         }
-    }
-
-    // --- Root listing + mountpoint diagnostics ---
-    {
-        char listing[256];
-        VFS::readdir("/", listing, sizeof(listing));
-        kprint("[VFS] / contains: ");
-        kprint(listing);
-        kprint("\n");
-        kprint(VFS::is_directory("/bin") ? "[VFS] /bin is a dir\n"
-                                          : "[VFS] /bin NOT a dir!\n");
-        kprint(VFS::is_directory("/tmp") ? "[VFS] /tmp is a dir\n"
-                                          : "[VFS] /tmp NOT a dir!\n");
     }
 
     // Bring up userland: the console shell, then the window manager. The
