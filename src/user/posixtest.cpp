@@ -77,8 +77,11 @@ int main(int argc, char** argv) {
     check(open("/tmp/no-such-file", O_RDONLY) == -1 && errno == ENOENT,
           "open missing -> ENOENT");
     errno = 0;
-    check(open("/hello.txt", O_WRONLY | O_CREAT) == -1 && errno == EROFS,
-          "open for write on the tarfs -> EROFS");
+    // The image tree is writable through the overlay: opening an image file for
+    // writing copies it into the upper layer (O_TRUNC would shadow it instead).
+    int wfd = open("/hello.txt", O_WRONLY | O_CREAT);
+    check(wfd >= 0, "open an image file for writing (overlay)");
+    if (wfd >= 0) close(wfd);
     errno = 0;
     check(opendir("/hello.txt") == 0, "opendir a file fails");
 

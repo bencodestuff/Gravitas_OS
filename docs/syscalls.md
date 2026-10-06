@@ -60,6 +60,12 @@ CWD first and then each program directory on the search path — `/bin`, then
 `MKDIR`, `UNLINK` and `RENAME` never search: they resolve against the CWD (or
 an absolute path) only, so a typo cannot land in the read-only system tree.
 
+The root is an **overlay**: the tar image is the read-only lower layer and a
+ramfs is the writable upper layer over it, so the whole tree is writable. A
+write to an image file is copied up first (or shadowed by `O_TRUNC`), the
+listing is the union of both layers, and deleting an image file leaves a
+whiteout marker (`.wh.<name>`) in the upper rather than touching the image.
+
 ## Message types
 
 `SEND`/`RECV` carry a free-form `type`; the kernel only reserves the values

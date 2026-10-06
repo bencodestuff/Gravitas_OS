@@ -35,7 +35,7 @@ def stop_boot_terminal(g):
 
 @test
 def editor(g):
-    g.shell("bg edit.elf /tmp/etest.txt")
+    g.shell("bg edit.elf /etest.txt")
     g.wait_for(r"window #[0-9]+ 'edit")
     g.wait_for(r"wm: title #[0-9]+ 'edit: etest\.txt'")
     w = g.await_window("edit")
@@ -47,14 +47,14 @@ def editor(g):
     g.type("hello world"); g.key("ret"); g.type("second line")
     g.key("home"); g.type("x ")          # Home + prefix: exercises Home
     g.ctrl("s")
-    g.wait_for(r"edit: saved /tmp/etest\.txt")
+    g.wait_for(r"edit: saved /etest\.txt")
     # "hello world\nx second line" is exactly 25 bytes: a mismatch means a
     # dropped or misplaced keystroke (Home included).
-    g.wait_for(r"edit: saved /tmp/etest\.txt \(25 bytes\)")
+    g.wait_for(r"edit: saved /etest\.txt \(25 bytes\)")
     g.ctrl("q")                           # saved: exits, WM refocuses the console
     g.wait_window_gone("edit")
 
-    g.shell("cat /tmp/etest.txt")
+    g.shell("cat /etest.txt")
     g.wait_for("x second line")           # the shell reads back what was typed
 
 

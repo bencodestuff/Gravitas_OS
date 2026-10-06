@@ -1,9 +1,7 @@
 #include "rtc.h"
 #include "kernel/io.h"
 #include "kernel/core/timer.h"
-
-extern "C" void kprint(const char* str);
-extern "C" void kprint_uint(uint64_t value);
+#include "kernel/klib/klib.h"
 
 // The CMOS RTC. Registers are indexed through port 0x70 and read from 0x71.
 // Two format bits matter (status register B): BCD vs binary, and 12h vs 24h.
@@ -86,9 +84,7 @@ namespace Rtc {
         epoch = (uint64_t)(days * 86400 + (int64_t)hour * 3600
                            + (int64_t)min * 60 + sec);
 
-        kprint("[RTC] boot epoch: ");
-        kprint_uint(epoch);
-        kprint("\n");
+        kprint_lus("[RTC] boot epoch: ", epoch, "\n");
     }
 
     uint64_t boot_epoch() { return epoch; }

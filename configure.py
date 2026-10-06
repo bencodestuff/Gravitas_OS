@@ -34,7 +34,7 @@ TEST_PROGRAMS = {
     "filetest", "flood", "libctest", "mouse", "msgecho", "msgtest",
     "popuptest", "proctest", "rawwin", "sleeper", "smash",
     "stackoverflow", "surfacetest", "surfhelper", "timertest", "stdiotest",
-    "hang", "posixtest",
+    "hang", "posixtest", "overlaytest",
 }
 
 # Flags

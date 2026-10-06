@@ -165,8 +165,10 @@ int main(int argc, char** argv) {
     check(grv_read_fd(99, buf, 4) == -1 && errno == EBADF,
           "read bad fd -> EBADF");
     errno = 0;
-    check(grv_mkdir("/bin/nope") == -1 && errno == EROFS,
-          "mkdir on the read-only tarfs -> EROFS");
+    // The root is an overlay now: the image tree is writable, so a create in
+    // /bin lands in the upper layer and removes cleanly again.
+    check(grv_mkdir("/bin/nope") == 0, "mkdir in the image tree (overlay upper)");
+    check(grv_unlink("/bin/nope") == 0, "unlink it again");
     errno = 0;
     struct grv_msg em;
     check(grv_recv(&em, 0) == -1 && errno == EAGAIN,

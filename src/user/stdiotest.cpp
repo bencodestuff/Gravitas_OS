@@ -3,9 +3,9 @@
 #include <errno.h>
 
 // stdiotest — exercises the FILE* layer in the real environment: buffered
-// reads/writes over the ramfs, fgets, fseek/ftell, append, the console
-// streams, and the error paths (ENOENT on the ramfs, EROFS on the tarfs).
-// Prints PASS/FAIL for the test harness.
+// reads/writes over the filesystem, fgets, fseek/ftell, append, the console
+// streams, and the error paths (ENOENT on a missing file; the image tree is
+// writable through the overlay). Prints PASS/FAIL for the test harness.
 
 static int fails = 0;
 static void check(int ok, const char* what) {
@@ -80,15 +80,26 @@ int main(int argc, char** argv) {
     errno = 0;
     check(fopen("/tmp/no-such-file", "r") == 0 && errno == ENOENT,
           "fopen missing -> ENOENT");
-    errno = 0;
-    check(fopen("/hello.txt", "w") == 0 && errno == EROFS,
-          "fopen for write on the read-only tarfs -> EROFS");
 
-    // --- read a file from the read-only tarfs --------------------------
+    // --- read a file from the image ------------------------------------
     f = fopen("/hello.txt", "r");
-    check(f != 0, "fopen a tarfs file");
-    check(fgets(buf, sizeof buf, f) != 0 && strlen(buf) > 0, "fgets from tarfs");
+    check(f != 0, "fopen an image file");
+    check(fgets(buf, sizeof buf, f) != 0 && strlen(buf) > 0, "fgets from the image");
     fclose(f);
+
+    // --- the image tree is writable through the overlay ----------------
+    // A write copies the file up into the upper layer (O_TRUNC shadows it), so
+    // the new bytes read back while the image itself is untouched.
+    f = fopen("/hello.txt", "w");
+    check(f != 0, "fopen an image file for writing (overlay)");
+    if (f != 0) {
+        check(fwrite("rewritten", 1, 9, f) == 9, "write to the image file");
+        fclose(f);
+    }
+    f = fopen("/hello.txt", "r");
+    check(f != 0 && fgets(buf, sizeof buf, f) != 0 && strcmp(buf, "rewritten") == 0,
+          "the rewrite reads back");
+    if (f != 0) fclose(f);
 
     // --- the console streams ------------------------------------------
     check(fprintf(stdout, "stdiotest: console via stdout\n") > 0, "fprintf stdout");

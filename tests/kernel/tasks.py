@@ -89,6 +89,14 @@ def posix_facade(g):
 
 
 @test
+def overlay_root(g):
+    # The writable root: writes land in an upper layer over the read-only image,
+    # the listing is the union, and deleting an image file leaves a whiteout.
+    g.shell("run overlaytest.elf")
+    g.wait_for("overlaytest: all checks pass")
+
+
+@test
 def timer_wakeup(g):
     g.shell("run timertest.elf")
     g.wait_for("timertest: PASS")

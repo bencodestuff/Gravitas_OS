@@ -57,6 +57,39 @@ extern "C" void kprint_hex(uint64_t value) {
     kprint(buf);
 }
 
+// 'a' + 'b' + 'c' as one atomic write (see klib.h).
+extern "C" void kprint3(const char* a, const char* b, const char* c) {
+    char buf[192];
+    int n = 0;
+    const char* parts[3] = { a, b, c };
+    for (int i = 0; i < 3; i++) {
+        for (const char* p = parts[i]; p != nullptr && *p != '\0' &&
+                                 n < (int)sizeof(buf) - 1; p++)
+            buf[n++] = *p;
+    }
+    buf[n] = '\0';
+    kprint(buf);
+}
+
+// "label" + a decimal number + "suffix", as one atomic write.
+extern "C" void kprint_lus(const char* label, uint64_t value, const char* suffix) {
+    char buf[160];
+    int n = 0;
+    for (const char* p = label; *p != '\0' && n < (int)sizeof(buf) - 32; p++)
+        buf[n++] = *p;
+
+    char digits[24];
+    int d = 0;
+    if (value == 0) digits[d++] = '0';
+    while (value > 0) { digits[d++] = (char)('0' + value % 10); value /= 10; }
+    while (d > 0 && n < (int)sizeof(buf) - 2) buf[n++] = digits[--d];
+
+    for (const char* p = suffix; *p != '\0' && n < (int)sizeof(buf) - 1; p++)
+        buf[n++] = *p;
+    buf[n] = '\0';
+    kprint(buf);
+}
+
 // Freestanding compiler requirements (clang emits calls to these for
 // loop idioms, {0} initializers and struct copies even under -fno-builtin).
 

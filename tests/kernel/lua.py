@@ -47,6 +47,18 @@ def lua_error(g):
 
 
 @test
+def lua_writes_the_root(g):
+    # The root is writable now: Lua creates a file in "/" (not /tmp) and reads
+    # it back. `-e` chunks are space-free because the shell cannot quote.
+    g.shell("run lua.elf -e io.open('/notes.txt','w'):write('hello-root')")
+    g.wait_for(r"\[shell\] program finished")
+    g.shell("run lua.elf -e print(io.open('/notes.txt'):read('a'))")
+    g.wait_for(r"^hello-root$")
+    g.shell("run lua.elf -e os.remove('/notes.txt')")
+    g.wait_for(r"\[shell\] program finished")
+
+
+@test
 def lua_repl(g):
     # The interactive interpreter: banner, a typed expression, then Ctrl+C
     # (the foreground-job interrupt) ends it and the shell comes back.

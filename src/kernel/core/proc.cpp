@@ -151,9 +151,7 @@ namespace Sched {
         delete[] victim->fxsave_raw;
         delete victim;
 
-        kprint("[Sched] Task '");
-        kprint(namebuf);
-        kprint("' terminated (killed).\n");
+        kprint3("[Sched] Task '", namebuf, "' terminated (killed).\n");
         irq_restore(iflags);
         return 0;
     }
@@ -325,9 +323,7 @@ namespace Sched {
         new_task->next = ready_queue->next;
         ready_queue->next = new_task;
 
-        kprint("[Sched] User task '");
-        kprint(name);
-        kprint("' created.\n");
+        kprint3("[Sched] User task '", name, "' created.\n");
         return new_task->id;
     }
 
@@ -381,9 +377,7 @@ namespace Sched {
     void exit_current(uint64_t code) {
         Task* dead = current_task;
         dead->exit_code = code;
-        kprint("[Sched] Task '");
-        kprint(dead->name);
-        kprint("' exited.\n");
+        kprint3("[Sched] Task '", dead->name, "' exited.\n");
 
         // 1. Record this exit for WAIT: append to the recent-exits ring
         //    (waiters that call WAIT after the fact scan this).

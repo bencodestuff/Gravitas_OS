@@ -18,6 +18,12 @@ extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value);
 extern "C" void kprint_hex(uint64_t value);
 
+// The two below emit a whole line in ONE atomic write. Multi-call printing is
+// not atomic across calls — interrupts are on between them — so a task could
+// inject its output into the middle of a boot line (it did).
+extern "C" void kprint3(const char* a, const char* b, const char* c);
+extern "C" void kprint_lus(const char* label, uint64_t value, const char* suffix);
+
 extern "C" char* strcpy(char* dest, const char* src); // klib
 
 // The freestanding memory functions the compiler may call at any time.

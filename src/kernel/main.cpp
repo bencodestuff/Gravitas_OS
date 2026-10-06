@@ -24,6 +24,7 @@
 #include "fs/tar.h"
 #include "fs/vfs.h"
 #include "fs/ramfs.h"
+#include "fs/overlay.h"
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 
@@ -124,9 +125,7 @@ extern "C" void kmain(void) {
     Fault::init();
 
     kprint("\n\n=== GRAVITAS OS KERNEL BOOTED ===\n");
-    kprint("[init] global ctors run: ");
-    kprint_uint(ctor_count);
-    kprint("\n");
+    kprint_lus("[init] global ctors run: ", (uint64_t)ctor_count, "\n");
 
     // Check Memory Map
     if (memmap_request.response == NULL) {
@@ -142,9 +141,7 @@ extern "C" void kmain(void) {
             usable_ram += entry->length;
         }
     }
-    kprint("[mem] usable RAM: ");
-    kprint_uint(usable_ram / 1024 / 1024);
-    kprint(" MB\n");
+    kprint_lus("[mem] usable RAM: ", usable_ram / 1024 / 1024, " MB\n");
 
     PMM::init(memmap); // pass the memmap struct we got from Limine
 
@@ -204,13 +201,14 @@ extern "C" void kmain(void) {
     // --- Filesystem layer ---
     // 1. Locate the tar module (the file tree: /bin, /fonts, /Pictures, /tmp)
     Tar::init();
-    // 2. Tar at "/" (read-only, layout = the tar itself); ramfs at /tmp
-    //    (writable scratch — the only writable paths in the system).
+    // 2. The writable root: the tar image is the read-only lower layer and a
+    //    ramfs is the upper layer over it, so "/" is writable — writes land in
+    //    the upper and never touch the image. /tmp is just a directory in it.
     VFS::init();
     RamFS::init();
-    VFS::mount("/", Tar::vfs_instance());
-    VFS::mount("/tmp", RamFS::instance());
-    kprint("[VFS] Mounted /(tarfs) + /tmp(ramfs).\n");
+    Overlay::init(RamFS::instance(), Tar::vfs_instance());
+    VFS::mount("/", Overlay::instance());
+    kprint("[VFS] Mounted / (overlay: ramfs over tarfs).\n");
 
     // --- Console font: swap the embedded 8x8 for the PSF2 from the
     // tarfs (never fatal; falls back silently on any failure). On a
@@ -259,9 +257,7 @@ extern "C" void kmain(void) {
     if (wm_id < 0) {
         kprint("[Kernel] wm.elf not found — running a plain console.\n");
     } else {
-        kprint("[Kernel] window manager as task ");
-        kprint_uint((uint64_t)wm_id);
-        kprint("\n");
+        kprint_lus("[Kernel] window manager as task ", (uint64_t)wm_id, "\n");
     }
 
     // The terminal hosts the shell in a window; it needs a WM to place it.
@@ -270,9 +266,7 @@ extern "C" void kmain(void) {
         if (term_id < 0) {
             kprint("[Kernel] term.elf not found — console-only userland.\n");
         } else {
-            kprint("[Kernel] terminal as task ");
-            kprint_uint((uint64_t)term_id);
-            kprint("\n");
+            kprint_lus("[Kernel] terminal as task ", (uint64_t)term_id, "\n");
         }
     }
 
