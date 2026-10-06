@@ -81,6 +81,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_FTRUNCATE      45
 #define GRV_SYSCALL_TIMER_SET      46
 #define GRV_SYSCALL_RENAME         47
+#define GRV_SYSCALL_TIME           48
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -238,6 +239,12 @@ static inline int grv_unlink(const char* path) {
 /* Rename/move a path within the same filesystem. 0, or -1 with errno. */
 static inline int grv_rename(const char* from, const char* to) {
     return (int)grv_err(syscall2(GRV_SYSCALL_RENAME, (long)from, (long)to));
+}
+
+/* Seconds since the Unix epoch (monotonic; the boot instant until the RTC is
+   read). Not an error-reporting call. */
+static inline long grv_time(void) {
+    return syscall1(GRV_SYSCALL_TIME, 0);
 }
 
 /* Set an open file's length. Returns 0, or -1 with errno. */

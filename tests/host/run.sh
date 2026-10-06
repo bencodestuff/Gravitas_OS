@@ -27,6 +27,8 @@ build_and_run "test_string (string/ctype/stdlib helpers)" \
     test_string tools/test_string.c -fno-builtin
 build_and_run "test_stdio (FILE layer against a fake seam)" \
     test_stdio tools/test_stdio.c -fno-builtin -Isrc/libc/include
+build_and_run "test_time (calendar + strftime)" \
+    test_time tools/test_time.c -fno-builtin
 build_and_run "test_printf (formatter)" \
     test_printf tools/test_printf.c -Isrc/libc/include \
         -ffunction-sections -fdata-sections -Wl,--gc-sections

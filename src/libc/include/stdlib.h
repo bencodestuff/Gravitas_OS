@@ -29,6 +29,10 @@ int abs(int);
    returns NULL (a miss). Lua's os.getenv therefore returns nil. */
 char* getenv(const char* name);
 
+/* Run a command through a shell. There is no shell to hand it to, so this
+   always fails (-1); a NULL argument would be the "is one available" query. */
+int system(const char* command);
+
 /* Sort 'count' elements of 'size' bytes by 'compare'. */
 void qsort(void* base, size_t count, size_t size,
            int (*compare)(const void*, const void*));

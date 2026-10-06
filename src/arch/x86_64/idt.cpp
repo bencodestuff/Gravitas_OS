@@ -449,6 +449,12 @@ static void sys_timer_set(IDT::Registers* regs) {
     regs->rax = 0;
 }
 
+static void sys_time(IDT::Registers* regs) {
+    // Seconds since the Unix epoch. Until the RTC is read at boot the epoch is
+    // the boot instant, so the value is monotonic from 0.
+    regs->rax = (uint64_t)(Timer::get_ticks() / 50);
+}
+
 // SPAWN (4) and SPAWN_BG (21) share this: stage the name, load the ELF, make
 // the task. 'background' decides whether we then block on the child.
 static void spawn_impl(IDT::Registers* regs, bool background) {
@@ -645,6 +651,7 @@ static const SyscallFn syscall_table[] = {
     /* 45 FTRUNCATE       */ sys_ftruncate,
     /* 46 TIMER_SET       */ sys_timer_set,
     /* 47 RENAME          */ sys_rename,
+    /* 48 TIME            */ sys_time,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

@@ -4,6 +4,8 @@
 #include <ctype.h>
 #include <math.h>
 #include <locale.h>
+#include <time.h>
+#include <signal.h>
 #include <setjmp.h>
 #include <errno.h>
 #include <grv/syscall.h>
@@ -20,6 +22,9 @@ static void check(int ok, const char* what) {
 static int cmp_int(const void* a, const void* b) {
     return *(const int*)a - *(const int*)b;
 }
+
+// A handler the signal() stub must refuse (there is no userland delivery yet).
+static void dummy_handler(int sig) { (void)sig; }
 
 // --- setjmp/longjmp ---
 static jmp_buf jb;
@@ -183,6 +188,36 @@ int main(int argc, char** argv) {
     check(setlocale(LC_ALL, "xx_YY") == 0, "setlocale unknown -> NULL");
     check(localeconv() != 0 && localeconv()->decimal_point[0] == '.',
           "localeconv decimal point");
+
+    // --- time / signal / system ---
+    time_t now = time(0);
+    check(now >= 0, "time()");
+    time_t now2 = 0;
+    check(time(&now2) == now2, "time(tloc)");
+
+    time_t zero = 0;
+    struct tm* epoch = gmtime(&zero);
+    check(epoch != 0 && epoch->tm_year == 70 && epoch->tm_mon == 0 &&
+          epoch->tm_mday == 1 && epoch->tm_wday == 4 && epoch->tm_yday == 0,
+          "gmtime(0) = 1970-01-01 Thursday");
+    struct tm* lt = localtime(&zero);
+    check(lt != 0 && lt->tm_year == 70 && lt->tm_mday == 1, "localtime == UTC");
+
+    struct tm rt = *epoch;
+    check(mktime(&rt) == 0 && rt.tm_wday == 4, "mktime round-trip + wday");
+
+    char tbuf[64];
+    check(strftime(tbuf, sizeof tbuf, "%Y-%m-%d %H:%M:%S", epoch) > 0 &&
+          strcmp(tbuf, "1970-01-01 00:00:00") == 0, "strftime date+time");
+    check(strftime(tbuf, sizeof tbuf, "%a %b %d", epoch) > 0 &&
+          strcmp(tbuf, "Thu Jan 01") == 0, "strftime names");
+    check(difftime(100, 40) == 60.0, "difftime");
+    check(clock() >= 0, "clock()");
+
+    check(signal(SIGINT, SIG_IGN) != SIG_ERR, "signal SIG_IGN accepted");
+    check(signal(SIGINT, SIG_DFL) != SIG_ERR, "signal SIG_DFL accepted");
+    check(signal(SIGINT, dummy_handler) == SIG_ERR, "signal handler refused");
+    check(system("true") == -1, "system has no shell");
 
     int* arr = (int*)calloc(5, sizeof(int));
     check(arr != 0 && arr[0] == 0 && arr[4] == 0, "calloc zeroes");
