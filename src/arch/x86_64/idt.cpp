@@ -8,6 +8,7 @@
 #include "kernel/core/sched.h"
 #include "kernel/core/ipc.h"
 #include "kernel/dev/mouse.h"
+#include "kernel/dev/rtc.h"
 #include "kernel/gfx/compositor.h"
 #include "kernel/gfx/framebuffer.h"
 #include "kernel/core/vmm.h"
@@ -450,9 +451,9 @@ static void sys_timer_set(IDT::Registers* regs) {
 }
 
 static void sys_time(IDT::Registers* regs) {
-    // Seconds since the Unix epoch. Until the RTC is read at boot the epoch is
-    // the boot instant, so the value is monotonic from 0.
-    regs->rax = (uint64_t)(Timer::get_ticks() / 50);
+    // Wall-clock seconds since the Unix epoch (anchored by the RTC at boot,
+    // advanced by the PIT).
+    regs->rax = (uint64_t)Rtc::seconds_now();
 }
 
 // SPAWN (4) and SPAWN_BG (21) share this: stage the name, load the ELF, make

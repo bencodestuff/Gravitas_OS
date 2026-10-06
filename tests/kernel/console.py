@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Console: boot identity, the shipped font, the /bin layout, the shell."""
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -14,6 +15,16 @@ def boot_identity(g):
     if g.count("keeping 8x8"):
         g.fail("font fallback triggered (expected PSF2 8x16)")
     g.wait_for(r"\[font\] loaded .*8x16")
+
+
+@test
+def wall_clock(g):
+    # The RTC is read once at boot; the epoch must be plausible (after 2001).
+    m = re.search(r"\[RTC\] boot epoch: (\d+)", g.log())
+    if m is None:
+        g.fail("the RTC was not read at boot (no boot epoch)")
+    if int(m.group(1)) < 1000000000:
+        g.fail("RTC boot epoch looks wrong: " + m.group(1))
 
 
 @test

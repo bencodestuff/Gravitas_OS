@@ -125,6 +125,7 @@ value with a different meaning.
 | 45 | `FTRUNCATE` | `fd, size` | 0 or −1 |
 | 46 | `TIMER_SET` | `ms` (0 cancels) | 0; posts `GRV_EV_TIMER` on expiry |
 | 47 | `RENAME` | `from, to` | 0 or −1 (both sides must be on the same filesystem) |
+| 48 | `TIME` | — | wall-clock seconds since the Unix epoch (RTC-anchored) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

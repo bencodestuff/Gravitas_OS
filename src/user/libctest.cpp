@@ -191,7 +191,7 @@ int main(int argc, char** argv) {
 
     // --- time / signal / system ---
     time_t now = time(0);
-    check(now >= 0, "time()");
+    check(now > 1000000000, "time() is a real epoch (RTC read at boot)");
     time_t now2 = 0;
     check(time(&now2) == now2, "time(tloc)");
 

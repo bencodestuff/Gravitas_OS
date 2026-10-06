@@ -13,6 +13,7 @@
 #include "kernel/core/sched.h"
 #include "kernel/klib/klib.h"
 #include "kernel/dev/mouse.h"
+#include "kernel/dev/rtc.h"
 #include "kernel/core/timer.h"
 #include "kernel/gfx/font.h"
 #include "kernel/core/fault.h"
@@ -191,6 +192,7 @@ extern "C" void kmain(void) {
     kprint("[PIC] Remapped.\n");
     
     Timer::init();
+    Rtc::init();   // anchor the wall clock before anything reads it
     PIC::unmask(0); // Enable Timer (IRQ 0)
     PIC::unmask(1); // Enable Keyboard (IRQ 1)
     Mouse::init();
