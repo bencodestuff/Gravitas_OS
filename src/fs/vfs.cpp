@@ -132,10 +132,37 @@ static char* effective_path(const char* path, char* out, uint64_t out_max) {
     return out;
 }
 
-// --- Bare-name fallback (the embryonic PATH) ---
-// "ls.elf" with no slash: try the CWD-relative path first, then /bin
-// (that's where programs live). Returns the first that exists, else the
-// CWD-relative path (so error messages say what was actually tried).
+// --- Bare-name fallback (the program search path) ---
+// A name with no slash ("ls.elf") is looked up in the CWD first and then in
+// each program directory in order. Programs live in /bin; the test suite
+// ships under /bin/tests. Returns the first that exists, else a /bin path
+// (so error messages name what was actually tried).
+static const char* const kProgramPath[] = { "/bin", "/bin/tests" };
+
+// Does the absolute path 'full' name an existing file or directory?
+static bool path_exists(const char* full) {
+    const char* rel = nullptr;
+    Filesystem* fs = resolve(full, &rel);
+    if (fs == nullptr) return false;
+    if (fs->is_dir && fs->is_dir(fs->priv, rel)) return true;
+    if (fs->open) {
+        uint64_t sz = 0;
+        void* h = fs->open(fs->priv, rel, VFS::O_RDONLY, &sz);
+        if (h != nullptr) { fs->close(fs->priv, h); return true; }
+    }
+    return false;
+}
+
+// "<dir>/<name>" into out.
+static char* join_dir(const char* dir, const char* name, char* out, uint64_t out_max) {
+    uint64_t i = 0;
+    for (; *dir && i + 1 < out_max; dir++) out[i++] = *dir;
+    if (i + 1 < out_max) out[i++] = '/';
+    for (; *name && i + 1 < out_max; name++) out[i++] = *name;
+    out[i] = '\0';
+    return out;
+}
+
 static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
                                   const char** effective) {
     bool has_slash = false;
@@ -153,33 +180,19 @@ static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
     // try CWD-relative: if it exists there (file OR dir), use it
     char cwdtry[256];
     effective_path(path, cwdtry, sizeof(cwdtry));
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(cwdtry, &rel);
-    if (fs && fs->is_dir && fs->is_dir(fs->priv, rel)) {
-        // a directory exists there
+    if (path_exists(cwdtry)) {
         *effective = effective_path(path, out, out_max);
         return true;
     }
-    if (fs && fs->open) {
-        uint64_t sz = 0;
-        void* h = fs->open(fs->priv, rel, VFS::O_RDONLY, &sz);
-        if (h != nullptr) {
-            fs->close(fs->priv, h);
-            // a file exists there
-            *effective = effective_path(path, out, out_max);
-            return true;
-        }
+
+    // then each program directory in turn
+    for (uint64_t i = 0; i < sizeof(kProgramPath) / sizeof(kProgramPath[0]); i++) {
+        join_dir(kProgramPath[i], path, out, out_max);
+        if (path_exists(out)) { *effective = out; return true; }
     }
 
-    // fall back to /bin/<name>
-    uint64_t i = 0;
-    out[i++] = '/';
-    out[i++] = 'b';
-    out[i++] = 'i';
-    out[i++] = 'n';
-    out[i++] = '/';
-    while (*path && i + 1 < out_max) out[i++] = *path++;
-    out[i] = '\0';
+    // nothing found: report the first search directory
+    join_dir(kProgramPath[0], path, out, out_max);
     *effective = out;
     return true;
 }

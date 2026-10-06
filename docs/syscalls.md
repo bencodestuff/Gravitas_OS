@@ -54,7 +54,8 @@ report 0/−1, so the VFS maps their failures to the closest code above.
 A path is absolute (`/Pictures/x.bmp`) or relative to the task's working
 directory, which children inherit when they are spawned. A **bare name** (no
 `/`) is a lookup convenience for existing files: `OPEN` and `STAT` try the
-CWD first and then `/bin` (an embryonic PATH — `run ls` finds `ls.elf`).
+CWD first and then each program directory on the search path — `/bin`, then
+`/bin/tests` for the test suite (`run ls` finds `ls.elf`).
 `MKDIR` and `UNLINK` never search: they resolve against the CWD (or an
 absolute path) only, so a typo cannot land in the read-only system tree.
 

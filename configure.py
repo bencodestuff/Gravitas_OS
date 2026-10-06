@@ -10,6 +10,17 @@ KERNEL_FILE = f"bin/{PROJECT_NAME}.elf"
 COMPILER = "clang++"
 LINKER = "ld.lld"
 
+# Programs that exist to exercise the platform rather than to be used by a
+# user. They ship under /bin/tests so `ls /bin` reads like a real system;
+# everything else lands in /bin. (The VFS searches both directories for a
+# bare program name — see kProgramPath in src/fs/vfs.cpp.)
+TEST_PROGRAMS = {
+    "closetest", "consoletest", "crash", "damagetest", "echoprog",
+    "filetest", "flood", "libctest", "mouse", "msgecho", "msgtest",
+    "popuptest", "proctest", "rawwin", "sleeper", "smash",
+    "stackoverflow", "surfacetest", "surfhelper", "timertest",
+}
+
 # Flags
 CFLAGS = [
     "-target x86_64-unknown-none-elf",
@@ -230,7 +241,8 @@ def main():
                 next_base += 0x100000
         for src in user_sources:
             stem = os.path.splitext(os.path.basename(src))[0]
-            out = f"bin/{stem}.elf"
+            subdir = "tests/" if stem in TEST_PROGRAMS else ""
+            out = f"bin/{subdir}{stem}.elf"
             # crt0 + all libc objects are real inputs so ninja builds them
             ninja.write(f"build {out}: userelf {src} {crt0_obj} {' '.join(libc_objects)}\n")
             ninja.write(f"  base = {user_bases[stem]:#x}\n")

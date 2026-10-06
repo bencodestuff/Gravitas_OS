@@ -10,6 +10,7 @@ cp bin/gravitas.elf iso_root/gravitas.elf
 # 2. Pack the tarfs. THE TAR LAYOUT IS THE FILESYSTEM TREE: the tar is
 #   mounted at "/" and its contents appear 1:1 as paths.
 #     bin/       userland programs (grv_spawn resolves bare names here)
+#     bin/tests/ platform test programs (also on the program search path)
 #     fonts/     console font (PSF2, loaded by Font::load_from_disk)
 #     Pictures/  demo images
 #     tmp/       EMPTY dir: mountpoint placeholder for the writable
@@ -23,6 +24,10 @@ for f in bin/*.elf; do
     [ "$(basename "$f")" = "gravitas.elf" ] && continue
     cp "$f" tar_root/bin/
 done
+if [ -d bin/tests ]; then
+    mkdir -p tar_root/bin/tests
+    cp bin/tests/*.elf tar_root/bin/tests/
+fi
 tar --format=ustar -cf iso_root/files.tar -C tar_root .
 
 # 3. Copy the Config
