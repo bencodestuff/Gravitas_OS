@@ -66,6 +66,11 @@ double round(double x) {
     return ceil(x - 0.5);
 }
 
+// Non-standard integer conversions (an eLua-style convention). They truncate
+// toward the floor/ceiling and wrap like a C cast for out-of-range values.
+int ifloor(double x) { return (int)floor(x); }
+int iceil(double x)  { return (int)ceil(x); }
+
 double fmin(double a, double b) {
     if (a != a) return b;
     if (b != b) return a;

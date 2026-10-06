@@ -80,6 +80,11 @@ double fmin(double, double);
 double fmax(double, double);
 double nan(const char*);
 
+/* Non-standard integer conversions some embedded Lua builds reference
+   (an eLua-style convention); Lua itself does not call them. */
+int ifloor(double);
+int iceil(double);
+
 __END_DECLS
 
 #endif

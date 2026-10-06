@@ -31,4 +31,9 @@ long strtol(const char* s, char** end, int base) {
     return neg ? -(long)v : (long)v;
 }
 
+unsigned long strtoul(const char* s, char** end, int base) {
+    long v = strtol(s, end, base);
+    return (unsigned long)v;
+}
+
 int atoi(const char* s) { return (int)strtol(s, 0, 10); }

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <math.h>
 #include <setjmp.h>
 #include <errno.h>
@@ -52,6 +53,38 @@ int main(int argc, char** argv) {
     char* dc = strdup("dup");
     check(dc != 0 && strcmp(dc, "dup") == 0, "strdup");
     free(dc);
+
+    // --- Lua-port helpers: the rest of the string/ctype/stdlib surface ---
+    check(memchr(buf, 'o', sizeof(buf)) == buf + 4, "memchr");
+    check(memchr(buf, 'z', 5) == 0, "memchr miss");
+    {
+        char sb[8];
+        char* se = stpcpy(sb, "hi");
+        check(se == sb + 2 && *se == '\0' && strcmp(sb, "hi") == 0, "stpcpy");
+    }
+    check(strspn("abcXY", "abc") == 3, "strspn");
+    check(strcspn("abc:def", ":") == 3, "strcspn");
+    check(strpbrk("hello", "xyzl") != 0 && *strpbrk("hello", "xyzl") == 'l', "strpbrk");
+    check(strpbrk("hello", "xyz") == 0, "strpbrk miss");
+    check(strcasecmp("HeLLo", "hello") == 0, "strcasecmp");
+    check(strcasecmp("abc", "abd") < 0, "strcasecmp order");
+    check(strncasecmp("HELLO", "help", 3) == 0, "strncasecmp");
+    check(strcoll("abc", "abd") < 0, "strcoll");
+    check(isgraph('!') && isgraph('0') && !isgraph(' ') && !isgraph('\n'), "isgraph");
+    check(abs(-7) == 7 && abs(4) == 4, "abs");
+    check(strtoul("4294967295", 0, 10) == 4294967295UL, "strtoul");
+    check(strtoul("-1", 0, 10) == (unsigned long)-1, "strtoul wraps");
+    check(ifloor(2.7) == 2 && iceil(2.1) == 3, "ifloor/iceil");
+    check(ifloor(-2.1) == -3 && iceil(-2.7) == -2, "ifloor/iceil negative");
+    {
+        static char toks[] = "a,b,,c";
+        char* sp = toks;
+        check(strcmp(strsep(&sp, ","), "a") == 0, "strsep 1");
+        check(strcmp(strsep(&sp, ","), "b") == 0, "strsep 2");
+        check(strcmp(strsep(&sp, ","), "") == 0, "strsep empty field");
+        check(strcmp(strsep(&sp, ","), "c") == 0, "strsep 3");
+        check(strsep(&sp, ",") == 0, "strsep end");
+    }
 
     // --- stdio (snprintf) ---
     snprintf(buf, sizeof(buf), "%d %x %s", 42, 0xbeef, "ok");

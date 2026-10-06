@@ -40,6 +40,8 @@
 #define fmin     my_fmin
 #define fmax     my_fmax
 #define nan      my_nan
+#define ifloor   my_ifloor
+#define iceil    my_iceil
 
 #include "../src/libc/libm/libm.c"
 
@@ -73,6 +75,8 @@
 #undef fmin
 #undef fmax
 #undef nan
+#undef ifloor
+#undef iceil
 
 static int fails = 0;
 static int checks = 0;
@@ -152,6 +156,19 @@ int main(void) {
     if (my_floor(3.0) != 3.0 || my_ceil(3.0) != 3.0) {
         printf("MISMATCH floor/ceil integral\n");
         fails++;
+    }
+
+    // Non-standard integer conversions (eLua-style)
+    struct { double x; int f; int c; } ip[] = {
+        {2.7, 2, 3}, {-2.7, -3, -2}, {5.0, 5, 5}, {-0.5, -1, 0}, {0.0, 0, 0}
+    };
+    for (unsigned i = 0; i < sizeof(ip) / sizeof(ip[0]); i++) {
+        checks++;
+        if (my_ifloor(ip[i].x) != ip[i].f || my_iceil(ip[i].x) != ip[i].c) {
+            printf("MISMATCH ifloor/iceil(%g): %d,%d want %d,%d\n",
+                   ip[i].x, my_ifloor(ip[i].x), my_iceil(ip[i].x), ip[i].f, ip[i].c);
+            fails++;
+        }
     }
 
     printf("libm host test: %d checks, %d failures\n", checks, fails);

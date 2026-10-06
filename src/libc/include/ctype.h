@@ -13,6 +13,7 @@ int isupper(int);
 int islower(int);
 int isxdigit(int);
 int isprint(int);
+int isgraph(int);
 int ispunct(int);
 int iscntrl(int);
 

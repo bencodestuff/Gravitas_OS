@@ -34,3 +34,43 @@ size_t strnlen(const char* s, size_t max) {
     while (n < max && s[n]) n++;
     return n;
 }
+
+size_t strspn(const char* s, const char* accept) {
+    size_t n = 0;
+    for (; s[n]; n++) {
+        const char* a = accept;
+        while (*a && *a != s[n]) a++;
+        if (*a == '\0') break;
+    }
+    return n;
+}
+
+size_t strcspn(const char* s, const char* reject) {
+    size_t n = 0;
+    for (; s[n]; n++) {
+        const char* r = reject;
+        while (*r && *r != s[n]) r++;
+        if (*r) break;
+    }
+    return n;
+}
+
+char* strpbrk(const char* s, const char* accept) {
+    for (; *s; s++) {
+        const char* a = accept;
+        while (*a && *a != *s) a++;
+        if (*a) return (char*)s;
+    }
+    return 0;
+}
+
+char* strsep(char** stringp, const char* delim) {
+    if (stringp == 0 || *stringp == 0) return 0;
+    char* token = *stringp;
+    for (char* p = token; ; p++) {
+        if (*p == '\0') { *stringp = 0; return token; }
+        const char* d = delim;
+        while (*d && *d != *p) d++;
+        if (*d) { *p = '\0'; *stringp = p + 1; return token; }
+    }
+}

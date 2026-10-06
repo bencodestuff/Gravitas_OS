@@ -8,6 +8,7 @@ int isupper(int c)  { return c >= 'A' && c <= 'Z'; }
 int islower(int c)  { return c >= 'a' && c <= 'z'; }
 int isspace(int c)  { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; }
 int isprint(int c)  { return c >= 32 && c < 127; }
+int isgraph(int c)  { return c > 32 && c < 127; }
 int iscntrl(int c)  { return (c >= 0 && c < 32) || c == 127; }
 int ispunct(int c)  { return isprint(c) && c != ' ' && !isalnum(c); }
 
