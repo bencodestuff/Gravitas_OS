@@ -143,7 +143,8 @@ class Guest:
             return ""
 
     def count(self, pat):
-        return len(re.findall(pat, self.log()))
+        # re.M so ^/$ anchor to log lines, not the whole log.
+        return len(re.findall(pat, self.log(), re.M))
 
     def mark(self):
         return len(self.log())
@@ -220,12 +221,31 @@ class Guest:
     # Named keys those two characters must go through raw scancodes.
     SPECIAL = {".": ("34", "b4"), "/": ("35", "b5")}
 
+    # Punctuation QEMU names by key, not by character. Shifted symbols are
+    # shift-<key>. (Uppercase letters are handled as shift-<letter>.)
+    NAMED = {
+        "-": "minus", "=": "equal", ",": "comma", ";": "semicolon",
+        "'": "apostrophe", "[": "bracket_left", "]": "bracket_right",
+        "\\": "backslash", "`": "grave_accent",
+        "!": "shift-1", "@": "shift-2", "#": "shift-3", "$": "shift-4",
+        "%": "shift-5", "^": "shift-6", "&": "shift-7", "*": "shift-8",
+        "(": "shift-9", ")": "shift-0", "_": "shift-minus", "+": "shift-equal",
+        ":": "shift-semicolon", '"': "shift-apostrophe",
+        "{": "shift-bracket_left", "}": "shift-bracket_right",
+        "|": "shift-backslash", "<": "shift-comma", ">": "shift-dot",
+        "?": "shift-slash", "~": "shift-grave_accent",
+    }
+
     def type(self, text):
         for ch in text:
             if ch in self.SPECIAL:
                 self.raw(*self.SPECIAL[ch])
             elif ch == " ":
                 self.key("spc")
+            elif ch.isupper():
+                self.key("shift-" + ch.lower())
+            elif ch in self.NAMED:
+                self.key(self.NAMED[ch])
             else:
                 self.key(ch)
 
