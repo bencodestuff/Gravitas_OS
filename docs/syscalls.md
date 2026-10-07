@@ -141,6 +141,8 @@ value with a different meaning.
 | 53 | `SHM_GRANT` | `id, task` | 0 or −1 (owner only) |
 | 54 | `SHM_MAP` | `id, out*` | 0 or −1; fills `{address, size}` |
 | 55 | `SHM_CLOSE` | `id` | 0 or −1 (owner only) |
+| 56 | `POWEROFF` | — | does not return: the machine switches off |
+| 57 | `REBOOT` | — | does not return: the machine resets |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

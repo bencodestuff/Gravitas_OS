@@ -153,6 +153,19 @@ class Guest:
         self.wait_for("type 'help'", 60)
         self.wait_for("term: hosting shell as task", 60)
 
+    def await_exit(self, timeout=20.0):
+        """Wait for the guest to leave.
+
+        A poweroff or a reset ends QEMU, because the harness boots with
+        -no-reboot: either one is observable as the process exiting.
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.qemu.poll() is not None:
+                return True
+            time.sleep(0.05)
+        return False
+
     def close(self):
         try:
             if self.sock:

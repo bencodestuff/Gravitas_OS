@@ -100,6 +100,8 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_SHM_GRANT      53
 #define GRV_SYSCALL_SHM_MAP        54
 #define GRV_SYSCALL_SHM_CLOSE      55
+#define GRV_SYSCALL_POWEROFF       56
+#define GRV_SYSCALL_REBOOT         57
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -383,6 +385,17 @@ static inline int grv_shm_map(int id, struct grv_map* out) {
 }
 static inline int grv_shm_close(int id) {
     return (int)syscall1(GRV_SYSCALL_SHM_CLOSE, (long)id);
+}
+
+/* Leave. Neither returns: the machine is off (or resetting) by the time these
+   would come back. Anything that needs flushing belongs before the call. */
+static inline __attribute__((__noreturn__)) void grv_poweroff(void) {
+    syscall1(GRV_SYSCALL_POWEROFF, 0);
+    __builtin_unreachable();
+}
+static inline __attribute__((__noreturn__)) void grv_reboot(void) {
+    syscall1(GRV_SYSCALL_REBOOT, 0);
+    __builtin_unreachable();
 }
 
 /* Commit damage. The syscall takes an optional surface-local rect in RDI and

@@ -19,6 +19,7 @@
 #include "kernel/core/sysinfo.h"
 #include "kernel/core/errno.h"
 #include "kernel/core/memmap.h"
+#include "kernel/core/power.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
@@ -381,6 +382,17 @@ static void sys_shm_close(IDT::Registers* regs) {
     regs->rax = (uint64_t)(long)MemMap::close((int)regs->rdi);
 }
 
+// Leaving. Neither returns, so nothing is written back to rax.
+static void sys_poweroff(IDT::Registers* regs) {
+    (void)regs;
+    Power::poweroff();
+}
+
+static void sys_reboot(IDT::Registers* regs) {
+    (void)regs;
+    Power::reboot();
+}
+
 static void sys_surface_destroy(IDT::Registers* regs) {
     regs->rax = (uint64_t)(long)Compositor::surface_destroy((int)regs->rdi);
 }
@@ -717,6 +729,8 @@ static const SyscallFn syscall_table[] = {
     /* 53 SHM_GRANT       */ sys_shm_grant,
     /* 54 SHM_MAP         */ sys_shm_map,
     /* 55 SHM_CLOSE       */ sys_shm_close,
+    /* 56 POWEROFF        */ sys_poweroff,
+    /* 57 REBOOT          */ sys_reboot,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =
