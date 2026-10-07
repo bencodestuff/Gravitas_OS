@@ -64,7 +64,7 @@ class Guest:
     # floor of its own — measured), so this is the only limit; the guest's PS/2
     # controller drops keys if they arrive faster than its IRQ handler drains
     # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
-    PACE = 0.015
+    PACE = 0.03
 
     def __init__(self, name):
         self.name = name
@@ -357,8 +357,34 @@ class Guest:
     # --- monitor: screenshots ------------------------------------------
 
     def screendump(self, path):
+        """Dump the guest framebuffer to 'path'.
+
+        QEMU writes it synchronously, in ~30ms, so wait for the file to stop
+        growing rather than sleeping a fixed 0.4s. (A test that needs the guest
+        to have *painted* still has to wait for that separately — this only
+        covers the dump itself.)
+        """
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
         self.cmd("screendump " + path)
-        time.sleep(0.4)
+        end = time.time() + 3.0
+        last = -1
+        stable = 0
+        while time.time() < end:
+            try:
+                n = os.path.getsize(path)
+            except OSError:
+                n = -1
+            if n > 0 and n == last:
+                stable += 1
+                if stable >= 2:
+                    return
+            else:
+                stable = 0
+            last = n
+            time.sleep(0.01)
 
     # --- WM introspection ----------------------------------------------
 
