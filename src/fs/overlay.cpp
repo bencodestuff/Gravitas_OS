@@ -6,8 +6,12 @@
 //
 //   * Paths arriving here are already mount-relative and have no leading slash
 //     ("hello.txt", "fonts/bizcat.psf"); the root is "".
-//   * A handle from either layer is wrapped in an OvHandle so read/write/close
-//     can tell which backend it came from.
+//   * A node remembers both backends' views of the same entry, plus its path —
+//     the path is what a copy-up and a whiteout need, and the two views are
+//     what a merged readdir needs.
+//   * Writes happen in the upper. A lower file is copied up on first write
+//     (not at open: the node layer has no open, and a read-only open of a
+//     lower file should not cost a copy).
 //   * Whiteouts are ordinary upper files named ".wh.<name>", the overlayfs
 //     convention: cheap, needs no new mechanism, and readdir hides them.
 //   * Buffers are on the kernel stack, not static: a syscall can be preempted
@@ -18,10 +22,40 @@ namespace Overlay {
 static VFS::Filesystem* upper_fs = nullptr;
 static VFS::Filesystem* lower_fs = nullptr;
 
-// The handle the VFS sees: which backend, and that backend's own handle.
-struct OvHandle {
-    VFS::Filesystem* fs;
-    void* h;
+// What an overlay node holds.
+struct OvNode {
+    char path[256];
+    VFS::Node* upper;   // the upper's view, or nullptr
+    VFS::Node* lower;   // the lower's view, or nullptr
+};
+
+// --- the ops (prototyped so the table below can name them) ---
+static VFS::Node* ov_root(void* priv);
+static VFS::Node* ov_lookup(void* priv, VFS::Node* dir, const char* name);
+static bool ov_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
+static uint64_t ov_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
+static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf, uint64_t count, uint64_t offset);
+static int ov_truncate(void* priv, VFS::Node* node, uint64_t size);
+static int ov_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type, VFS::Node** out);
+static int ov_unlink(void* priv, VFS::Node* dir, const char* name);
+static int ov_rename(void* priv, VFS::Node* from_dir, const char* from, VFS::Node* to_dir, const char* to);
+static void ov_release(void* priv, VFS::Node* node);
+static int ov_map(void* priv, VFS::Node* node, uint64_t* out_phys, uint64_t* out_size);
+
+static VFS::Filesystem fs = {
+    .fs_type  = "overlay",
+    .priv     = nullptr,
+    .root     = ov_root,
+    .lookup   = ov_lookup,
+    .readdir  = ov_readdir,
+    .read      = ov_read,
+    .write     = ov_write,
+    .truncate = ov_truncate,
+    .create   = ov_create,
+    .unlink   = ov_unlink,
+    .rename   = ov_rename,
+    .release  = ov_release,
+    .map      = ov_map,
 };
 
 // --- small helpers -----------------------------------------------------
@@ -37,35 +71,14 @@ static void join(const char* dir, const char* name, char* out, uint64_t max) {
     out[n] = '\0';
 }
 
-// Does this backend have the path, and is it a directory?
-static bool exists(VFS::Filesystem* fs, const char* path, bool* is_dir) {
-    if (fs == nullptr) return false;
-    if (fs->is_dir && fs->is_dir(fs->priv, path)) {
-        if (is_dir) *is_dir = true;
-        return true;
-    }
-    if (fs->open) {
-        uint64_t size = 0;
-        void* h = fs->open(fs->priv, path, VFS::O_RDONLY, &size);
-        if (h != nullptr) {
-            fs->close(fs->priv, h);
-            if (is_dir) *is_dir = false;
-            return true;
-        }
-    }
-    return false;
-}
-
-// ".wh." + the final component of 'path' in the same directory.
-static void whiteout_path(const char* path, char* out, uint64_t max) {
-    int slash = -1;
-    for (int i = 0; path[i]; i++) if (path[i] == '/') slash = i;
-    uint64_t n = 0;
-    for (int i = 0; i <= slash && n + 1 < max; i++) out[n++] = path[i];
+// ".wh." + name; false when that would not fit.
+static bool whiteout_name(const char* name, char* out, uint64_t max) {
     const char* pre = ".wh.";
-    for (int i = 0; pre[i] && n + 1 < max; i++) out[n++] = pre[i];
-    for (const char* p = path + slash + 1; *p && n + 1 < max; p++) out[n++] = *p;
+    uint64_t n = 0;
+    for (int i = 0; pre[i]; i++) { if (n + 1 >= max) return false; out[n++] = pre[i]; }
+    for (uint64_t i = 0; name[i]; i++) { if (n + 1 >= max) return false; out[n++] = name[i]; }
     out[n] = '\0';
+    return true;
 }
 
 // Is a directory entry name a whiteout marker?
@@ -73,258 +86,287 @@ static bool name_is_whiteout(const char* name) {
     return name[0] == '.' && name[1] == 'w' && name[2] == 'h' && name[3] == '.';
 }
 
-// Has 'path' been deleted from the lower layer?
-static bool is_whited_out(const char* path) {
-    char w[256];
-    whiteout_path(path, w, sizeof(w));
-    bool dir;
-    return exists(upper_fs, w, &dir);
+// Has 'name' in this upper directory been deleted from the lower?
+static bool whited_out(VFS::Node* upper_dir, const char* name) {
+    if (upper_dir == nullptr) return false;
+    char wn[VFS::NAME_MAX];
+    if (!whiteout_name(name, wn, sizeof(wn))) return false;
+    VFS::Node* w = upper_fs->lookup(upper_fs->priv, upper_dir, wn);
+    if (w == nullptr) return false;
+    upper_fs->release(upper_fs->priv, w);
+    return true;
 }
 
-// Copy a lower file into the upper so it can be modified. Chunked, so the whole
-// file never has to sit in kernel heap.
-static bool copy_up(const char* path) {
-    uint64_t size = 0;
-    void* lh = lower_fs->open(lower_fs->priv, path, VFS::O_RDONLY, &size);
-    if (lh == nullptr) return false;
+// Look up one name in a backend directory (null-safe).
+static VFS::Node* child_of(VFS::Filesystem* f, VFS::Node* dir, const char* name) {
+    if (f == nullptr || dir == nullptr) return nullptr;
+    return f->lookup(f->priv, dir, name);
+}
 
-    void* uh = upper_fs->open(upper_fs->priv, path,
-                              VFS::O_WRONLY | VFS::O_CREATE | VFS::O_TRUNC, &size);
-    if (uh == nullptr) {
-        lower_fs->close(lower_fs->priv, lh);
-        return false;
+// Wrap the two backends' views into an overlay node. Takes ownership of both
+// views (releases them if it cannot build the node).
+static VFS::Node* make_ov(const char* path, VFS::Node* upper, VFS::Node* lower) {
+    VFS::Node* src = upper ? upper : lower;
+    VFS::FileType type = src ? src->type : VFS::FT_FILE;
+
+    VFS::Node* n = VFS::node_new(&fs, type);
+    OvNode* on = (n != nullptr) ? new OvNode : nullptr;
+    if (n == nullptr || on == nullptr) {
+        delete n;
+        if (upper) upper_fs->release(upper_fs->priv, upper);
+        if (lower) lower_fs->release(lower_fs->priv, lower);
+        return nullptr;
     }
 
-    char buf[1024];
-    uint64_t off = 0;
-    while (off < size) {
-        uint64_t want = size - off;
-        if (want > sizeof(buf)) want = sizeof(buf);
-        uint64_t got = lower_fs->read(lower_fs->priv, lh, buf, want, off);
-        if (got == 0) break;
-        upper_fs->write(upper_fs->priv, uh, buf, got, off);
-        off += got;
-    }
+    uint64_t i = 0;
+    while (path[i] && i < sizeof(on->path) - 1) { on->path[i] = path[i]; i++; }
+    on->path[i] = '\0';
+    on->upper = upper;
+    on->lower = lower;
 
-    lower_fs->close(lower_fs->priv, lh);
-    upper_fs->close(upper_fs->priv, uh);
+    n->priv = on;
+    if (src) {
+        n->size = src->size;
+        n->ino = src->ino;
+        n->mode = src->mode;
+        n->mtime = src->mtime;
+    }
+    return n;
+}
+
+// Make sure the upper has a directory to work in, creating it if the directory
+// exists only in the lower. Stores it in *slot (which the node owns).
+static VFS::Node* ensure_dir(VFS::Node** slot, const char* path) {
+    if (*slot != nullptr) return *slot;
+    VFS::Node* d = VFS::node_create(upper_fs, path, VFS::FT_DIR);
+    if (d != nullptr) *slot = d;
+    return d;
+}
+
+// Give an entry an upper counterpart, copying a lower file's bytes up with it.
+static bool make_upper(OvNode* on) {
+    if (on->upper != nullptr) return true;
+    if (upper_fs == nullptr || upper_fs->create == nullptr) return false;
+
+    VFS::Node* up = VFS::node_create(upper_fs, on->path, VFS::FT_FILE);
+    if (up == nullptr) return false;
+
+    if (on->lower && on->lower->type == VFS::FT_FILE && on->lower->fs->read) {
+        char buf[1024];
+        uint64_t off = 0;
+        while (off < on->lower->size) {
+            uint64_t want = on->lower->size - off;
+            if (want > sizeof(buf)) want = sizeof(buf);
+            uint64_t got = on->lower->fs->read(on->lower->fs->priv, on->lower,
+                                              buf, want, off);
+            if (got == 0) break;
+            if (up->fs->write == nullptr) break;
+            up->fs->write(up->fs->priv, up, buf, got, off);
+            off += got;
+        }
+    }
+    on->upper = up;
     return true;
 }
 
 // --- the ops -----------------------------------------------------------
 
-static void* ov_open(void* priv, const char* path, int flags, uint64_t* out_size) {
+static VFS::Node* ov_root(void* priv) {
     (void)priv;
-    const int writing = VFS::O_WRONLY | VFS::O_RDWR | VFS::O_CREATE | VFS::O_TRUNC;
-    bool dir = false;
+    VFS::Node* u = upper_fs->root(upper_fs->priv);
+    VFS::Node* l = lower_fs ? lower_fs->root(lower_fs->priv) : nullptr;
+    return make_ov("", u, l);
+}
 
-    VFS::Filesystem* fs;
-    void* h;
+static VFS::Node* ov_lookup(void* priv, VFS::Node* dir, const char* name) {
+    (void)priv;
+    OvNode* d = (OvNode*)dir->priv;
+    if (name[0] == '\0' || name_is_whiteout(name)) return nullptr;
 
-    if (flags & writing) {
-        // Writes always land in the upper. A lower file is copied up first so
-        // that an O_RDWR does not silently lose its contents; O_TRUNC does not
-        // need them, and the fresh upper file shadows the lower one anyway.
-        if (!exists(upper_fs, path, &dir)) {
-            if (lower_fs && exists(lower_fs, path, &dir)) {
-                if (dir) return nullptr;                  // not openable
-                if (!(flags & VFS::O_TRUNC) && !copy_up(path)) return nullptr;
-            } else if (!(flags & VFS::O_CREATE)) {
-                return nullptr;                           // no such file
+    VFS::Node* u = child_of(upper_fs, d->upper, name);
+    VFS::Node* l = nullptr;
+    if (!whited_out(d->upper, name))
+        l = child_of(lower_fs, d->lower, name);
+    if (u == nullptr && l == nullptr) return nullptr;
+
+    char path[256];
+    join(d->path, name, path, sizeof(path));
+    return make_ov(path, u, l);
+}
+
+static bool ov_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out) {
+    (void)priv;
+    OvNode* d = (OvNode*)dir->priv;
+
+    // The index counts *visible* entries: the upper's, minus whiteout markers,
+    // then the lower's that the upper does not already provide or hide.
+    uint64_t visible = 0;
+
+    if (d->upper) {
+        VFS::DirEntry e;
+        for (uint64_t i = 0; upper_fs->readdir(upper_fs->priv, d->upper, i, &e); i++) {
+            if (name_is_whiteout(e.name)) continue;
+            if (visible == index) { *out = e; return true; }
+            visible++;
+        }
+    }
+
+    if (d->lower) {
+        VFS::DirEntry e;
+        for (uint64_t i = 0; lower_fs->readdir(lower_fs->priv, d->lower, i, &e); i++) {
+            bool shadowed = false;
+            if (d->upper) {
+                VFS::Node* u = upper_fs->lookup(upper_fs->priv, d->upper, e.name);
+                if (u) { shadowed = true; upper_fs->release(upper_fs->priv, u); }
             }
-        }
-        fs = upper_fs;
-        h = upper_fs->open(upper_fs->priv, path, flags, out_size);
-    } else {
-        if (exists(upper_fs, path, &dir)) {
-            if (dir) return nullptr;
-            fs = upper_fs;
-            h = upper_fs->open(upper_fs->priv, path, flags, out_size);
-        } else if (lower_fs && !is_whited_out(path) &&
-                   exists(lower_fs, path, &dir) && !dir) {
-            fs = lower_fs;
-            h = lower_fs->open(lower_fs->priv, path, flags, out_size);
-        } else {
-            return nullptr;
+            if (shadowed || whited_out(d->upper, e.name)) continue;
+            if (visible == index) { *out = e; return true; }
+            visible++;
         }
     }
-
-    if (h == nullptr) return nullptr;
-
-    OvHandle* oh = new OvHandle;
-    if (oh == nullptr) { fs->close(fs->priv, h); return nullptr; }
-    oh->fs = fs;
-    oh->h = h;
-    return oh;
-}
-
-static uint64_t ov_read(void* priv, void* handle, void* buf,
-                        uint64_t count, uint64_t offset) {
-    (void)priv;
-    OvHandle* oh = (OvHandle*)handle;
-    return oh->fs->read(oh->fs->priv, oh->h, buf, count, offset);
-}
-
-static uint64_t ov_write(void* priv, void* handle, const void* buf,
-                         uint64_t count, uint64_t offset) {
-    (void)priv;
-    OvHandle* oh = (OvHandle*)handle;
-    if (oh->fs->write == nullptr) return 0;
-    return oh->fs->write(oh->fs->priv, oh->h, buf, count, offset);
-}
-
-static void ov_close(void* priv, void* handle) {
-    (void)priv;
-    OvHandle* oh = (OvHandle*)handle;
-    oh->fs->close(oh->fs->priv, oh->h);
-    delete oh;
-}
-
-static int ov_truncate(void* priv, void* handle, uint64_t size) {
-    (void)priv;
-    OvHandle* oh = (OvHandle*)handle;
-    if (oh->fs->truncate == nullptr) return -1;
-    return oh->fs->truncate(oh->fs->priv, oh->h, size);
-}
-
-// Emit one listing line, if it fits.
-static void emit(char* buf, uint64_t max, uint64_t* written, const char* name) {    for (uint64_t i = 0; name[i]; i++) {
-        if (*written + 3 >= max) return;
-        buf[(*written)++] = name[i];
-    }
-    if (*written + 3 < max) buf[(*written)++] = '\n';
-}
-
-static uint64_t ov_readdir(void* priv, const char* path, char* buf, uint64_t max) {
-    (void)priv;
-    char ubuf[2048], lbuf[2048];
-    ubuf[0] = '\0';
-    lbuf[0] = '\0';
-    if (upper_fs->readdir) upper_fs->readdir(upper_fs->priv, path, ubuf, sizeof(ubuf));
-    if (lower_fs && lower_fs->readdir) lower_fs->readdir(lower_fs->priv, path, lbuf, sizeof(lbuf));
-
-    uint64_t written = 0;
-
-    // The upper's entries, minus the whiteout markers.
-    for (const char* p = ubuf; *p; ) {
-        const char* e = p;
-        while (*e && *e != '\n') e++;
-        char name[64];
-        uint64_t n = 0;
-        for (const char* q = p; q < e && n + 1 < sizeof(name); q++) name[n++] = *q;
-        name[n] = '\0';
-        if (!name_is_whiteout(name)) emit(buf, max, &written, name);
-        p = *e ? e + 1 : e;
-    }
-
-    // The lower's entries that the upper does not already provide.
-    for (const char* p = lbuf; *p; ) {
-        const char* e = p;
-        while (*e && *e != '\n') e++;
-        char name[64];
-        uint64_t n = 0;
-        for (const char* q = p; q < e && n + 1 < sizeof(name); q++) name[n++] = *q;
-        name[n] = '\0';
-
-        char full[256];
-        join(path, name, full, sizeof(full));
-        bool dir;
-        if (!exists(upper_fs, full, &dir) && !is_whited_out(full))
-            emit(buf, max, &written, name);
-
-        p = *e ? e + 1 : e;
-    }
-
-    buf[written] = '\0';
-    return written;
-}
-
-static bool ov_is_dir(void* priv, const char* path) {
-    (void)priv;
-    bool dir = false;
-    if (exists(upper_fs, path, &dir)) return dir;   // the upper shadows entirely
-    if (is_whited_out(path)) return false;
-    if (lower_fs && exists(lower_fs, path, &dir)) return dir;
     return false;
 }
 
-static int ov_mkdir(void* priv, const char* path) {
+static uint64_t ov_read(void* priv, VFS::Node* node, void* buf,
+                        uint64_t count, uint64_t offset) {
     (void)priv;
-    if (upper_fs->mkdir == nullptr) return -1;
-
-    // Refuse a path that already exists in either layer: creating an empty
-    // upper directory over a lower one would hide its contents.
-    bool dir = false;
-    if (exists(upper_fs, path, &dir)) return -1;
-    if (lower_fs && exists(lower_fs, path, &dir) && !is_whited_out(path)) return -1;
-
-    return upper_fs->mkdir(upper_fs->priv, path);
+    OvNode* on = (OvNode*)node->priv;
+    VFS::Node* src = on->upper ? on->upper : on->lower;
+    if (src == nullptr || src->fs->read == nullptr) return 0;
+    return src->fs->read(src->fs->priv, src, buf, count, offset);
 }
 
-static int ov_unlink(void* priv, const char* path) {
+static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf,
+                         uint64_t count, uint64_t offset) {
     (void)priv;
-    if (upper_fs->unlink == nullptr) return -1;
+    OvNode* on = (OvNode*)node->priv;
+    if (!make_upper(on)) return 0;
+    if (on->upper->fs->write == nullptr) return 0;
+    return on->upper->fs->write(on->upper->fs->priv, on->upper, buf, count, offset);
+}
 
-    bool dir = false;
-    if (exists(upper_fs, path, &dir)) return upper_fs->unlink(upper_fs->priv, path);
+static int ov_truncate(void* priv, VFS::Node* node, uint64_t size) {
+    (void)priv;
+    OvNode* on = (OvNode*)node->priv;
+    if (!make_upper(on)) return -1;
+    if (on->upper->fs->truncate == nullptr) return -1;
+    return on->upper->fs->truncate(on->upper->fs->priv, on->upper, size);
+}
+
+static int ov_create(void* priv, VFS::Node* dir, const char* name,
+                     VFS::FileType type, VFS::Node** out) {
+    (void)priv;
+    OvNode* d = (OvNode*)dir->priv;
+    if (name[0] == '\0' || upper_fs->create == nullptr) return -1;
+
+    if (ensure_dir(&d->upper, d->path) == nullptr) return -1;
+
+    // Creating a directory over a lower one would hide the lower's contents.
+    if (type == VFS::FT_DIR && d->lower && !whited_out(d->upper, name)) {
+        VFS::Node* l = lower_fs->lookup(lower_fs->priv, d->lower, name);
+        if (l) { lower_fs->release(lower_fs->priv, l); return -1; }
+    }
+
+    VFS::Node* un = nullptr;
+    if (upper_fs->create(upper_fs->priv, d->upper, name, type, &un) != 0) return -1;
+
+    char path[256];
+    join(d->path, name, path, sizeof(path));
+    VFS::Node* n = make_ov(path, un, nullptr);
+    if (n == nullptr) return -1;
+    *out = n;
+    return 0;
+}
+
+static int ov_unlink(void* priv, VFS::Node* dir, const char* name) {
+    (void)priv;
+    OvNode* d = (OvNode*)dir->priv;
+    if (name[0] == '\0' || upper_fs->unlink == nullptr) return -1;
+
+    if (d->upper) {
+        VFS::Node* u = upper_fs->lookup(upper_fs->priv, d->upper, name);
+        if (u) {
+            upper_fs->release(upper_fs->priv, u);
+            return upper_fs->unlink(upper_fs->priv, d->upper, name);
+        }
+    }
 
     // Only in the lower: leave a whiteout so it does not come back.
-    if (lower_fs && exists(lower_fs, path, &dir)) {
-        char w[256];
-        whiteout_path(path, w, sizeof(w));
-        uint64_t size = 0;
-        void* h = upper_fs->open(upper_fs->priv, w,
-                                 VFS::O_WRONLY | VFS::O_CREATE | VFS::O_TRUNC, &size);
-        if (h == nullptr) return -1;
-        upper_fs->close(upper_fs->priv, h);
-        return 0;
-    }
-    return -1;
+    VFS::Node* l = child_of(lower_fs, d->lower, name);
+    if (l == nullptr) return -1;
+    lower_fs->release(lower_fs->priv, l);
+
+    if (ensure_dir(&d->upper, d->path) == nullptr) return -1;
+
+    char wn[VFS::NAME_MAX];
+    if (!whiteout_name(name, wn, sizeof(wn))) return -1;
+
+    VFS::Node* w = upper_fs->lookup(upper_fs->priv, d->upper, wn);
+    if (w) { upper_fs->release(upper_fs->priv, w); return 0; }  // already hidden
+
+    if (upper_fs->create(upper_fs->priv, d->upper, wn, VFS::FT_FILE, &w) != 0)
+        return -1;
+    upper_fs->release(upper_fs->priv, w);
+    return 0;
 }
 
-static int ov_rename(void* priv, const char* from, const char* to) {
+static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
+                     VFS::Node* to_dir, const char* to) {
     (void)priv;
+    OvNode* fd = (OvNode*)from_dir->priv;
+    OvNode* td = (OvNode*)to_dir->priv;
+    if (from[0] == '\0' || to[0] == '\0') return -1;
     if (upper_fs->rename == nullptr) return -1;
 
-    bool dir = false;
-    if (!exists(upper_fs, from, &dir)) {
-        if (!(lower_fs && exists(lower_fs, from, &dir))) return -1;
-        if (dir) return -1;                     // renaming a lower directory
-        if (!copy_up(from)) return -1;
+    VFS::Node* fup = ensure_dir(&fd->upper, fd->path);
+    if (fup == nullptr) return -1;
+
+    bool in_upper = false;
+    VFS::Node* u = upper_fs->lookup(upper_fs->priv, fup, from);
+    if (u) { in_upper = true; upper_fs->release(upper_fs->priv, u); }
+
+    if (!in_upper) {
+        VFS::Node* l = child_of(lower_fs, fd->lower, from);
+        if (l == nullptr) return -1;
+        if (l->type == VFS::FT_DIR) { lower_fs->release(lower_fs->priv, l); return -1; }
+
+        OvNode tmp;
+        join(fd->path, from, tmp.path, sizeof(tmp.path));
+        tmp.upper = nullptr;
+        tmp.lower = l;
+        bool ok = make_upper(&tmp);
+        if (tmp.upper) upper_fs->release(upper_fs->priv, tmp.upper);
+        lower_fs->release(lower_fs->priv, l);
+        if (!ok) return -1;
     }
 
+    VFS::Node* tup = ensure_dir(&td->upper, td->path);
+    if (tup == nullptr) return -1;
+
     // An existing lower destination is fine: the upper entry shadows it.
-    return upper_fs->rename(upper_fs->priv, from, to);
+    return upper_fs->rename(upper_fs->priv, fup, from, tup, to);
+}
+
+static void ov_release(void* priv, VFS::Node* node) {
+    (void)priv;
+    OvNode* on = (OvNode*)node->priv;
+    if (on->upper) upper_fs->release(upper_fs->priv, on->upper);
+    if (on->lower) lower_fs->release(lower_fs->priv, on->lower);
+    delete on;
+    delete node;
 }
 
 // Only the image can promise a file's bytes stay put, so a mapping is only
 // possible for a file that still lives in the lower layer: an upper copy is a
 // ramfs buffer that may be reallocated under the mapping.
-static int ov_map(void* priv, const char* path, uint64_t* out_phys,
+static int ov_map(void* priv, VFS::Node* node, uint64_t* out_phys,
                   uint64_t* out_size) {
     (void)priv;
-    bool dir = false;
-    if (exists(upper_fs, path, &dir)) return -1;
-    if (is_whited_out(path)) return -1;
-    if (lower_fs == nullptr || lower_fs->map == nullptr) return -1;
-    return lower_fs->map(lower_fs->priv, path, out_phys, out_size);
+    OvNode* on = (OvNode*)node->priv;
+    if (on->upper) return -1;
+    if (on->lower == nullptr || on->lower->fs->map == nullptr) return -1;
+    return on->lower->fs->map(on->lower->fs->priv, on->lower, out_phys, out_size);
 }
-
-static VFS::Filesystem fs = {
-    .fs_type  = "overlay",
-    .priv     = nullptr,
-    .open     = ov_open,
-    .read     = ov_read,
-    .write    = ov_write,
-    .close    = ov_close,
-    .readdir  = ov_readdir,
-    .is_dir   = ov_is_dir,
-    .mkdir    = ov_mkdir,
-    .truncate = ov_truncate,
-    .unlink   = ov_unlink,
-    .rename   = ov_rename,
-    .map      = ov_map,
-};
 
 void init(VFS::Filesystem* upper, VFS::Filesystem* lower) {
     upper_fs = upper;

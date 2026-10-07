@@ -10,18 +10,6 @@ namespace Tar {
     // Scan Limine modules for a .tar archive. Safe to call once at boot.
     void init();
 
-    bool is_mounted();
-    uint64_t count(); // number of entries in the archive
-
-    // Fill 'buf' with entry names separated by '\n', NUL-terminated.
-    // Respects 'max'. Used by the list_files syscall.
-    void list_into(char* buf, uint64_t max);
-
-    // Look up a member by name. On success returns true and points
-    // 'out_data' at the file's bytes directly inside the archive
-    // (no copy), with 'out_size' = byte length.
-    bool read_file(const char* path, char** out_data, uint64_t* out_size);
-
-    // VFS adapter: a read-only Filesystem over the mounted archive
+    // The read-only VFS backend over the mounted archive.
     VFS::Filesystem* vfs_instance();
 }

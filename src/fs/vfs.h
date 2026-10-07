@@ -3,19 +3,24 @@
 
 // --- Virtual filesystem layer ---
 // Design: filesystems are self-contained backends registered into a mount
-// table. Every backend implements the `Filesystem` ops table (a C-style
-// vtable) and owns its private data. The VFS resolves paths (longest
-// matching mount prefix), maintains NO per-file state itself, and hands
-// out integer fds backed by per-process handle tables.
+// table. Everything above this line works in *nodes*, not path strings: a node
+// is one file or directory with an identity, a type and its metadata. Path
+// walking happens in one place (here); a backend answers per-node questions —
+// what is this name, what is the i-th entry, read this, write this — and owns
+// its private data. The VFS keeps no per-file state of its own and hands out
+// integer fds backed by per-process handle tables.
 //
-// Adding a filesystem later = write one Filesystem struct + one mount()
-// call. Nothing else in the kernel changes.
+// Adding a filesystem later = write one Filesystem struct + one mount() call.
+// Nothing else in the kernel changes.
 
 namespace VFS {
 
 constexpr int MAX_FDS     = 16;
 constexpr int MAX_MOUNTS  = 8;
 constexpr int MAX_HANDLES = 64;   // open files kernel-wide
+
+// The longest single name any backend may hand back (and the ABI's ceiling).
+constexpr int NAME_MAX = 128;
 
 // Descriptors 0, 1 and 2 are reserved for the standard streams. The kernel has
 // no console file object — userland maps those three to the console — but
@@ -27,63 +32,92 @@ constexpr int FD_STD_STREAMS = 3;
 constexpr int O_RDONLY   = 0;
 constexpr int O_WRONLY   = 1;
 constexpr int O_RDWR     = 2;
-constexpr int O_CREATE   = 4;     // create if missing (ramfs only)
-constexpr int O_TRUNC    = 8;     // truncate to 0 on open (ramfs only)
+constexpr int O_CREATE   = 4;     // create if missing
+constexpr int O_TRUNC    = 8;     // truncate to 0 on open
+
+enum FileType : uint8_t {
+    FT_FILE = 0,
+    FT_DIR  = 1,
+};
+
+struct Filesystem;
+
+// --- A node: one file or directory, as its filesystem sees it ---
+// Allocated by the backend (node_new) and disposed by that backend's release().
+// The VFS reads the fields; 'priv' belongs to the backend, which is also what
+// decides what a node *is* — a ramfs node is refcounted so it survives an
+// unlink while open, a tarfs node is a window onto the immutable image.
+struct Node {
+    Filesystem* fs;
+    void*       priv;
+    FileType    type;
+    uint64_t    size;    // bytes (a file); 0 for a directory
+    uint32_t    ino;     // stable identity within the filesystem; 0 = none
+    uint32_t    mode;    // permission bits (9); 0 = the filesystem's default
+    uint64_t    mtime;   // seconds since the epoch; 0 = unknown
+};
+
+// One directory entry, as readdir reports it.
+struct DirEntry {
+    char     name[NAME_MAX];
+    FileType type;
+    uint32_t ino;
+};
 
 // --- Filesystem backend interface ---
 struct Filesystem {
-    const char* fs_type;          // "ramfs", "tarfs" — debug/logging only
+    const char* fs_type;          // "ramfs", "tarfs", "ext2" — logging only
     void* priv;                   // backend instance data
 
-    // Open 'path' inside this fs. Returns a backend handle (opaque),
-    // sets *out_size to the file's byte length, or nullptr if missing.
-    void* (*open)(void* priv, const char* path, int flags, uint64_t* out_size);
+    // The root directory of this filesystem. Never null for a mounted fs.
+    Node* (*root)(void* priv);
 
-    // Read up to 'count' bytes at 'offset' into 'buf'. Returns bytes read.
-    uint64_t (*read)(void* priv, void* handle, void* buf,
+    // Look up one component inside directory 'dir'. Returns a node the caller
+    // releases, or nullptr when there is no such entry.
+    Node* (*lookup)(void* priv, Node* dir, const char* name);
+
+    // The i-th entry of directory 'dir' (0-based). False past the end.
+    bool (*readdir)(void* priv, Node* dir, uint64_t index, DirEntry* out);
+
+    // Read a file's bytes: returns how many were read. Write: returns how many
+    // were written (0 for a real request means out of room — the VFS reports
+    // ENOSPC; a read-only backend has no write at all).
+    uint64_t (*read)(void* priv, Node* node, void* buf,
                      uint64_t count, uint64_t offset);
-
-    // Write 'count' bytes at 'offset'. Returns bytes written (0 = unsupported).
-    uint64_t (*write)(void* priv, void* handle, const void* buf,
+    uint64_t (*write)(void* priv, Node* node, const void* buf,
                       uint64_t count, uint64_t offset);
 
-    // Release a backend handle
-    void (*close)(void* priv, void* handle);
+    // Set a file's length (nullptr if the backend cannot). Shrinking discards;
+    // growing zero-fills. Returns 0 or -1.
+    int (*truncate)(void* priv, Node* node, uint64_t size);
 
-    // Fill 'buf' with entries of the directory at 'path', one name per
-    // line, NUL-terminated. Directory names get a trailing '/'.
-    // Returns 0 if path is not a directory.
-    uint64_t (*readdir)(void* priv, const char* path, char* buf, uint64_t max);
+    // Create an entry in 'dir'. Fills *out with a node the caller releases.
+    // nullptr when the filesystem is read-only. Returns 0 or -1.
+    int (*create)(void* priv, Node* dir, const char* name, FileType type,
+                  Node** out);
 
-    // Is this path an existing directory?
-    bool (*is_dir)(void* priv, const char* path);
+    // Remove an entry from 'dir' (nullptr when read-only). Returns 0 or -1.
+    int (*unlink)(void* priv, Node* dir, const char* name);
 
-    // Create a directory (ramfs only; used by mount() for mountpoints)
-    int (*mkdir)(void* priv, const char* path);
+    // Move 'from' in 'from_dir' to 'to' in 'to_dir' (nullptr when read-only).
+    // Both directories belong to this filesystem. Returns 0 or -1.
+    int (*rename)(void* priv, Node* from_dir, const char* from,
+                  Node* to_dir, const char* to);
 
-    // Set a file's length via an open handle (ramfs only; nullptr if the
-    // backend cannot). Shrinking discards; growing zero-fills.
-    int (*truncate)(void* priv, void* handle, uint64_t size);
+    // Dispose a node and whatever the backend holds for it.
+    void (*release)(void* priv, Node* node);
 
-    // Remove a file/dir by path (ramfs only; nullptr if read-only).
-    int (*unlink)(void* priv, const char* path);
-
-    // Rename/move a path within this fs (ramfs only; nullptr if read-only).
-    int (*rename)(void* priv, const char* from, const char* to);
-
-    // Map a file's bytes without copying: fill *out_phys with the physical
-    // address of the first byte and *out_size with the length. Only a backend
-    // whose bytes cannot move can promise that (an immutable image can; a
-    // buffer that may be reallocated cannot), so it is nullptr elsewhere.
-    int (*map)(void* priv, const char* path, uint64_t* out_phys, uint64_t* out_size);
+    // The physical address and length of a file's bytes, for a zero-copy
+    // mapping. Only a backend whose bytes cannot move can promise that (an
+    // immutable image can; a buffer that may be reallocated cannot), so it is
+    // nullptr elsewhere. Returns 0 or -1.
+    int (*map)(void* priv, Node* node, uint64_t* out_phys, uint64_t* out_size);
 };
 
 // --- An open file (referenced by an fd) ---
 struct FileHandle {
-    Filesystem* fs;
-    void*       fs_handle;   // backend's opaque handle
-    uint64_t    offset;
-    uint64_t    size;
+    Node*    node;      // holds one reference to the node
+    uint64_t offset;
 };
 
 // --- A filesystem instance rooted at a path (e.g. "/bin") ---
@@ -91,6 +125,27 @@ struct Mount {
     const char* path;
     Filesystem* fs;
 };
+
+// --- Node helpers, for backends and the VFS alike ---
+
+// A zeroed node of 'type' belonging to 'fs'. The caller fills in priv and the
+// metadata, and hands the node back to its release() when done.
+Node* node_new(Filesystem* fs, FileType type);
+
+// Walk a filesystem-relative path ("" = the root) to its node. The caller
+// releases it. Returns nullptr if any component is missing.
+Node* node_walk(Filesystem* fs, const char* rel);
+
+// Walk a path, creating missing components — the last one as 'final_type', any
+// earlier ones as directories. Returns the final node (the caller releases) or
+// nullptr. This is what makes `open("a/b.txt", O_CREATE)` land in a real place
+// rather than nowhere.
+Node* node_create(Filesystem* fs, const char* rel, FileType final_type);
+
+// Split a filesystem-relative path into the parent's path and the final name.
+// False when there is no final name ("" or "/"). 'parent' holds 256 bytes,
+// 'name' holds NAME_MAX.
+bool node_split(const char* rel, char* parent, char* name);
 
 // --- Kernel API ---
 
@@ -113,12 +168,6 @@ void close_fd_for(FileHandle** fds, int fd);          // arbitrary table (task e
 // first, then /bin. Creation and removal (mkdir/unlink) never search: they
 // resolve against the CWD (or an absolute path) only.
 
-// Resolve a path to (filesystem, fs-relative path). Longest mount-prefix
-// wins. Relative paths resolve against the current task's CWD.
-// The relative path is written into 'rel_out' (the caller owns it, so two
-// resolutions can be live at once). Returns nullptr if nothing covers the path.
-Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max);
-
 // Is this path an existing directory? (relative paths resolve vs CWD)
 bool is_directory(const char* path);
 
@@ -129,7 +178,8 @@ void canonicalize(const char* path, char* out, uint64_t out_max);
 // Convenience: read a whole file into a buffer (kernel-side; used by spawn)
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size);
 
-// Directory listing into a newline-separated, NUL-terminated buffer
+// Directory listing into a newline-separated, NUL-terminated buffer, one name
+// per line with a trailing '/' on directories.
 uint64_t readdir(const char* path, char* buf, uint64_t max);
 
 // Seek an fd's read/write offset. 'whence' is 0=SET, 1=CUR, 2=END. Returns
@@ -161,5 +211,5 @@ void      fds_init_current();               // zero the table
 FileHandle** fds_of_current();               // the current task's table
 FileHandle*  fd_slot_get(int fd);
 uint64_t     fd_size(int fd);                // bytes reported at open
-int          fd_slot_alloc(Filesystem* fs, void* fs_handle, uint64_t size);
-}
+int          fd_slot_alloc(Node* node);      // takes ownership of the reference
+} // namespace VFS

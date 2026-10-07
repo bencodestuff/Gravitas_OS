@@ -1,27 +1,36 @@
 #include "fs/ramfs.h"
 #include "fs/vfs.h"
 #include "kernel/core/heap.h"
+#include "kernel/dev/rtc.h"
 
 extern "C" void kprint(const char* str);
 
 // --- RamFS: an in-memory filesystem with create/write support ---
-// Tree of nodes; file data lives on the kernel heap and grows as needed.
-// Mounted at "/" at boot (and usable for /tmp etc).
+// A tree of nodes; file data lives on the kernel heap and grows as needed.
+// Mounted at "/" at boot (through the overlay) and usable for /tmp etc.
+//
+// A RamNode is the durable thing (it is what the tree holds); a VFS::Node is a
+// short-lived window onto it that a caller holds while it works. That split is
+// what makes unlink-while-open safe: the directory entry goes away, the bytes a
+// reader is using do not, because the open handle still holds a reference.
 
 namespace RamFS {
 
-struct Node {
-    char name[32];
+struct RamNode {
+    char name[64];
     bool is_dir;
     uint8_t* data;
     uint64_t size;
     uint64_t capacity;
-    int refs;              // 1 for being in the tree, +1 per open handle
-    Node* first_child;
-    Node* next_sibling;
+    int refs;              // 1 for being in the tree, +1 per live VFS::Node
+    uint32_t ino;
+    uint64_t mtime;
+    RamNode* first_child;
+    RamNode* next_sibling;
 };
 
-static Node* root = nullptr;
+static RamNode* root = nullptr;
+static uint32_t next_ino = 1;
 
 // A ceiling on file data, because the backing store is the kernel heap: a
 // runaway writer would otherwise eat all 32MB of it and there would be no
@@ -32,7 +41,7 @@ static uint64_t ram_bytes = 0;                   // held by file data right now
 
 // Give a file a buffer of at least 'need' bytes, growing in pages. False when
 // that would pass a cap (the caller then reports ENOSPC by writing less).
-static bool reserve(Node* n, uint64_t need) {
+static bool reserve(RamNode* n, uint64_t need) {
     if (need <= n->capacity) return true;
     if (need > MAX_FILE_BYTES) return false;
 
@@ -51,25 +60,26 @@ static bool reserve(Node* n, uint64_t need) {
 }
 
 // --- node helpers ---
-static Node* new_node(const char* name, bool is_dir) {
-    Node* n = new Node;
+static RamNode* new_node(const char* name, bool is_dir) {
+    RamNode* n = new RamNode;
     int i = 0;
-    while (name[i] && i < 31) { n->name[i] = name[i]; i++; }
+    while (name[i] && i < (int)sizeof(n->name) - 1) { n->name[i] = name[i]; i++; }
     n->name[i] = '\0';
     n->is_dir = is_dir;
     n->data = nullptr;
     n->size = 0;
     n->capacity = 0;
     n->refs = 1;           // the tree holds one reference
+    n->ino = next_ino++;
+    n->mtime = Rtc::seconds_now();
     n->first_child = nullptr;
     n->next_sibling = nullptr;
     return n;
 }
 
-// Drop a reference; the node is freed when the tree and every open handle have
-// let go. This is what makes unlink-while-open safe: the directory entry goes
-// away, the bytes a reader is using do not.
-static void node_unref(Node* n) {
+// Drop a reference; the node is freed when the tree and every live VFS::Node
+// have let go.
+static void node_unref(RamNode* n) {
     if (--n->refs > 0) return;
     if (n->data) {
         ram_bytes -= n->capacity;
@@ -78,8 +88,8 @@ static void node_unref(Node* n) {
     delete n;
 }
 
-static Node* find_child(Node* dir, const char* name) {
-    for (Node* c = dir->first_child; c; c = c->next_sibling) {
+static RamNode* find_child(RamNode* dir, const char* name) {
+    for (RamNode* c = dir->first_child; c; c = c->next_sibling) {
         const char* a = c->name;
         const char* b = name;
         bool eq = true;
@@ -89,56 +99,96 @@ static Node* find_child(Node* dir, const char* name) {
     return nullptr;
 }
 
-// Walk/create the tree along a normalized path (no leading '/').
-// create_dirs: make missing intermediate dirs (for O_CREATE).
-static Node* walk(Node* base, const char* path, bool create_dirs) {
-    Node* cur = base;
-    const char* p = path;
-
-    char component[32];
-    while (*p) {
-        while (*p == '/') p++;
-        if (*p == '\0') break;
-
-        int i = 0;
-        while (*p && *p != '/' && i < 31) component[i++] = *p++;
-        component[i] = '\0';
-
-        if (cur->is_dir == false) return nullptr;
-
-        Node* next = find_child(cur, component);
-        if (next == nullptr) {
-            if (!create_dirs) return nullptr;
-            // only create directories for intermediate components; whether
-            // the FINAL component is a file or dir is decided by the caller
-            bool last = (*p == '\0');
-            next = new_node(component, !last);
-            next->next_sibling = cur->first_child;
-            cur->first_child = next;
-        }
-        cur = next;
+// Unlink a child from its parent's child list.
+static void detach(RamNode* dir, RamNode* node) {
+    RamNode* prev = nullptr;
+    for (RamNode* c = dir->first_child; c; prev = c, c = c->next_sibling) {
+        if (c != node) continue;
+        if (prev) prev->next_sibling = c->next_sibling;
+        else dir->first_child = c->next_sibling;
+        return;
     }
-    return cur;
 }
 
-// --- ops implementation ---
-// Handle = the Node* (offset/size tracking lives in VFS::FileHandle)
+// --- the VFS ops ---
+// A node is a window onto a RamNode: it takes a reference, and release() gives
+// it back. The durable state is the RamNode.
+static VFS::Node* wrap(RamNode* rn);
 
-static void* ramfs_open(void* priv, const char* path, int flags, uint64_t* out_size) {
-    (void)priv;
-    Node* n = walk(root, path, (flags & VFS::O_CREATE) != 0);
+static VFS::Node* ram_root(void* priv);
+static VFS::Node* ram_lookup(void* priv, VFS::Node* dir, const char* name);
+static bool ram_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
+static uint64_t ram_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
+static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf, uint64_t count, uint64_t offset);
+static int ram_truncate(void* priv, VFS::Node* node, uint64_t size);
+static int ram_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type, VFS::Node** out);
+static int ram_unlink(void* priv, VFS::Node* dir, const char* name);
+static int ram_rename(void* priv, VFS::Node* from_dir, const char* from, VFS::Node* to_dir, const char* to);
+static void ram_release(void* priv, VFS::Node* node);
+
+static VFS::Filesystem fs = {
+    .fs_type  = "ramfs",
+    .priv     = nullptr,
+    .root     = ram_root,
+    .lookup   = ram_lookup,
+    .readdir  = ram_readdir,
+    .read      = ram_read,
+    .write     = ram_write,
+    .truncate = ram_truncate,
+    .create   = ram_create,
+    .unlink   = ram_unlink,
+    .rename   = ram_rename,
+    .release  = ram_release,
+    .map      = nullptr, // its bytes can be reallocated, so nothing may map it
+};
+
+static VFS::Node* wrap(RamNode* rn) {
+    VFS::Node* n = VFS::node_new(&fs, rn->is_dir ? VFS::FT_DIR : VFS::FT_FILE);
     if (n == nullptr) return nullptr;
-    if (n->is_dir) return nullptr; // open(2) on a dir: not supported
-    if (flags & VFS::O_TRUNC) n->size = 0;
-    n->refs++;                     // the handle keeps the node alive
-    *out_size = n->size;
+    rn->refs++;
+    n->priv = rn;
+    n->size = rn->size;
+    n->ino = rn->ino;
+    n->mode = rn->is_dir ? 0755 : 0644;
+    n->mtime = rn->mtime;
     return n;
 }
 
-static uint64_t ramfs_read(void* priv, void* handle, void* buf,
-                           uint64_t count, uint64_t offset) {
+static VFS::Node* ram_root(void* priv) {
     (void)priv;
-    Node* n = (Node*)handle;
+    return wrap(root);
+}
+
+static VFS::Node* ram_lookup(void* priv, VFS::Node* dir, const char* name) {
+    (void)priv;
+    RamNode* d = (RamNode*)dir->priv;
+    if (!d->is_dir) return nullptr;
+    RamNode* c = find_child(d, name);
+    if (c == nullptr) return nullptr;
+    return wrap(c);
+}
+
+static bool ram_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out) {
+    (void)priv;
+    RamNode* d = (RamNode*)dir->priv;
+    if (!d->is_dir) return false;
+
+    RamNode* c = d->first_child;
+    for (uint64_t i = 0; c && i < index; i++) c = c->next_sibling;
+    if (c == nullptr) return false;
+
+    uint64_t n = 0;
+    while (c->name[n] && n + 1 < sizeof(out->name)) { out->name[n] = c->name[n]; n++; }
+    out->name[n] = '\0';
+    out->type = c->is_dir ? VFS::FT_DIR : VFS::FT_FILE;
+    out->ino = c->ino;
+    return true;
+}
+
+static uint64_t ram_read(void* priv, VFS::Node* node, void* buf,
+                         uint64_t count, uint64_t offset) {
+    (void)priv;
+    RamNode* n = (RamNode*)node->priv;
     if (offset >= n->size) return 0;
     uint64_t avail = n->size - offset;
     uint64_t nread = (count < avail) ? count : avail;
@@ -148,10 +198,10 @@ static uint64_t ramfs_read(void* priv, void* handle, void* buf,
     return nread;
 }
 
-static uint64_t ramfs_write(void* priv, void* handle, const void* buf,
-                            uint64_t count, uint64_t offset) {
+static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf,
+                          uint64_t count, uint64_t offset) {
     (void)priv;
-    Node* n = (Node*)handle;
+    RamNode* n = (RamNode*)node->priv;
     uint64_t end = offset + count;
 
     // No room: report nothing written, which the VFS turns into ENOSPC. (Not a
@@ -162,48 +212,14 @@ static uint64_t ramfs_write(void* priv, void* handle, const void* buf,
     const uint8_t* src = (const uint8_t*)buf;
     for (uint64_t i = 0; i < count; i++) n->data[offset + i] = src[i];
     if (end > n->size) n->size = end;
+    n->mtime = Rtc::seconds_now();
+    node->size = n->size;   // keep this window onto the file current
     return count;
 }
 
-static void ramfs_close(void* priv, void* handle) {
+static int ram_truncate(void* priv, VFS::Node* node, uint64_t size) {
     (void)priv;
-    if (handle) node_unref((Node*)handle);
-}
-
-static uint64_t ramfs_readdir(void* priv, const char* path, char* buf, uint64_t max) {
-    (void)priv;
-    Node* n = walk(root, path, false);
-    if (n == nullptr || n->is_dir == false) return 0;
-
-    uint64_t written = 0;
-    for (Node* c = n->first_child; c; c = c->next_sibling) {
-        const char* name = c->name;
-        while (*name && written + 3 < max) buf[written++] = *name++;
-        if (c->is_dir && written + 3 < max) buf[written++] = '/';
-        if (written + 3 < max) buf[written++] = '\n';
-    }
-    buf[written] = '\0';
-    return written;
-}
-
-static bool ramfs_is_dir(void* priv, const char* path) {
-    (void)priv;
-    Node* n = walk(root, path, false);
-    return n != nullptr && n->is_dir;
-}
-
-static int ramfs_mkdir(void* priv, const char* path) {
-    (void)priv;
-    // walk with creation of intermediate dirs, final node = dir
-    Node* n = walk(root, path, true);
-    if (n == nullptr) return -1;
-    n->is_dir = true; // final component may have been created as a file
-    return 0;
-}
-
-static int ramfs_truncate(void* priv, void* handle, uint64_t size) {
-    (void)priv;
-    Node* n = (Node*)handle;
+    RamNode* n = (RamNode*)node->priv;
     if (size > n->capacity) {
         if (!reserve(n, size)) return -1; // past a cap
         for (uint64_t i = n->size; i < size; i++) n->data[i] = 0; // zero-fill
@@ -211,105 +227,78 @@ static int ramfs_truncate(void* priv, void* handle, uint64_t size) {
         for (uint64_t i = n->size; i < size; i++) n->data[i] = 0;
     }
     n->size = size;
+    n->mtime = Rtc::seconds_now();
+    node->size = size;
     return 0;
 }
 
-// Split a path into its parent directory node and final component name.
-// parent_out needs 128 bytes, name_out 32. Returns the parent node (the root
-// for a top-level name), or nullptr if the parent does not exist.
-static Node* split_parent(const char* path, char* parent_out, char* name_out) {
-    int i = 0;
-    while (path[i]) i++;
-    while (i > 0 && path[i - 1] == '/') i--;
-    int slash = -1;
-    for (int j = 0; j < i; j++) if (path[j] == '/') slash = j;
-
-    int plen = (slash < 0) ? 0 : slash;
-    for (int k = 0; k < plen && k < 127; k++) parent_out[k] = path[k];
-    parent_out[plen] = '\0';
-
-    const char* name = path + (slash < 0 ? 0 : slash + 1);
-    int ni = 0;
-    while (name[ni] && name[ni] != '/' && ni < 31) { name_out[ni] = name[ni]; ni++; }
-    name_out[ni] = '\0';
-
-    return walk(root, parent_out, false);
-}
-
-// Unlink a child from its parent's child list.
-static void detach(Node* dir, Node* node) {
-    Node* prev = nullptr;
-    for (Node* c = dir->first_child; c; prev = c, c = c->next_sibling) {
-        if (c != node) continue;
-        if (prev) prev->next_sibling = c->next_sibling;
-        else dir->first_child = c->next_sibling;
-        return;
-    }
-}
-
-static int ramfs_unlink(void* priv, const char* path) {
+static int ram_create(void* priv, VFS::Node* dir, const char* name,
+                      VFS::FileType type, VFS::Node** out) {
     (void)priv;
-    char parent[128], name[32];
-    Node* dir = split_parent(path, parent, name);
-    if (dir == nullptr || !dir->is_dir) return -1;
+    RamNode* d = (RamNode*)dir->priv;
+    if (!d->is_dir || name[0] == '\0') return -1;
+    if (find_child(d, name) != nullptr) return -1;   // already there
 
-    Node* c = find_child(dir, name);
+    RamNode* c = new_node(name, type == VFS::FT_DIR);
+    c->next_sibling = d->first_child;
+    d->first_child = c;
+
+    VFS::Node* n = wrap(c);
+    if (n == nullptr) { detach(d, c); node_unref(c); return -1; }
+    *out = n;
+    return 0;
+}
+
+static int ram_unlink(void* priv, VFS::Node* dir, const char* name) {
+    (void)priv;
+    RamNode* d = (RamNode*)dir->priv;
+    if (!d->is_dir) return -1;
+
+    RamNode* c = find_child(d, name);
     if (c == nullptr) return -1;
     if (c->is_dir && c->first_child) return -1;   // non-empty dir
 
-    detach(dir, c);
-    node_unref(c); // the tree's reference; an open handle keeps the node alive
+    detach(d, c);
+    node_unref(c); // the tree's reference; a live VFS::Node keeps the node alive
     return 0;
 }
 
 // Rename/move within the ramfs. Replaces an existing destination file; refuses
 // to clobber a non-empty directory. (Moving a directory into its own subtree is
 // not detected: nodes carry no parent pointer.)
-static int ramfs_rename(void* priv, const char* from, const char* to) {
+static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
+                      VFS::Node* to_dir_node, const char* to) {
     (void)priv;
-    char from_parent[128], to_parent[128], from_name[32], to_name[32];
-    Node* fdir = split_parent(from, from_parent, from_name);
-    Node* tdir = split_parent(to, to_parent, to_name);
-    if (fdir == nullptr || !fdir->is_dir) return -1;
-    if (tdir == nullptr || !tdir->is_dir) return -1;
-    if (from_name[0] == '\0' || to_name[0] == '\0') return -1;
+    RamNode* fdir = (RamNode*)from_dir_node->priv;
+    RamNode* tdir = (RamNode*)to_dir_node->priv;
+    if (!fdir->is_dir || !tdir->is_dir) return -1;
+    if (from[0] == '\0' || to[0] == '\0') return -1;
 
-    Node* src = find_child(fdir, from_name);
+    RamNode* src = find_child(fdir, from);
     if (src == nullptr) return -1;
 
-    Node* dst = find_child(tdir, to_name);
+    RamNode* dst = find_child(tdir, to);
     if (dst != nullptr && dst != src) {
         if (dst->is_dir && dst->first_child) return -1;   // non-empty dir
         detach(tdir, dst);
-        node_unref(dst); // as in unlink: an open handle keeps it alive
+        node_unref(dst); // as in unlink: a live VFS::Node keeps it alive
     }
 
     detach(fdir, src);
 
     int i = 0;
-    while (to_name[i] && i < 31) { src->name[i] = to_name[i]; i++; }
+    while (to[i] && i < (int)sizeof(src->name) - 1) { src->name[i] = to[i]; i++; }
     src->name[i] = '\0';
     src->next_sibling = tdir->first_child;
     tdir->first_child = src;
     return 0;
 }
 
-// --- The filesystem instance ---
-static VFS::Filesystem fs = {
-    .fs_type  = "ramfs",
-    .priv     = nullptr,
-    .open     = ramfs_open,
-    .read     = ramfs_read,
-    .write    = ramfs_write,
-    .close    = ramfs_close,
-    .readdir  = ramfs_readdir,
-    .is_dir   = ramfs_is_dir,
-    .mkdir    = ramfs_mkdir,
-    .truncate = ramfs_truncate,
-    .unlink   = ramfs_unlink,
-    .rename   = ramfs_rename,
-    .map      = nullptr, // its bytes can be reallocated, so nothing may map it
-};
+static void ram_release(void* priv, VFS::Node* node) {
+    (void)priv;
+    if (node->priv) node_unref((RamNode*)node->priv);
+    delete node;
+}
 
 VFS::Filesystem* instance() {
     return &fs;
