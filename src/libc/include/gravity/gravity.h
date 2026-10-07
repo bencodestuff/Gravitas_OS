@@ -16,6 +16,7 @@
 #include <gravity/list.h>
 #include <gravity/term.h>
 #include <gravity/buffer.h>
+#include <gravity/editor.h>
 #include <gravity/font.h>
 #include <gravity/image.h>
 
