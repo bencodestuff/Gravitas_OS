@@ -484,6 +484,18 @@ int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
     return 0;
 }
 
+// --- A file's bytes, for a zero-copy mapping (see vfs.h) ---
+int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size) {
+    char fixed[256];
+    const char* effective = nullptr;
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+
+    char rel[256];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel));
+    if (fs == nullptr || fs->map == nullptr) return -Errno::ENOENT;
+    return fs->map(fs->priv, rel, out_phys, out_size) == 0 ? 0 : -Errno::ENOENT;
+}
+
 // --- Whole-file read (spawn + kernel use) ---
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
     char fixed[256];

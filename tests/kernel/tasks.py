@@ -97,6 +97,14 @@ def overlay_root(g):
 
 
 @test
+def shared_memory(g):
+    # File mappings (zero-copy, out of the immutable image) and a shared region
+    # that two tasks read and write through.
+    g.shell("run shmtest.elf")
+    g.wait_for("shmtest: all checks pass")
+
+
+@test
 def timer_wakeup(g):
     g.shell("run timertest.elf")
     g.wait_for("timertest: PASS")

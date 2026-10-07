@@ -15,6 +15,7 @@
 #include "kernel/gfx/compositor.h"
 #include "fs/vfs.h"
 #include "kernel/core/ipc.h"
+#include "kernel/core/memmap.h"
 #include "kernel/core/input.h"
 
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
@@ -595,6 +596,7 @@ namespace Sched {
             input_focus_gone(zombie->id);
             console_owner_gone(zombie->id);
             Ipc::task_gone(zombie->id);
+            MemMap::task_gone(zombie->id);
             // Free the exited task's address space (its user frames + tables)
             VMM::destroy_user_space(zombie->cr3);
             delete[] zombie->kstack_mem;

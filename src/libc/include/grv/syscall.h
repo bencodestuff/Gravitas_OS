@@ -94,6 +94,12 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_RENAME         47
 #define GRV_SYSCALL_TIME           48
 #define GRV_SYSCALL_SURFACE_RESIZE 49
+#define GRV_SYSCALL_MAP_FILE       50
+#define GRV_SYSCALL_MUNMAP         51
+#define GRV_SYSCALL_SHM_CREATE     52
+#define GRV_SYSCALL_SHM_GRANT      53
+#define GRV_SYSCALL_SHM_MAP        54
+#define GRV_SYSCALL_SHM_CLOSE      55
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -341,6 +347,42 @@ static inline int grv_surface_resize(int id, unsigned long w, unsigned long h,
                                      struct grv_surface_info* out) {
     return (int)syscall4(GRV_SYSCALL_SURFACE_RESIZE, (long)id, (long)w, (long)h,
                          (long)out);
+}
+
+/* --- memory mappings ---
+   Where a mapping's bytes are, and how many. Both calls below fill one in. */
+struct grv_map {
+    unsigned long address;
+    unsigned long size;
+};
+
+/* Map a file read-only and zero-copy: the bytes are the immutable image's own
+   frames, so nothing is copied and nothing can change under you. Returns 0, or
+   -1 (no such file, or a backend whose bytes can move). */
+static inline int grv_map_file(const char* path, struct grv_map* out) {
+    return (int)syscall2(GRV_SYSCALL_MAP_FILE, (long)path, (long)out);
+}
+
+/* Drop a mapping by the address the call that made it returned. Returns 0, or
+   -1 (not ours, or not mapped). */
+static inline int grv_munmap(unsigned long addr) {
+    return (int)syscall1(GRV_SYSCALL_MUNMAP, (long)addr);
+}
+
+/* Shared memory: pages one task creates and others may be granted. The id is
+   the handle — whoever holds one can attach it, so a region is handed to
+   another task by sending it the id and granting it (SHM_GRANT). */
+static inline int grv_shm_create(unsigned long size) {
+    return (int)syscall1(GRV_SYSCALL_SHM_CREATE, (long)size);
+}
+static inline int grv_shm_grant(int id, int task) {
+    return (int)syscall2(GRV_SYSCALL_SHM_GRANT, (long)id, (long)task);
+}
+static inline int grv_shm_map(int id, struct grv_map* out) {
+    return (int)syscall2(GRV_SYSCALL_SHM_MAP, (long)id, (long)out);
+}
+static inline int grv_shm_close(int id) {
+    return (int)syscall1(GRV_SYSCALL_SHM_CLOSE, (long)id);
 }
 
 /* Commit damage. The syscall takes an optional surface-local rect in RDI and

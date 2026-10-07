@@ -10,10 +10,8 @@ extern volatile struct limine_kernel_address_request kernel_address_request;
 
 namespace VMM {
     // --- Flags ---
-    constexpr uint64_t PTE_PRESENT = 1;
-    constexpr uint64_t PTE_WRITABLE = 2;
-    constexpr uint64_t PTE_USER = 4;
-    constexpr uint64_t PTE_NO_CACHE = 0x10;
+    // PTE_* and PTE_SHARED live in vmm.h: the mapping interface (memmap.cpp)
+    // needs them too.
     // Software-only bit (52..62 are free in a non-present PTE): marks a VA
     // as reserved with no backing frame. range_free() treats it as used.
     constexpr uint64_t PTE_GUARD = 1ull << 62;
@@ -95,8 +93,15 @@ namespace VMM {
         return (uint64_t*)((entry & 0x000FFFFFFFFFF000) + hhdm_offset);
     }
 
-    bool is_mapped(uint64_t virtual_addr) {
-        uint64_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
+    uint64_t phys_of(const void* va) {
+        return (uint64_t)(uintptr_t)va - hhdm_offset;
+    }
+
+    void* phys_to_kernel(uint64_t phys) {
+        return (void*)(uintptr_t)(phys + hhdm_offset);
+    }
+
+    bool is_mapped(uint64_t virtual_addr) {        uint64_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
         uint64_t pdp_idx  = (virtual_addr >> 30) & 0x1FF;
         uint64_t pd_idx   = (virtual_addr >> 21) & 0x1FF;
         uint64_t pt_idx   = (virtual_addr >> 12) & 0x1FF;
@@ -270,6 +275,8 @@ namespace VMM {
     }
 
     // Recursively free a table page and everything below it (tables + frames).
+    // Frames marked PTE_SHARED belong to someone else (an image, a shared
+    // region): the mapping goes, the memory does not.
     static void free_space_level(uint64_t table_phys, int level) {
         uint64_t* table = (uint64_t*)(table_phys + hhdm_offset);
         for (int i = 0; i < 512; i++) {
@@ -280,9 +287,11 @@ namespace VMM {
             if (level < 4) {
                 // Intermediate table: recurse, then free the table itself
                 free_space_level(next_phys, level + 1);
+                PMM::free_page(next_phys);
+            } else if (!(entry & PTE_SHARED)) {
+                // Leaf: a data frame this task owns
+                PMM::free_page(next_phys);
             }
-            // Leaf level (4): entries are data frames — free them
-            PMM::free_page(next_phys);
         }
         PMM::free_page(table_phys);
     }

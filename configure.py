@@ -34,6 +34,7 @@ TEST_PROGRAMS = {
     "filetest", "flood", "libctest", "mouse", "msgecho", "msgtest",
     "popuptest", "proctest", "rawwin", "sleeper", "smash",
     "stackoverflow", "surfacetest", "surfhelper", "timertest", "stdiotest",
+    "shmtest", "shmhelper",
     "hang", "posixtest", "overlaytest",
 }
 

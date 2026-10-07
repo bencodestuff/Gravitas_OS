@@ -14,6 +14,7 @@
 #include "kernel/gfx/compositor.h"
 #include "fs/vfs.h"
 #include "kernel/core/ipc.h"
+#include "kernel/core/memmap.h"
 #include "arch/x86_64/gdt.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
@@ -146,6 +147,7 @@ namespace Sched {
         input_focus_gone(victim->id);
         console_owner_gone(victim->id);
         Ipc::task_gone(victim->id);
+        MemMap::task_gone(victim->id);
         VMM::destroy_user_space(victim->cr3);
         delete[] victim->kstack_mem;
         delete[] victim->fxsave_raw;

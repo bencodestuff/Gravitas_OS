@@ -1,6 +1,7 @@
 #include <limine.h>
 #include "fs/tar.h"
 #include "fs/vfs.h"
+#include "kernel/core/vmm.h"
 #include "kernel/gfx/framebuffer.h"
 
 // The tar image arrives as a Limine module (see build_iso.sh).
@@ -204,6 +205,20 @@ namespace Tar {
         (void)priv; (void)handle; // data lives inside the archive
     }
 
+    // tarfs members are slices of the immutable image, so a mapping is just the
+    // physical address of their bytes: no copy, and they can never move.
+    static int tarfs_map(void* priv, const char* path, uint64_t* out_phys,
+                         uint64_t* out_size) {
+        (void)priv;
+        char* data = nullptr;
+        uint64_t size = 0;
+        if (!read_file(path, &data, &size)) return -1;
+        if (size == 0) return -1; // nothing to map
+        *out_phys = VMM::phys_of(data);
+        *out_size = size;
+        return 0;
+    }
+
     static uint64_t strlen_(const char* s) {
         uint64_t n = 0;
         while (s[n]) n++;
@@ -317,6 +332,7 @@ namespace Tar {
         .truncate = nullptr,   // read-only
         .unlink   = nullptr,   // read-only
         .rename   = nullptr,   // read-only
+        .map      = tarfs_map, // zero-copy: the image is immutable
     };
 
     VFS::Filesystem* vfs_instance() {

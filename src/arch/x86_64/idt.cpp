@@ -18,6 +18,7 @@
 #include "kernel/core/pmm.h"
 #include "kernel/core/sysinfo.h"
 #include "kernel/core/errno.h"
+#include "kernel/core/memmap.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
@@ -335,6 +336,49 @@ static void sys_surface_resize(IDT::Registers* regs) {
             *(Compositor::Info*)regs->r10 = info;
     }
     regs->rax = (uint64_t)r;
+}
+
+// --- memory mappings (see kernel/core/memmap.h) ---
+// A mapping's geometry comes back in the caller's struct, the same shape
+// SURFACE_RESIZE uses, so the calls stay three-argument.
+struct MapOut { uint64_t address, size; };
+
+static void sys_map_file(IDT::Registers* regs) {
+    MapOut* out = (MapOut*)regs->rsi;
+    uint64_t addr = 0, size = 0;
+    if (MemMap::map_file((const char*)regs->rdi, &addr, &size) != 0) {
+        regs->rax = (uint64_t)(long)-1;
+        return;
+    }
+    if (out != nullptr) { out->address = addr; out->size = size; }
+    regs->rax = 0;
+}
+
+static void sys_munmap(IDT::Registers* regs) {
+    regs->rax = (uint64_t)(long)MemMap::unmap(regs->rdi);
+}
+
+static void sys_shm_create(IDT::Registers* regs) {
+    regs->rax = (uint64_t)(long)MemMap::create(regs->rdi);
+}
+
+static void sys_shm_grant(IDT::Registers* regs) {
+    regs->rax = (uint64_t)(long)MemMap::grant((int)regs->rdi, (int)regs->rsi);
+}
+
+static void sys_shm_map(IDT::Registers* regs) {
+    MapOut* out = (MapOut*)regs->rsi;
+    uint64_t addr = 0, size = 0;
+    if (MemMap::attach((int)regs->rdi, &addr, &size) != 0) {
+        regs->rax = (uint64_t)(long)-1;
+        return;
+    }
+    if (out != nullptr) { out->address = addr; out->size = size; }
+    regs->rax = 0;
+}
+
+static void sys_shm_close(IDT::Registers* regs) {
+    regs->rax = (uint64_t)(long)MemMap::close((int)regs->rdi);
 }
 
 static void sys_surface_destroy(IDT::Registers* regs) {
@@ -667,6 +711,12 @@ static const SyscallFn syscall_table[] = {
     /* 47 RENAME          */ sys_rename,
     /* 48 TIME            */ sys_time,
     /* 49 SURFACE RESIZE  */ sys_surface_resize,
+    /* 50 MAP_FILE        */ sys_map_file,
+    /* 51 MUNMAP          */ sys_munmap,
+    /* 52 SHM_CREATE      */ sys_shm_create,
+    /* 53 SHM_GRANT       */ sys_shm_grant,
+    /* 54 SHM_MAP         */ sys_shm_map,
+    /* 55 SHM_CLOSE       */ sys_shm_close,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

@@ -70,6 +70,12 @@ struct Filesystem {
 
     // Rename/move a path within this fs (ramfs only; nullptr if read-only).
     int (*rename)(void* priv, const char* from, const char* to);
+
+    // Map a file's bytes without copying: fill *out_phys with the physical
+    // address of the first byte and *out_size with the length. Only a backend
+    // whose bytes cannot move can promise that (an immutable image can; a
+    // buffer that may be reallocated cannot), so it is nullptr elsewhere.
+    int (*map)(void* priv, const char* path, uint64_t* out_phys, uint64_t* out_size);
 };
 
 // --- An open file (referenced by an fd) ---
@@ -144,6 +150,11 @@ int ftruncate_fd(int fd, uint64_t size);
 
 // Look up a path's size and type without opening it. Returns 0, or -ENOENT.
 int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir);
+
+// The physical address and length of a file's bytes, for a zero-copy mapping.
+// A lookup, like stat/open (the search path applies). Returns 0, or -errno
+// (ENOENT; EROFS when the backend cannot promise the bytes stay put).
+int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size);
 
 // fd table plumbing (implemented against the current task in sched.cpp)
 void      fds_init_current();               // zero the table

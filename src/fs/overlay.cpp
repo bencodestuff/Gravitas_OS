@@ -188,8 +188,7 @@ static int ov_truncate(void* priv, void* handle, uint64_t size) {
 }
 
 // Emit one listing line, if it fits.
-static void emit(char* buf, uint64_t max, uint64_t* written, const char* name) {
-    for (uint64_t i = 0; name[i]; i++) {
+static void emit(char* buf, uint64_t max, uint64_t* written, const char* name) {    for (uint64_t i = 0; name[i]; i++) {
         if (*written + 3 >= max) return;
         buf[(*written)++] = name[i];
     }
@@ -298,6 +297,19 @@ static int ov_rename(void* priv, const char* from, const char* to) {
     return upper_fs->rename(upper_fs->priv, from, to);
 }
 
+// Only the image can promise a file's bytes stay put, so a mapping is only
+// possible for a file that still lives in the lower layer: an upper copy is a
+// ramfs buffer that may be reallocated under the mapping.
+static int ov_map(void* priv, const char* path, uint64_t* out_phys,
+                  uint64_t* out_size) {
+    (void)priv;
+    bool dir = false;
+    if (exists(upper_fs, path, &dir)) return -1;
+    if (is_whited_out(path)) return -1;
+    if (lower_fs == nullptr || lower_fs->map == nullptr) return -1;
+    return lower_fs->map(lower_fs->priv, path, out_phys, out_size);
+}
+
 static VFS::Filesystem fs = {
     .fs_type  = "overlay",
     .priv     = nullptr,
@@ -311,6 +323,7 @@ static VFS::Filesystem fs = {
     .truncate = ov_truncate,
     .unlink   = ov_unlink,
     .rename   = ov_rename,
+    .map      = ov_map,
 };
 
 void init(VFS::Filesystem* upper, VFS::Filesystem* lower) {
