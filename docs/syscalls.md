@@ -9,9 +9,10 @@ through `int $0x80`:
 | `rdi` | argument 1 |
 | `rsi` | argument 2 |
 | `rdx` | argument 3 |
+| `r10` | argument 4 (only `SURFACE_RESIZE` uses it) |
 
-There are no other argument registers; calls needing more widen one
-argument into a userland struct pointer. Userland wrappers live in
+Calls needing more arguments than the registers hold widen one into a
+userland struct pointer. Userland wrappers live in
 `src/libc/include/grv/syscall.h` (the structs there mirror the kernel's
 layouts byte for byte); the kernel side is `src/arch/x86_64/idt.cpp`.
 
@@ -133,6 +134,7 @@ value with a different meaning.
 | 46 | `TIMER_SET` | `ms` (0 cancels) | 0; posts `GRV_EV_TIMER` on expiry |
 | 47 | `RENAME` | `from, to` | 0 or −1 (both sides must be on the same filesystem) |
 | 48 | `TIME` | — | wall-clock seconds since the Unix epoch (RTC-anchored) |
+| 49 | `SURFACE_RESIZE` | `id, w, h, out*` | 0 or −1 (owner only; the buffer is reallocated, so the caller must re-bind to the new `address`) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

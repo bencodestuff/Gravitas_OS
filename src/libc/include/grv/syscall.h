@@ -31,6 +31,17 @@ static inline long syscall3(long n, long a, long b, long c) {
     return ret;
 }
 
+/* Four arguments: the fourth goes in r10, as the instruction expects. */
+static inline long syscall4(long n, long a, long b, long c, long d) {
+    register long r10 __asm__("r10") = d;
+    long ret;
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10)
+                     : "memory");
+    return ret;
+}
+
 /* Syscall numbers */
 #define GRV_SYSCALL_PUTC   0
 #define GRV_SYSCALL_GETC   1
@@ -82,6 +93,7 @@ static inline long syscall3(long n, long a, long b, long c) {
 #define GRV_SYSCALL_TIMER_SET      46
 #define GRV_SYSCALL_RENAME         47
 #define GRV_SYSCALL_TIME           48
+#define GRV_SYSCALL_SURFACE_RESIZE 49
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -319,6 +331,16 @@ struct grv_surface_info {
 static inline int grv_surface_create(unsigned long w, unsigned long h,
                                      struct grv_surface_info* out) {
     return (int)syscall3(GRV_SYSCALL_SURFACE_CREATE, (long)w, (long)h, (long)out);
+}
+
+/* Resize an owned surface. The buffer is reallocated, so the pixels move: the
+   new geometry is written into 'out' and the caller must re-bind (the id,
+   position and z-order are kept). Returns 0, or -1 — like the other surface
+   ops, the reason is not reported through errno. */
+static inline int grv_surface_resize(int id, unsigned long w, unsigned long h,
+                                     struct grv_surface_info* out) {
+    return (int)syscall4(GRV_SYSCALL_SURFACE_RESIZE, (long)id, (long)w, (long)h,
+                         (long)out);
 }
 
 /* Commit damage. The syscall takes an optional surface-local rect in RDI and

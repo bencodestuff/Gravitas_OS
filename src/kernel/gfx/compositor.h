@@ -29,6 +29,12 @@ namespace Compositor {
     // registry). Pixels are at Info.address (owner-space VA).
     int surface_create(uint64_t w, uint64_t h);
 
+    // Resize an owned surface to w*h. The buffer is reallocated, so the pixels
+    // move to a new VA — the caller must re-read the geometry (surface_info)
+    // and re-bind. The id, position and z-order are kept. 0, or -1 (unknown /
+    // not ours / bad size / out of frames).
+    int surface_resize(int id, uint64_t w, uint64_t h);
+
     // Position a surface (top-left corner, may be negative). Clipped at
     // composite time. Owner-checked; silent no-op otherwise.
     void surface_move(int id, int x, int y);

@@ -327,6 +327,16 @@ static void sys_surface_move(IDT::Registers* regs) {
     regs->rax = 0;
 }
 
+static void sys_surface_resize(IDT::Registers* regs) {
+    long r = Compositor::surface_resize((int)regs->rdi, regs->rsi, regs->rdx);
+    if (r == 0 && regs->r10) {
+        Compositor::Info info;
+        if (Compositor::surface_info((int)regs->rdi, &info))
+            *(Compositor::Info*)regs->r10 = info;
+    }
+    regs->rax = (uint64_t)r;
+}
+
 static void sys_surface_destroy(IDT::Registers* regs) {
     regs->rax = (uint64_t)(long)Compositor::surface_destroy((int)regs->rdi);
 }
@@ -656,6 +666,7 @@ static const SyscallFn syscall_table[] = {
     /* 46 TIMER_SET       */ sys_timer_set,
     /* 47 RENAME          */ sys_rename,
     /* 48 TIME            */ sys_time,
+    /* 49 SURFACE RESIZE  */ sys_surface_resize,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

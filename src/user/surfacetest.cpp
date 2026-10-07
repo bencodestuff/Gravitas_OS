@@ -85,12 +85,35 @@ int main(int argc, char** argv) {
     if (hid < 0) die("helper surface not visible in list");
     if (grv_surface_destroy(hid) != -1) die("foreign destroy allowed");
     if (grv_surface_z(hid, 0) != -1) die("foreign restack allowed");
+    if (grv_surface_resize(hid, 32, 32, &s) != -1) die("foreign resize allowed");
 
     // --- death releases the surface ---
     if (grv_wait(H) != 0) die("helper did not exit 0");
     if (list_all() != 3) die("death did not release the surface");
     int stable[3] = {id3, id2, id4};
     expect_order(stable, 3, "order after helper death");
+
+    // --- resize: the buffer moves, the id/position/z-order do not ---
+    if (grv_surface_resize(id2, 128, 32, &s) != 0) die("resize own");
+    if ((int)s.id != id2 || s.width != 128 || s.height != 32 || s.address == 0)
+        die("resize record");
+    // The new buffer must be mapped and writable in this address space.
+    volatile unsigned int* px = (volatile unsigned int*)s.address;
+    px[0] = 0xDEADBEEF;
+    px[128 * 31 + 127] = 0xCAFEBABE;   // the last pixel of the new size
+    if (px[0] != 0xDEADBEEF || px[128 * 31 + 127] != 0xCAFEBABE)
+        die("resize buffer not writable");
+    int resized[3] = {id3, id2, id4};
+    expect_order(resized, 3, "resize keeps the order");
+
+    // A same-size resize is a no-op and keeps the buffer.
+    if (grv_surface_resize(id2, 128, 32, &s) != 0) die("same-size resize");
+    if (px[0] != 0xDEADBEEF) die("same-size resize moved the buffer");
+
+    // Bad sizes and unknown ids are refused.
+    if (grv_surface_resize(id2, 0, 32, &s) != -1) die("resize to 0 not refused");
+    if (grv_surface_resize(id2, 40000, 32, &s) != -1) die("huge resize not refused");
+    if (grv_surface_resize(9999, 32, 32, &s) != -1) die("unknown resize not refused");
 
     // --- registry cap, then a full drain still leaves it reusable ---
     int made = 0;

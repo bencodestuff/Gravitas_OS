@@ -316,8 +316,74 @@ int surface_create(uint64_t w, uint64_t h) {
     return s->id;
 }
 
-int surface_destroy(int id) {
+// Resize an owned surface: allocate a buffer at the new size, release the old
+// one, and repaint where both were. The id, position and z-order are kept; the
+// pixels move, so the owner has to re-bind to the new VA.
+int surface_resize(int id, uint64_t w, uint64_t h) {
     Surface* s = find_owned(id);
+    if (s == nullptr) return -1;
+    if (w == 0 || h == 0) return -1;
+    if (w > 32768 || h > 32768) return -1;
+    uint64_t size = w * h * 4;
+    if (size == 0 || size > MAX_SURFACE_BYTES) return -1;
+    if (w == s->w && h == s->h) return 0; // nothing to do
+
+    uint64_t pages = (size + 4095) / 4096;
+    uint64_t* frames = (uint64_t*)Heap::malloc(pages * sizeof(uint64_t));
+    if (frames == nullptr) return -1;
+
+    uint64_t owner_cr3 = Sched::current_task_cr3();
+    uint64_t old_cr3 = VMM::current_pml4();
+    if (old_cr3 != owner_cr3) VMM::switch_pml4(owner_cr3);
+
+    // The new range is allocated before the old one is freed, so a failure
+    // leaves the surface exactly as it was.
+    uint64_t va = VMM::alloc_user_range(owner_cr3, pages);
+    if (va == 0) {
+        if (old_cr3 != owner_cr3) VMM::switch_pml4(old_cr3);
+        Heap::free(frames);
+        return -1;
+    }
+
+    uint64_t got = 0;
+    for (; got < pages; got++) {
+        frames[got] = PMM::alloc_page();
+        if (frames[got] == 0) break;
+    }
+    if (got < pages) {
+        for (uint64_t p = 0; p < got; p++) PMM::free_page(frames[p]);
+        VMM::unmap_user_range(owner_cr3, va, pages);
+        if (old_cr3 != owner_cr3) VMM::switch_pml4(old_cr3);
+        Heap::free(frames);
+        return -1;
+    }
+
+    for (uint64_t p = 0; p < pages; p++)
+        VMM::map_page_in(owner_cr3, frames[p], va + p * 4096, 0x07); // P|W|U
+
+    uint64_t old_va = s->va, old_pages = s->page_count, old_w = s->w, old_h = s->h;
+    uint64_t* old_frames = s->frames;
+    for (uint64_t p = 0; p < old_pages; p++) PMM::free_page(old_frames[p]);
+    VMM::unmap_user_range(owner_cr3, old_va, old_pages);
+    Heap::free(old_frames);
+    if (old_cr3 != owner_cr3) VMM::switch_pml4(old_cr3);
+
+    s->w = w; s->h = h;
+    s->va = va;
+    s->frames = frames;
+    s->page_count = pages;
+
+    for (uint64_t p = 0; p < pages; p++) {
+        uint64_t left = size - p * 4096;
+        memset(frame_ptr(frames[p]), 0, left < 4096 ? left : 4096);
+    }
+
+    damage_add(s->x, s->y, s->x + (int)old_w, s->y + (int)old_h);
+    damage_surface(s);
+    return 0;
+}
+
+int surface_destroy(int id) {    Surface* s = find_owned(id);
     if (s == nullptr) return -1;
 
     int slot = slot_of(s);
