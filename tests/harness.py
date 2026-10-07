@@ -353,21 +353,29 @@ class Guest:
     # --- WM introspection ----------------------------------------------
 
     def windows(self):
-        """The latest geometry for every window the WM has created."""
+        """The latest geometry for every window the WM has created.
+
+        The WM logs a window with its task name at creation and its client's
+        title once the hello is answered, so a window carries both: "task" (the
+        creation name) and "title" (what it ended up showing)."""
         out = {}
         for m in re.finditer(
                 r"wm: window #(\d+) '([^']*)' (\d+)x(\d+) at (-?\d+),(-?\d+)", self.log()):
             out[int(m.group(1))] = {
-                "id": int(m.group(1)), "title": m.group(2),
+                "id": int(m.group(1)), "task": m.group(2), "title": m.group(2),
                 "w": int(m.group(3)), "h": int(m.group(4)),
                 "x": int(m.group(5)), "y": int(m.group(6)),
             }
+        for m in re.finditer(r"wm: title #(\d+) '([^']*)'", self.log()):
+            w = out.get(int(m.group(1)))
+            if w:
+                w["title"] = m.group(2)   # the last title the WM logged
         return list(out.values())
 
     def window(self, title_pat):
         hit = None
         for w in self.windows():
-            if re.search(title_pat, w["title"]):
+            if re.search(title_pat, w["title"]) or re.search(title_pat, w["task"]):
                 hit = w
         return hit
 

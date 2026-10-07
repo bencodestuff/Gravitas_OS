@@ -111,8 +111,8 @@ static void on_draw(struct gravity_app* a) {
 }
 
 int main(int argc, char** argv) {
-    int w = 0, h = 0, role = 0, argi = 1;
-    gravity_args(argc, argv, &w, &h, &role, &argi);
+    int w = 0, h = 0, argi = 1;
+    gravity_args(argc, argv, &w, &h, &argi);
 
     // The grid derives its cell count from the requested window size.
     if (w > 0) g_cols = (w - GRAVITY_TERM_SB) / CELL_W;
@@ -145,7 +145,6 @@ int main(int argc, char** argv) {
     app.on_poll = on_poll;
     app.title = "Terminal";
     app.user = 0;
-    app.wm_role = role;
     gravity_run(&app, g_cols * CELL_W + GRAVITY_TERM_SB, g_rows * CELL_H);
     return 0;
 }

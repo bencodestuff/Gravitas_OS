@@ -25,6 +25,16 @@ namespace Input {
     constexpr uint64_t KEY_HOME   = 0x107;
     constexpr uint64_t KEY_END    = 0x108;
     constexpr uint64_t KEY_DELETE = 0x109;
+    constexpr uint64_t KEY_F1     = 0x10A;
+    constexpr uint64_t KEY_F2     = 0x10B;
+    constexpr uint64_t KEY_F3     = 0x10C;
+    constexpr uint64_t KEY_F4     = 0x10D;
+    constexpr uint64_t KEY_F5     = 0x10E;
+    constexpr uint64_t KEY_F6     = 0x10F;
+    constexpr uint64_t KEY_F7     = 0x110;
+    constexpr uint64_t KEY_F8     = 0x111;
+    constexpr uint64_t KEY_F9     = 0x112;
+    constexpr uint64_t KEY_F10    = 0x113;
 
     // Modifier bits (EV_KEY's 'b').
     constexpr uint64_t MOD_SHIFT = 1;

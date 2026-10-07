@@ -85,9 +85,9 @@ static void on_draw(struct gravity_app* a) {
 }
 
 int main(int argc, char** argv) {
-    int role = 0, argi = 1;
-    gravity_args(argc, argv, &win_w, &win_h, &role, &argi);
-    (void)role; (void)argi;
+    int argi = 1;
+    gravity_args(argc, argv, &win_w, &win_h, &argi);
+    (void)argi;
 
     gravity_filer_init(&filer, "/", 0, PATH_H, win_w, win_h - PATH_H, ROW_H);
 
@@ -95,7 +95,6 @@ int main(int argc, char** argv) {
     app.on_draw = on_draw;
     app.title = "Files";
     app.user = 0;
-    app.wm_role = role;
     gravity_run(&app, win_w, win_h);
     return 0;
 }

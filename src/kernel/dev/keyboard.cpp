@@ -157,19 +157,26 @@ namespace Keyboard {
                 default: return;
             }
         } else {
-            if (code > 58) return;
-            bool shift = shift_left || shift_right;
-            char c = shift ? scan_set_1_shift[code] : scan_set_1[code];
-            if (c == 0) return;
-            // Caps lock flips LETTER case only. The table already gives the
-            // shifted case, so caps toggles it — uppercase iff shift XOR caps.
-            if (is_letter(c) && caps_lock) {
-                c = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c - 'A' + 'a');
+            // The function keys F1-F10 are their own values, above the letter
+            // table (F11/F12 are the kernel's debug dump and console-on-top,
+            // handled above).
+            if (code >= 0x3B && code <= 0x44) {
+                value = Input::KEY_F1 + (code - 0x3B);
+            } else {
+                if (code > 58) return;
+                bool shift = shift_left || shift_right;
+                char c = shift ? scan_set_1_shift[code] : scan_set_1[code];
+                if (c == 0) return;
+                // Caps lock flips LETTER case only. The table already gives the
+                // shifted case, so caps toggles it — uppercase iff shift XOR caps.
+                if (is_letter(c) && caps_lock) {
+                    c = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : (c - 'A' + 'a');
+                }
+                if (c == 27) value = Input::KEY_ESCAPE;
+                else if (c == '\b' || c == '\t' || c == '\n') value = (uint8_t)c;
+                else if (c >= 32 && c <= 126) value = (uint8_t)c;
+                else return;
             }
-            if (c == 27) value = Input::KEY_ESCAPE;
-            else if (c == '\b' || c == '\t' || c == '\n') value = (uint8_t)c;
-            else if (c >= 32 && c <= 126) value = (uint8_t)c;
-            else return;
         }
 
         bool shift = shift_left || shift_right;

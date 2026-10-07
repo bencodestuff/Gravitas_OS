@@ -287,10 +287,10 @@ surface (the authority cannot `SURFACE_DESTROY` another task's surface,
 since that would unmap memory the owner still holds).
 
 The **userland** half of this — the WM protocol (`GRV_WM_HELLO`, `SET_TITLE`,
-`SET_ROLE`, `CLOSE`, `WORKSPACE`) and the conventions built on it, like a pane
-declaring its role so a workspace layout can place it — is `<grv/wm.h>`, and the
-kernel knows nothing about any of it. A Gravity app's `--geometry WxH` /
-`--role NAME` flags are `<gravity/app.h>`.
+`SET_ROLE`, `CLOSE`) — is `<grv/wm.h>`, and the kernel knows nothing about any
+of it. A Gravity app's `--geometry WxH` flag is `<gravity/app.h>`, and the
+widgets the apps and the IDE are built from are `<gravity/editor.h>`,
+`<gravity/filer.h>`, `<gravity/term.h>` and `<gravity/list.h>`.
 
 ## Input events
 
@@ -306,10 +306,11 @@ working for it.
 | mouse | `GRV_EV_MOUSE` (2) | button bits | `(x<<32) \| y`, window-local |
 
 - **Key values**: printable ASCII as-is; specials above ASCII
-  (`GRV_KEY_ESCAPE` 0x100, `GRV_KEY_UP/DOWN/LEFT/RIGHT` 0x101–0x104).
-  Ctrl+letter arrives as its control code (^C = 3) with `GRV_MOD_CTRL` set —
-  **except** Ctrl+Shift+letter, which keeps the letter (uppercase) so an app can
-  tell Ctrl+Shift+C (copy) from Ctrl+C (interrupt).
+  (`GRV_KEY_ESCAPE` 0x100, `GRV_KEY_UP/DOWN/LEFT/RIGHT` 0x101–0x104,
+  `GRV_KEY_HOME/END/DELETE` 0x107–0x109, `GRV_KEY_F1`–`GRV_KEY_F10`
+  0x10A–0x113). Ctrl+letter arrives as its control code (^C = 3) with
+  `GRV_MOD_CTRL` set — **except** Ctrl+Shift+letter, which keeps the letter
+  (uppercase) so an app can tell Ctrl+Shift+C (copy) from Ctrl+C (interrupt).
 - **Modifiers**: `GRV_MOD_SHIFT/CTRL/ALT/CAPS` (1/2/4/8).
 - **Buttons**: `GRV_BTN_LEFT/RIGHT/MIDDLE` (1/2/4).
 

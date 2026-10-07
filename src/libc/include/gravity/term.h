@@ -53,6 +53,10 @@ void gravity_term_render(struct gravity_term* t, struct gravity_canvas* c,
 void gravity_term_scrollback(struct gravity_term* t, int lines);
 void gravity_term_snap_bottom(struct gravity_term* t);
 
+/* Mark every visible row for repaint — after the host cleared the area the grid
+   draws into (a host with several panes repaints them independently). */
+void gravity_term_redraw(struct gravity_term* t);
+
 /* Scrollback state for a scrollbar: lines scrolled back, and the maximum. */
 int gravity_term_view(const struct gravity_term* t);
 int gravity_term_maxview(const struct gravity_term* t);

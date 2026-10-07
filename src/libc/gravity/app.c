@@ -33,15 +33,12 @@ static void send_role(struct gravity_app* app, int sid, int role) {
     grv_puts("gravity: the WM would not take this window's role\n");
 }
 
-// Answer the WM's hello: always the title; for the popup surface also its
-// role (undecorated/on-top) and where we want it placed.
+// Answer the WM's hello: the title, and for the popup surface its role
+// (undecorated/on-top) and where we want it placed.
 static void answer_hello(struct gravity_app* app, const struct grv_msg* m) {
     app->wm_task = (int)m->from; // so gravity_set_title can reach it later
 
     grv_wm_title_send((long)m->from, app->title ? app->title : "");
-
-    if ((int)m->a == app->canvas.surface_id && app->wm_role != 0)
-        send_role(app, app->canvas.surface_id, app->wm_role);
 
     if (app->popup_open && (int)m->a == app->popup.surface_id) {
         send_role(app, app->popup.surface_id, GRV_WM_ROLE_POPUP);
@@ -134,7 +131,7 @@ static int num_arg(const char** sp, int* out) {
     return 1;
 }
 
-int gravity_args(int argc, char** argv, int* w, int* h, int* role, int* argi) {
+int gravity_args(int argc, char** argv, int* w, int* h, int* argi) {
     int seen = 0;
     int i = 1;
     while (i < argc && argv[i] != 0 && argv[i][0] == '-' && argv[i][1] == '-') {
@@ -148,15 +145,6 @@ int gravity_args(int argc, char** argv, int* w, int* h, int* role, int* argi) {
                 if (gh > 0 && h) *h = gh;
                 seen = 1;
             }
-            i += 2;
-        } else if (str_is(argv[i], "--role") && i + 1 < argc) {
-            const char* v = argv[i + 1];
-            if (role) {
-                if (str_is(v, "explorer")) *role = GRV_WM_ROLE_EXPLORER;
-                else if (str_is(v, "editor")) *role = GRV_WM_ROLE_EDITOR;
-                else if (str_is(v, "terminal")) *role = GRV_WM_ROLE_TERMINAL;
-            }
-            seen = 1;
             i += 2;
         } else {
             break; // an unknown flag: leave it to the app

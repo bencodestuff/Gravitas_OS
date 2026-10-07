@@ -3,7 +3,6 @@
 
 #include <gravity/canvas.h>
 #include <grv/input.h>   /* event types, button bits, key codes */
-#include <grv/wm.h>      /* roles, for app.wm_role */
 #include <sys/cdefs.h>
 
 __BEGIN_DECLS
@@ -40,7 +39,6 @@ struct gravity_app {
     int (*on_close)(struct gravity_app* app);
     const char* title;  /* optional window title (answers the WM's hello) */
     void* user;
-    int wm_role;  /* GRV_WM_ROLE_*; the WM is told on its hello (0 = normal) */
     int redraw;   /* set by gravity_refresh; internal */
     int wm_task;  /* the WM's task id (from its hello); 0 until known */
 };
@@ -57,12 +55,11 @@ static inline void gravity_timer(struct gravity_app* app, unsigned long ms) {
 
 void gravity_run(struct gravity_app* app, int w, int h);
 
-/* Leading option flags for a Gravity app, in any order:
-     --geometry WxH   the window size (0, or no 'x', keeps the default)
-     --role NAME      "explorer" | "editor" | "terminal" — an IDE pane role
-   Returns 1 if at least one flag was seen; *argi is the index of the first
-   positional argument (1 when there are none). Any pointer may be null. */
-int  gravity_args(int argc, char** argv, int* w, int* h, int* role, int* argi);
+/* Leading option flags for a Gravity app: "--geometry WxH" sizes the window (0,
+   or no 'x', keeps the default for that axis). Returns 1 if the flag was seen;
+   *argi is the index of the first positional argument (1 when there are none).
+   Any pointer may be null. */
+int  gravity_args(int argc, char** argv, int* w, int* h, int* argi);
 
 /* Popups: a second, undecorated surface the WM places at (x,y) and raises
    above the main window. Open one and draw into app->popup via

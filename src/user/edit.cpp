@@ -136,8 +136,8 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
 
 int main(int argc, char** argv) {
     const char* path = "/tmp/untitled.txt";
-    int role = 0, argi = 1;
-    gravity_args(argc, argv, &win_w, &win_h, &role, &argi);
+    int argi = 1;
+    gravity_args(argc, argv, &win_w, &win_h, &argi);
     if (argi < argc && argv[argi] && argv[argi][0]) path = argv[argi];
 
     gravity_init(); // the font sets the status line's height
@@ -156,7 +156,6 @@ int main(int argc, char** argv) {
     app.on_draw = on_draw;
     app.on_close = on_close;
     app.user = 0;
-    app.wm_role = role;
 
     printf("edit: %s (%d bytes)\n", gravity_editor_path(&ed),
            gravity_editor_len(&ed));

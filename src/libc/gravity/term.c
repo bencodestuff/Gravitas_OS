@@ -170,6 +170,8 @@ void gravity_term_snap_bottom(struct gravity_term* t) {
     t->all_dirty = 1;
 }
 
+void gravity_term_redraw(struct gravity_term* t) { t->all_dirty = 1; }
+
 int gravity_term_view(const struct gravity_term* t) { return t->view; }
 
 int gravity_term_maxview(const struct gravity_term* t) {

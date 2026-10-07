@@ -279,38 +279,70 @@ def window_geometry(g):
 
 
 @test
-def ide_layout(g):
-    # The IDE is a composition, not a monolith: it spawns the three apps we
-    # already have with --geometry/--role, and the WM places them by role
-    # (clients never move themselves). Explorer left, editor centre, terminal
-    # bottom — and the editor and terminal share one flush column.
+def ide_window(g):
+    # The IDE is ONE window: the explorer, the editor and the terminal are panes
+    # inside it, not three top-level windows. It opens with a file already in a
+    # tab (the tests below keep using this window).
     g.desktop()
-    g.shell("bg ide.elf")
-    g.wait_for(r"ide: layout requested")
-    g.wait_for(r"wm: workspace 1 requested")
+    n = g.count(r"wm: window #")
+    g.shell("bg ide.elf /tmp/ide.lua")
+    g.wait_for(r"ide: open /tmp/ide\.lua")
+    g.wait_for(r"wm: title #[0-9]+ 'Gravitas IDE'")
+    if g.count(r"wm: window #") != n + 1:
+        g.fail("the IDE opened more than one window")
 
-    # The WM holds the request until every pane has announced its role, and the
-    # panes start concurrently, so wait for all three before comparing them.
-    ex = r"wm: pane explorer #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
-    ed = r"wm: pane editor #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
-    tm = r"wm: pane terminal #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
-    g.wait_for(ex)
-    g.wait_for(ed)
-    g.wait_for(tm)
 
-    E = re.search(ex, g.log())
-    D = re.search(ed, g.log())
-    T = re.search(tm, g.log())
-    if not (E and D and T):
-        g.fail("the IDE panes were not all placed")
-    if int(E.group(4)) >= int(D.group(4)):
-        g.fail("the explorer is not left of the editor: %s" % E.group(0))
-    if D.group(2) != T.group(2):
-        g.fail("editor and terminal columns differ: %s vs %s"
-               % (D.group(2), T.group(2)))
-    if int(D.group(4)) != int(T.group(4)) or int(D.group(5)) >= int(T.group(5)):
-        g.fail("the terminal is not below the editor: %s vs %s"
-               % (D.group(0), T.group(0)))
+@test
+def ide_run(g):
+    # A file opened in the editor runs in the terminal pane on F5: the IDE saves
+    # it first, then types the command into the shell it hosts below.
+    w = g.await_window("Gravitas IDE")
+    g.click_title(w)                      # the IDE takes the keys
+    g.ctrl("2")                           # focus the editor pane
+    g.type("print('ide-run')")
+    time.sleep(0.4)
+
+    before = os.path.join(g.art, "ide_run_before.ppm")
+    g.screendump(before)
+
+    n = g.count(r"User task 'lua\.elf' created")
+    g.key("f5")
+    g.wait_for(r"ide: run run lua\.elf /tmp/ide\.lua")
+    g.wait_count(r"User task 'lua\.elf' created", n + 1)
+    time.sleep(1.2)
+
+    after = os.path.join(g.art, "ide_run_after.ppm")
+    g.screendump(after)
+    # The terminal is the pane at the bottom of the window: the program's output
+    # has to be painted there, not merely run.
+    x0 = w["x"] + 4
+    y0 = w["y"] + w["h"] - 218
+    x1 = w["x"] + w["w"] - 4
+    y1 = w["y"] + w["h"] - 26
+    if diff_region(before, after, x0, y0, x1, y1) <= 100:
+        g.fail("F5 ran the file but the terminal pane did not paint the output")
+
+
+@test
+def ide_explorer(g):
+    # The tree feeds the centre pane: opening a file makes a tab in the editor,
+    # not another window.
+    w = g.await_window("Gravitas IDE")
+    g.click_title(w)
+
+    n = g.count(r"wm: window #")
+    # The tree starts at "/": bin/ fonts/ lua/ Pictures/ tmp/ apps hello.txt.
+    row = lambda i: w["y"] + 2 + i * 20 + 10
+    g.click(w["x"] + 100, row(2))         # lua/ — a directory opens on one click
+    time.sleep(0.5)
+    g.click(w["x"] + 100, row(1))         # hello.lua — select
+    time.sleep(0.3)
+    g.click(w["x"] + 100, row(1))         # ... and open
+
+    g.wait_for(r"ide: open /lua/hello\.lua")
+    if g.count(r"wm: window #") != n:
+        g.fail("opening a file from the tree made a new window")
+    g.wait_for(r"wm: title #[0-9]+ 'Gravitas IDE — hello\.lua'")
 
 
 if __name__ == "__main__":

@@ -27,19 +27,11 @@ __BEGIN_DECLS
 #define GRV_WM_CLOSE      0x14 /* WM -> client: a = surface id (please exit) */
 #define GRV_WM_CLOSE_ACK  0x15 /* client -> WM: a = sid (handling the close) */
 #define GRV_WM_SET_TITLE2 0x16 /* client -> WM: the title's next 16 bytes    */
-#define GRV_WM_WORKSPACE  0x17 /* client -> WM: a = a GRV_WM_WS_* layout     */
 
-/* What a window is, for the WM's benefit. A workspace layout places windows by
-   role; a normal window is just itself. */
-#define GRV_WM_ROLE_NORMAL   0
-#define GRV_WM_ROLE_POPUP    1 /* undecorated, on top, client-positioned      */
-#define GRV_WM_ROLE_EXPLORER 2 /* a workspace pane: the file tree, left       */
-#define GRV_WM_ROLE_EDITOR   3 /* a workspace pane: the editor, centre        */
-#define GRV_WM_ROLE_TERMINAL 4 /* a workspace pane: the terminal, bottom      */
-
-/* Workspace layouts. The client sizes its own surface (--geometry); the WM
-   owns where it goes, so a layout is a request to arrange, not to resize. */
-#define GRV_WM_WS_IDE 1 /* explorer left, editor centre, terminal bottom */
+/* What a window is, for the WM's benefit. A normal window is decorated, placed
+   and listed in the taskbar; a popup is none of those. */
+#define GRV_WM_ROLE_NORMAL 0
+#define GRV_WM_ROLE_POPUP  1 /* undecorated, on top, client-positioned      */
 
 /* A window title is at most 31 characters. Pack the first 16 bytes of a
    title into two payload words (a shorter title is NUL-padded). */
