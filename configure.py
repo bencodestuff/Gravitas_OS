@@ -11,6 +11,19 @@ KERNEL_FILE = f"bin/{PROJECT_NAME}.elf"
 COMPILER = "clang++"
 LINKER = "ld.lld"
 
+# Host tools the build needs, with the Arch package that provides each. Checked
+# up front so a missing one is one sentence instead of a traceback from halfway
+# through a build. Limine and Lua are fetched (and built) by configure itself,
+# so git/make/curl are only needed when they are not already here.
+REQUIRED_TOOLS = [
+    (COMPILER,  "clang"),
+    (LINKER,    "lld"),
+    ("xorriso", "xorriso"),
+    ("tar",     "tar"),
+    ("mke2fs",  "e2fsprogs"),
+]
+FETCH_TOOLS = ["git", "make", "curl"]
+
 # Third-party Lua: fetched and checksum-verified at configure time, never
 # committed (see third_party/README.md). Built into bin/lua.elf.
 LUA_VERSION = "5.4.9"
@@ -99,6 +112,29 @@ def run_command(cmd, cwd=None):
         print(f"Error running command: {cmd}")
         sys.exit(1)
 
+def check_tools():
+    missing = [(t, pkg) for t, pkg in REQUIRED_TOOLS if shutil.which(t) is None]
+    if missing:
+        print("Error: missing host tools:")
+        for tool, pkg in missing:
+            print(f"  {tool:<10} (package: {pkg})")
+        print("Install them and run configure.py again.")
+        sys.exit(1)
+
+    # Only needed the first time: Limine is cloned and built here, Lua is
+    # downloaded. After that the build never touches them.
+    needed = []
+    if not os.path.exists("limine/limine"):
+        needed += ["git", "make"]
+    if not os.path.exists(f"{LUA_SRC}/lua.c"):
+        needed.append("curl")
+    missing = [t for t in needed if shutil.which(t) is None]
+    if missing:
+        print("Error: missing host tools needed for the one-time setup:")
+        for tool in missing:
+            print(f"  {tool}")
+        sys.exit(1)
+
 def ensure_limine():
     if os.path.exists("limine/limine"):
         return 
@@ -136,6 +172,7 @@ def find_sources(directory, extensions):
 # --- Main ---
 
 def main():
+    check_tools()
     ensure_limine()
     ensure_lua()
     
