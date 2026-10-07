@@ -289,14 +289,27 @@ static void line_set(char* line, int* len, int* cur, const char* prompt,
     line_draw(prompt, line, *len, *cur, drawn);
 }
 
+// Print a directory's entries, one per line, directories with a trailing '/'.
+// Bounded: a bigger directory lists its first SHELL_LIST_MAX entries.
+#define SHELL_LIST_MAX 64
+static void list_dir(const char* path) {
+    static struct grv_dirent ents[SHELL_LIST_MAX];
+    long n = grv_readdir(path, ents, SHELL_LIST_MAX);
+    if (n < 0) {
+        printf("%s: not a directory\n", path);
+        return;
+    }
+    for (long i = 0; i < n; i++)
+        printf("%s%s\n", ents[i].name, ents[i].type == GRV_DT_DIR ? "/" : "");
+}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("[shell] Gravitas userland shell v0.2 (libc)\n");
 
     // Startup listing: shows the CWD (the shell boots at "/")
-    char* listbuf = (char*)malloc(2048);
-    grv_readdir(".", listbuf, 2048);
-    printf("[shell] cwd contents:\n%s", listbuf);
+    printf("[shell] cwd contents:\n");
+    list_dir(".");
     printf("[shell] type 'help'\n");
 
     static char line[128];

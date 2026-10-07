@@ -15,7 +15,7 @@
 #define DT_SOCK   12
 
 struct dirent {
-    ino_t         d_ino;      /* always 0: there are no inode numbers */
+    ino_t         d_ino;      /* the file's inode within its filesystem */
     unsigned char d_type;
     char          d_name[256];
 };
@@ -24,8 +24,8 @@ typedef struct __dirstream DIR;
 
 __BEGIN_DECLS
 
-/* opendir snapshots the directory listing; readdir walks it. Names longer
-   than the buffer are truncated. */
+/* opendir snapshots the directory listing; readdir walks the snapshot. Names
+   longer than d_name are truncated. */
 DIR* opendir(const char* name);
 struct dirent* readdir(DIR* dirp);
 int closedir(DIR* dirp);

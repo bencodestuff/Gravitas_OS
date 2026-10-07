@@ -20,7 +20,6 @@ __BEGIN_DECLS
 
 struct gravity_filer {
     char cwd[128];                              /* the current directory */
-    char listing[2048];                         /* the raw readdir reply */
     char names[GRAVITY_FILER_MAX][GRAVITY_FILER_NAME];
     const char* items[GRAVITY_FILER_MAX];       /* the sorted entry names */
     int  n;

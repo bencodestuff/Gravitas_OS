@@ -594,7 +594,7 @@ int ftruncate_fd(int fd, uint64_t size) {
     return 0;
 }
 
-int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
+int stat_path(const char* path, Stat* out) {
     // A lookup: same resolution as open (CWD, then /bin for a bare name).
     char fixed[256];
     const char* effective = nullptr;
@@ -606,8 +606,13 @@ int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
 
     Node* n = node_walk(fs, rel);
     if (n == nullptr) return -Errno::ENOENT;
-    if (out_size) *out_size = n->size;
-    if (out_is_dir) *out_is_dir = (n->type == FT_DIR);
+    if (out) {
+        out->size = n->size;
+        out->type = n->type;
+        out->ino = n->ino;
+        out->mode = n->mode;
+        out->mtime = n->mtime;
+    }
     fs->release(fs->priv, n);
     return 0;
 }
@@ -652,40 +657,24 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
     return true;
 }
 
-// --- readdir passthrough (syscall 2 shim) ---
-uint64_t readdir(const char* path, char* buf, uint64_t max) {
-    if (buf == nullptr || max == 0) return 0;
-
+// --- directory entries, typed (the LISTDIR syscall) ---
+long readdir_entries(const char* path, DirEntry* out, uint64_t max) {
     char fixed[256];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
     char rel[256];
     Filesystem* fs = resolve(effective, rel, sizeof(rel));
-    if (fs == nullptr || fs->readdir == nullptr) return 0;
+    if (fs == nullptr || fs->readdir == nullptr) return -Errno::ENOENT;
 
     Node* dir = node_walk(fs, rel);
-    if (dir == nullptr) return 0;
-    if (dir->type != FT_DIR) { fs->release(fs->priv, dir); return 0; }
+    if (dir == nullptr) return -Errno::ENOENT;
+    if (dir->type != FT_DIR) { fs->release(fs->priv, dir); return -Errno::ENOTDIR; }
 
-    uint64_t written = 0;
-    DirEntry e;
-    for (uint64_t i = 0; fs->readdir(fs->priv, dir, i, &e); i++) {
-        for (uint64_t j = 0; e.name[j]; j++) {
-            if (written + 3 >= max) goto done;
-            buf[written++] = e.name[j];
-        }
-        if (e.type == FT_DIR) {
-            if (written + 3 >= max) goto done;
-            buf[written++] = '/';
-        }
-        if (written + 3 >= max) goto done;
-        buf[written++] = '\n';
-    }
-done:
-    buf[written] = '\0';
+    uint64_t n = 0;
+    while (n < max && fs->readdir(fs->priv, dir, n, &out[n])) n++;
     fs->release(fs->priv, dir);
-    return written;
+    return (long)n;
 }
 
 // --- fd size accessor (spawn uses it to size the ELF buffer) ---

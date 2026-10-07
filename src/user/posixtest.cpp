@@ -59,18 +59,23 @@ int main(int argc, char** argv) {
     check(d != 0, "opendir /bin");
     if (d != 0) {
         int count = 0, saw_tests = 0;
+        ino_t ino = 0;
         struct dirent* e;
         while ((e = readdir(d)) != 0) {
             count++;
+            if (e->d_ino != 0) ino = e->d_ino;
             if (strcmp(e->d_name, "tests") == 0 && e->d_type == DT_DIR)
                 saw_tests = 1;
         }
         check(count > 0, "readdir found entries");
         check(saw_tests, "readdir: tests is a directory");
+        check(ino != 0, "readdir reports inode numbers");
         check(closedir(d) == 0, "closedir");
     }
 
     check(stat("/bin", &st) == 0 && S_ISDIR(st.st_mode), "stat a directory");
+    check(st.st_ino != 0, "stat reports an inode number");
+    check((st.st_mode & 0777) != 0, "stat reports permission bits");
 
     // --- errors ---------------------------------------------------------
     errno = 0;

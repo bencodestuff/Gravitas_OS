@@ -23,8 +23,8 @@
 #define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 
-/* What the platform knows: type (from st_mode) and size. Ownership, link
-   counts and timestamps are not modelled, so those fields read as zero. */
+/* What the platform knows: type (from st_mode), size, inode and mtime.
+   Ownership and link counts are not modelled, so those fields read as zero. */
 struct stat {
     dev_t     st_dev;
     ino_t     st_ino;

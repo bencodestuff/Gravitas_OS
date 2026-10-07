@@ -64,6 +64,15 @@ struct DirEntry {
     uint32_t ino;
 };
 
+// A file's metadata, without opening it.
+struct Stat {
+    uint64_t size;
+    FileType type;
+    uint32_t ino;
+    uint32_t mode;    // permission bits; the type is in 'type'
+    uint64_t mtime;   // seconds since the epoch; 0 = unknown
+};
+
 // --- Filesystem backend interface ---
 struct Filesystem {
     const char* fs_type;          // "ramfs", "tarfs", "ext2" — logging only
@@ -178,9 +187,9 @@ void canonicalize(const char* path, char* out, uint64_t out_max);
 // Convenience: read a whole file into a buffer (kernel-side; used by spawn)
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size);
 
-// Directory listing into a newline-separated, NUL-terminated buffer, one name
-// per line with a trailing '/' on directories.
-uint64_t readdir(const char* path, char* buf, uint64_t max);
+// Directory entries of 'path' into 'out[0..max)'. Returns the number written,
+// or a negated errno (ENOENT, ENOTDIR). Typed: a name, a type and an inode.
+long readdir_entries(const char* path, DirEntry* out, uint64_t max);
 
 // Seek an fd's read/write offset. 'whence' is 0=SET, 1=CUR, 2=END. Returns
 // the new offset, or -errno (EBADF/EINVAL).
@@ -198,8 +207,8 @@ int rename(const char* from, const char* to);
 // Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO).
 int ftruncate_fd(int fd, uint64_t size);
 
-// Look up a path's size and type without opening it. Returns 0, or -ENOENT.
-int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir);
+// Look up a path's metadata without opening it. Returns 0, or -ENOENT.
+int stat_path(const char* path, Stat* out);
 
 // The physical address and length of a file's bytes, for a zero-copy mapping.
 // A lookup, like stat/open (the search path applies). Returns 0, or -errno

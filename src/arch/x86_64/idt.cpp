@@ -231,9 +231,30 @@ static void sys_getc(IDT::Registers* regs) {
     regs->rax = (uint64_t)b;
 }
 
+// The kernel's VFS::DirEntry and the ABI's struct grv_dirent are the same
+// record, so LISTDIR fills the caller's array directly (as STAT and GETCWD do).
+// This is the assertion that keeps them the same record.
+static_assert(sizeof(VFS::DirEntry) == 136,
+              "VFS::DirEntry must match struct grv_dirent in grv/syscall.h");
+
 static void sys_listdir(IDT::Registers* regs) {
-    VFS::readdir((const char*)regs->rdi, (char*)regs->rsi, regs->rdx);
-    regs->rax = 0;
+    VFS::DirEntry* out = (VFS::DirEntry*)regs->rsi;
+    long max = (long)regs->rdx;
+    if (out == nullptr || max <= 0) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+
+    long n = VFS::readdir_entries((const char*)regs->rdi, out, (uint64_t)max);
+    regs->rax = (uint64_t)n;
+
+    // The ABI speaks the POSIX DT_* values — what struct dirent and every
+    // ported program expect — while the kernel's FileType is its own. Translate
+    // in place: the array holds nothing but these records.
+    constexpr uint8_t DT_DIR = 4;
+    constexpr uint8_t DT_REG = 8;
+    for (long i = 0; i < n; i++)
+        out[i].type = (VFS::FileType)((out[i].type == VFS::FT_DIR) ? DT_DIR : DT_REG);
 }
 
 static void sys_chdir(IDT::Registers* regs) {
@@ -491,13 +512,23 @@ static void sys_lseek(IDT::Registers* regs) {
 }
 
 static void sys_stat(IDT::Registers* regs) {
-    struct StatPkt { uint64_t size; uint64_t is_dir; };
-    uint64_t sz = 0; bool dir = false;
-    int r = VFS::stat_path((const char*)regs->rdi, &sz, &dir);
+    // Mirrors struct grv_stat in grv/syscall.h.
+    struct StatPkt {
+        uint64_t size;
+        uint64_t is_dir;
+        uint64_t ino;
+        uint64_t mode;
+        uint64_t mtime;
+    };
+    VFS::Stat st;
+    int r = VFS::stat_path((const char*)regs->rdi, &st);
     if (r == 0 && regs->rsi) {
         StatPkt* out = (StatPkt*)regs->rsi;
-        out->size = sz;
-        out->is_dir = dir ? 1 : 0;
+        out->size = st.size;
+        out->is_dir = (st.type == VFS::FT_DIR) ? 1 : 0;
+        out->ino = st.ino;
+        out->mode = st.mode;
+        out->mtime = st.mtime;
     }
     regs->rax = (uint64_t)r;
 }

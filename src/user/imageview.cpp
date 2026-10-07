@@ -73,31 +73,22 @@ static void build_list(const char* start) {
         dir[i] = '\0';
     }
 
-    static char listing[2048];
-    grv_readdir(dir, listing, sizeof(listing));
+    static struct grv_dirent ents[MAXI];
+    long nents = grv_readdir(dir, ents, MAXI);
 
-    char* p = listing;
-    while (*p && nimages < MAXI) {
-        char* nl = p;
-        while (*nl && *nl != '\n') nl++;
-        int len = (int)(nl - p);
-        if (len > 0) {
-            char name[80];
-            int k = 0;
-            for (int i = 0; i < len && k < 79; i++) name[k++] = p[i];
-            name[k] = '\0';
-            if (gravity_image_supported(name)) {
-                int off = 0;
-                for (int i = 0; dir[i] && off < 180; i++) paths[nimages][off++] = dir[i];
-                if (off == 0 || paths[nimages][off - 1] != '/')
-                    paths[nimages][off++] = '/';
-                for (int i = 0; name[i] && off < 191; i++) paths[nimages][off++] = name[i];
-                paths[nimages][off] = '\0';
-                items[nimages] = paths[nimages];
-                nimages++;
-            }
-        }
-        p = *nl ? nl + 1 : nl;
+    for (long i = 0; i < nents && nimages < MAXI; i++) {
+        if (ents[i].type == GRV_DT_DIR) continue;    // only files can be images
+        const char* name = ents[i].name;
+        if (!gravity_image_supported(name)) continue;
+
+        int off = 0;
+        for (int k = 0; dir[k] && off < 180; k++) paths[nimages][off++] = dir[k];
+        if (off == 0 || paths[nimages][off - 1] != '/')
+            paths[nimages][off++] = '/';
+        for (int k = 0; name[k] && off < 191; k++) paths[nimages][off++] = name[k];
+        paths[nimages][off] = '\0';
+        items[nimages] = paths[nimages];
+        nimages++;
     }
 
     // sort, then pick the requested file (else the first)

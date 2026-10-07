@@ -141,5 +141,14 @@ def shell_line_edit(g):
     g.wait_for("Hello from the Gravitas tar")
 
 
+@test
+def ls_long_metadata(g):
+    # ls -l is only possible because a node carries an identity and metadata: a
+    # type and mode, an inode and a size. The console shell prints into the
+    # serial log, so this reads the listing the way a user would.
+    g.shell("ls -l /bin")
+    g.wait_for(r"[d-][rwx-]{9}\s+[0-9]+\s+[0-9]+\s+tests/")
+
+
 if __name__ == "__main__":
     run_module(__file__)

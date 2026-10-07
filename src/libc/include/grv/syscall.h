@@ -145,10 +145,23 @@ static inline char grv_getc(void) {
     return (char)syscall1(GRV_SYSCALL_GETC, 0);
 }
 
-/* Fill buf with the entries of directory 'path', '\n'-separated,
-   NUL-terminated. */
-static inline void grv_readdir(const char* path, char* buf, unsigned long max) {
-    syscall3(GRV_SYSCALL_LISTDIR, (long)path, (long)buf, (long)max);
+/* Directory entries: LISTDIR fills an array of these. The layout is the
+   kernel's VFS::DirEntry exactly, so the syscall fills the array in place.
+   'type' is the POSIX DT_* value (see <dirent.h>). */
+#define GRV_DT_UNKNOWN 0
+#define GRV_DT_DIR     4
+#define GRV_DT_REG     8
+
+struct grv_dirent {
+    char          name[128];
+    unsigned char type;
+    unsigned int  ino;       /* stable identity within the filesystem; 0 = none */
+};
+
+/* Fill out[0..max) with the entries of directory 'path'. Returns the count
+   written, or -1 with errno (ENOENT, ENOTDIR). */
+static inline long grv_readdir(const char* path, struct grv_dirent* out, long max) {
+    return grv_err(syscall3(GRV_SYSCALL_LISTDIR, (long)path, (long)out, max));
 }
 
 /* Spawn a program from the tarfs (blocks until it exits).
@@ -239,7 +252,10 @@ static inline long grv_lseek(int fd, long offset, int whence) {
 
 struct grv_stat {
     unsigned long size;
-    long          is_dir;
+    long          is_dir;    /* 1 for a directory, 0 for a file */
+    unsigned long ino;       /* stable identity within the filesystem */
+    unsigned long mode;      /* permission bits; the type is in is_dir */
+    unsigned long mtime;     /* seconds since the epoch; 0 = unknown */
 };
 
 /* Metadata for a path. Returns 0 and fills *out, or -1 with errno. */

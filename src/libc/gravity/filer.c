@@ -61,7 +61,10 @@ void gravity_filer_path(const struct gravity_filer* f, char* out, int max,
 int gravity_filer_load(struct gravity_filer* f, const char* path) {
     if (grv_chdir(path) != 0) return -1; // unreadable: stay put
     grv_getcwd(f->cwd, sizeof(f->cwd));
-    grv_readdir(".", f->listing, sizeof(f->listing));
+
+    static struct grv_dirent ents[GRAVITY_FILER_MAX];
+    long nents = grv_readdir(".", ents, GRAVITY_FILER_MAX);
+    if (nents < 0) return -1;
 
     f->n = 0;
     f->has_dotdot = !(f->cwd[0] == '/' && f->cwd[1] == '\0');
@@ -71,18 +74,18 @@ int gravity_filer_load(struct gravity_filer* f, const char* path) {
         f->items[f->n++] = f->names[0];
     }
 
-    char* p = f->listing;
-    while (*p && f->n < GRAVITY_FILER_MAX) {
-        char* nl = p;
-        while (*nl && *nl != '\n') nl++;
-        int len = (int)(nl - p);
-        if (len > 0 && len < GRAVITY_FILER_NAME) {
-            for (int i = 0; i < len; i++) f->names[f->n][i] = p[i];
-            f->names[f->n][len] = '\0';
-            f->items[f->n] = f->names[f->n];
-            f->n++;
+    // Entries keep the trailing '/' convention: it is what the sort and the
+    // "is this a directory" test read.
+    for (long i = 0; i < nents && f->n < GRAVITY_FILER_MAX; i++) {
+        int len = 0;
+        while (ents[i].name[len] && len < GRAVITY_FILER_NAME - 2) {
+            f->names[f->n][len] = ents[i].name[len];
+            len++;
         }
-        p = *nl ? nl + 1 : nl;
+        if (ents[i].type == GRV_DT_DIR) f->names[f->n][len++] = '/';
+        f->names[f->n][len] = '\0';
+        f->items[f->n] = f->names[f->n];
+        f->n++;
     }
 
     sort_items(f);
@@ -126,7 +129,6 @@ int gravity_filer_init(struct gravity_filer* f, const char* path,
     f->has_dotdot = 0;
     f->cwd[0] = '/';
     f->cwd[1] = '\0';
-    f->listing[0] = '\0';
     gravity_list_init(&f->list, x, y, w, h, row_h, FG, BG, SEL_FG, SEL_BG);
     return gravity_filer_load(f, path);
 }
