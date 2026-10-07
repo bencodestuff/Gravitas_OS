@@ -368,6 +368,11 @@ working for it.
   0x10A–0x113). Ctrl+letter arrives as its control code (^C = 3) with
   `GRV_MOD_CTRL` set — **except** Ctrl+Shift+letter, which keeps the letter
   (uppercase) so an app can tell Ctrl+Shift+C (copy) from Ctrl+C (interrupt).
+- **A console reader gets bytes, not events.** The shell reads `GETC`, so the
+  console translates the keys a byte-stream line editor needs: the arrows arrive
+  as the readline codes (^P/^N up/down, ^B/^F left/right, ^A/^E home/end) and
+  the editing chords (^A/^B/^E/^F/^K/^N/^P/^U/^W) pass through as themselves.
+  Ctrl+C does not: it stays the interrupt key.
 - **Modifiers**: `GRV_MOD_SHIFT/CTRL/ALT/CAPS` (1/2/4/8).
 - **Buttons**: `GRV_BTN_LEFT/RIGHT/MIDDLE` (1/2/4).
 

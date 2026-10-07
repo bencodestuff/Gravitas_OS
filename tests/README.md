@@ -29,9 +29,9 @@ machine cannot hide the others.
 
 Groups boot **in parallel** (`tests/run.py -j N`; the default is as many as the
 machine's free memory holds, capped at 4 — each guest wants 512MB, and a machine
-that swaps makes a parallel run slower *and* flakier, not faster). Output is
-buffered per group and printed when it finishes, so a run still reads
-top-to-bottom.
+that swaps makes a parallel run slower *and* flakier, not faster). On a machine
+that is also busy, `-j2` is the safer choice. Output is buffered per group and
+printed when it finishes, so a run still reads top-to-bottom.
 
 ## Adding a test
 

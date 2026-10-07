@@ -127,6 +127,13 @@ void print(const char* s) {
             continue;
         }
 
+        if (c == '\r') {
+            // Back to the start of the line, leaving what is there: a reader
+            // that edits in place redraws by returning here and printing again.
+            cur_x = 0;
+            continue;
+        }
+
         if (c == '\n') {
             cur_x = 0;
             cur_y++;

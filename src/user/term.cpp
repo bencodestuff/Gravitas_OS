@@ -89,11 +89,20 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     }
 
     // Everything else is a byte for the hosted shell's stdin. Typing snaps
-    // the scrollback back to the live screen.
+    // the scrollback back to the live screen. The hosted shell is a byte-stream
+    // line editor too, so control codes and the arrows go through as the codes
+    // such an editor uses.
     char c;
     if (v >= 32 && v < 127) c = (char)v;
     else if (v == '\n' || v == '\b' || v == '\t') c = (char)v;
     else if (v == 3) c = 3;   // Ctrl+C: the kernel interrupts the shell's job
+    else if (v == GRV_KEY_UP)    c = 16; // ^P
+    else if (v == GRV_KEY_DOWN)  c = 14; // ^N
+    else if (v == GRV_KEY_LEFT)  c = 2;  // ^B
+    else if (v == GRV_KEY_RIGHT) c = 6;  // ^F
+    else if (v == GRV_KEY_HOME)  c = 1;  // ^A
+    else if (v == GRV_KEY_END)   c = 5;  // ^E
+    else if (v > 0 && v < 32) c = (char)v; // ^A..^Z as themselves
     else return;
 
     gravity_term_snap_bottom(&term);

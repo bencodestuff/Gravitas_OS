@@ -235,6 +235,54 @@ static void execute(char* line) {
     printf("[shell] program finished\n");
 }
 
+// --- the line reader ---
+// A byte-stream line editor: the console gives bytes, so the arrows arrive as
+// the readline codes (^P/^N for up/down, ^B/^F for left/right) and the editing
+// chords arrive as themselves. What it does with them is up to it.
+//
+// The cursor lives at the end of the line: this console's '\b' blanks the cell
+// it leaves, so a cursor that could sit mid-line needs a non-destructive move
+// the console does not have yet. History and the line kills work regardless.
+
+#define HIST_MAX 16
+
+static char hist[HIST_MAX][128];
+static int  hist_count = 0;   // how many are stored
+static int  hist_next = 0;    // the ring slot the next one goes in
+
+static void hist_add(const char* s) {
+    if (s[0] == '\0') return;
+    int prev = (hist_next + HIST_MAX - 1) % HIST_MAX;
+    if (hist_count > 0 && str_eq(hist[prev], s)) return; // not twice in a row
+    int i = 0;
+    while (s[i] && i < 127) { hist[hist_next][i] = s[i]; i++; }
+    hist[hist_next][i] = '\0';
+    hist_next = (hist_next + 1) % HIST_MAX;
+    if (hist_count < HIST_MAX) hist_count++;
+}
+
+// The n-th most recent entry (1 = the previous command), or 0.
+static const char* hist_back(int n) {
+    if (n < 1 || n > hist_count) return 0;
+    return hist[(hist_next + HIST_MAX - n) % HIST_MAX];
+}
+
+// Put 's' on the line, redrawing in place: back to the start of the prompt,
+// print the prompt and the text, then blank whatever a longer previous line
+// left behind (the console has no erase-to-end-of-line).
+static int line_set(char* line, int* len, const char* prompt, const char* s,
+                    int drawn) {
+    int n = 0;
+    while (s[n] && n < 120) { line[n] = s[n]; n++; }
+    *len = n;
+
+    putchar('\r');
+    for (const char* p = prompt; *p; p++) putchar(*p);
+    for (int i = 0; i < n; i++) putchar(line[i]);
+    for (int i = n; i < drawn; i++) putchar(' ');
+    return n;
+}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("[shell] Gravitas userland shell v0.2 (libc)\n");
@@ -250,12 +298,14 @@ int main(int argc, char** argv) {
         // Prompt shows the CWD
         static char cwd[64];
         grv_getcwd(cwd, sizeof(cwd));
-        printf("\n%s root@gravitas# ", cwd);
+        static char prompt[96];
+        snprintf(prompt, sizeof(prompt), "\n%s root@gravitas# ", cwd);
+        printf("%s", prompt);
 
-        // Line reader with a prompt floor: backspace is swallowed once
-        // everything typed is gone, so the cursor can never ride back
-        // across the prompt text and erase it.
-        int len = 0;
+        // The reader: backspace is swallowed once everything typed is gone, so
+        // the cursor can never ride back across the prompt text and erase it.
+        // Up/Down walk the history; ^U and ^W kill the line and the last word.
+        int len = 0, drawn = 0, back = 0;
         while (1) {
             char c = grv_getc();
 
@@ -264,16 +314,56 @@ int main(int argc, char** argv) {
                 if (len > 0) { // the console '\b' moves AND blanks the cell
                     putchar('\b');
                     len--;
+                    drawn = len;
+                    back = 0;
                 }
                 continue;
             }
-            if (c >= 32 && c < 127) { // printable only
-                if (len < 120) { line[len++] = c; putchar(c); }
-                else putchar(0x07); // alert on overflow
+            if (c == 16) {  // ^P: back through the history
+                const char* h = hist_back(back + 1);
+                if (h != 0) {
+                    back++;
+                    drawn = line_set(line, &len, prompt, h, drawn);
+                }
                 continue;
             }
-            // control characters: swallowed, neither echoed nor stored
+            if (c == 14) {  // ^N: forward through it
+                if (back > 1) {
+                    back--;
+                    drawn = line_set(line, &len, prompt, hist_back(back), drawn);
+                } else if (back == 1) {
+                    back = 0;
+                    drawn = line_set(line, &len, prompt, "", drawn);
+                }
+                continue;
+            }
+            if (c == 21) {  // ^U: kill the whole line
+                while (len > 0) { putchar('\b'); len--; }
+                drawn = 0;
+                back = 0;
+                continue;
+            }
+            if (c == 23) {  // ^W: kill the last word
+                int start = len;
+                while (start > 0 && line[start - 1] == ' ') start--;
+                while (start > 0 && line[start - 1] != ' ') start--;
+                while (len > start) { putchar('\b'); len--; }
+                drawn = len;
+                back = 0;
+                continue;
+            }
+            if (c >= 32 && c < 127) { // printable only
+                if (len < 120) {
+                    line[len++] = c;
+                    putchar(c);
+                    drawn = len;
+                    back = 0;
+                } else putchar(0x07); // alert on overflow
+                continue;
+            }
+            // anything else (^A/^B/^E/^F/^K and the rest): swallowed
         }
+        hist_add(line);
         execute(line);
     }
 }

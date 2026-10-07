@@ -92,5 +92,25 @@ def console_scroll(g):
     g.wait_for("flood done")
 
 
+@test
+def shell_history(g):
+    # The console hands the shell a byte stream, so the arrows arrive as the
+    # readline codes: Up recalls the previous command, ^U kills the line.
+    n = g.count(r"User task 'ls\.elf' created")
+    g.shell("ls")
+    g.wait_count(r"User task 'ls\.elf' created", n + 1)
+
+    g.key("up")           # recall it
+    g.key("ret")          # and run it again
+    g.wait_count(r"User task 'ls\.elf' created", n + 2)
+
+    # ^U empties the line, so only what is typed afterwards runs.
+    g.type("this is not a command")
+    g.ctrl("u")
+    g.type("ls")
+    g.key("ret")
+    g.wait_count(r"User task 'ls\.elf' created", n + 3)
+
+
 if __name__ == "__main__":
     run_module(__file__)

@@ -193,10 +193,25 @@ namespace Keyboard {
         if (ctrl && !shift && value >= 'a' && value <= 'z') value = value - 'a' + 1;
         else if (ctrl && !shift && value >= 'A' && value <= 'Z') value = value - 'A' + 1;
 
-        // What, if anything, the console ring should see.
+        // What, if anything, the console ring should see. A console reader is a
+        // byte-stream line editor (the shell), so it needs the codes such an
+        // editor works with: the arrows arrive as the readline codes, and the
+        // editing chords (^A/^B/^E/^F/^K/^N/^P/^U/^W) are passed through. Ctrl+C
+        // is not among them: it stays the interrupt key.
         char ring_char = 0;
         if (value >= 32 && value <= 126) ring_char = (char)value;
         else if (value == '\b' || value == '\t' || value == '\n') ring_char = (char)value;
+        else if (value == Input::KEY_UP)    ring_char = 16; // ^P
+        else if (value == Input::KEY_DOWN)  ring_char = 14; // ^N
+        else if (value == Input::KEY_LEFT)  ring_char = 2;  // ^B
+        else if (value == Input::KEY_RIGHT) ring_char = 6;  // ^F
+        else if (value == Input::KEY_HOME)  ring_char = 1;  // ^A
+        else if (value == Input::KEY_END)   ring_char = 5;  // ^E
+        else if (value == 1 || value == 2 || value == 5 || value == 6 ||
+                 value == 11 || value == 14 || value == 16 ||
+                 value == 21 || value == 23) {
+            ring_char = (char)value;
+        }
 
         // Arm typematic repeat: if the key stays down, tick() re-delivers it.
         repeat_on = true;

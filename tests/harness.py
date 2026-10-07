@@ -148,10 +148,15 @@ class Guest:
 
         # Shared boot preconditions. A failure here is a boot failure, reported
         # the same way for every group.
-        self.wait_for("GRAVITAS OS KERNEL BOOTED", 60)
-        self.wait_for("SELF-TEST OK", 60)
-        self.wait_for("type 'help'", 60)
-        self.wait_for("term: hosting shell as task", 60)
+        #
+        # The timeout is generous on purpose: a boot takes ~4s alone, but four
+        # groups booting at once on a machine that is also doing something else
+        # can stretch it a long way, and a slow boot is not a failed one.
+        boot_timeout = 150
+        self.wait_for("GRAVITAS OS KERNEL BOOTED", boot_timeout)
+        self.wait_for("SELF-TEST OK", boot_timeout)
+        self.wait_for("type 'help'", boot_timeout)
+        self.wait_for("term: hosting shell as task", boot_timeout)
 
     def await_exit(self, timeout=20.0):
         """Wait for the guest to leave.
@@ -553,7 +558,15 @@ def run_module(path):
     try:
         g = Guest(name)
     except TestFailure as e:
+        # A boot failure is the hardest to diagnose, so say what the machine had
+        # got as far as: the last lines it managed to print.
         print("  FAIL  boot: %s" % e, flush=True)
+        try:
+            tail = open(g.log_path, errors="replace").read().strip().splitlines()[-6:]
+            for line in tail:
+                print("        | %s" % line, flush=True)
+        except (OSError, AttributeError):
+            pass
         print("GROUP %s: 0 passed, 1 failed" % name, flush=True)
         sys.exit(1)
     passed = failed = 0
