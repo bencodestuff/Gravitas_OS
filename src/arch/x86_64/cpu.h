@@ -7,4 +7,10 @@ namespace Cpu {
     // CR4.OSFXSR (so fxsave/fxrstor include the XMM state) + OSXMMEXCPT.
     // Call once at boot, before the scheduler snapshots the FPU template.
     void enable_fpu_sse();
+
+    // Turn off the local APIC. Interrupts here go through the PIC, and firmware
+    // may have left the APIC and IOAPIC programmed with their own vectors, which
+    // would arrive as whatever exception number the firmware chose. Call before
+    // interrupts are enabled.
+    void disable_local_apic();
 }

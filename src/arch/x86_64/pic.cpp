@@ -10,9 +10,14 @@
 namespace PIC {
 
     void remap() {
-        // Save current masks (who is allowed to speak)
-        uint8_t a1 = inb(PIC1_DATA);
-        uint8_t a2 = inb(PIC2_DATA);
+        // Start from silence. The PIC still has whatever vector mapping and
+        // masks the firmware left, and until ICW2 lands below, IRQ0-7 are
+        // delivered as vectors 8-15 — that is, a timer tick would arrive as an
+        // exception (#DF), which is exactly what used to happen between
+        // enabling interrupts and reaching this call. Everything stays masked
+        // here; the kernel unmasks what it actually wants, one IRQ at a time.
+        outb(PIC1_DATA, 0xFF);
+        outb(PIC2_DATA, 0xFF);
 
         // Start initialization sequence (in cascade mode)
         outb(PIC1_COMMAND, 0x11); io_wait();
@@ -33,9 +38,14 @@ namespace PIC {
         outb(PIC1_DATA, 0x01); io_wait();
         outb(PIC2_DATA, 0x01); io_wait();
 
-        // Restore saved masks
-        outb(PIC1_DATA, a1);
-        outb(PIC2_DATA, a2);
+        // Leave everything masked (ICW4 clears nothing, but say it plainly).
+        outb(PIC1_DATA, 0xFF);
+        outb(PIC2_DATA, 0xFF);
+    }
+
+    void mask_all() {
+        outb(PIC1_DATA, 0xFF);
+        outb(PIC2_DATA, 0xFF);
     }
 
     void send_eoi(uint8_t irq) {

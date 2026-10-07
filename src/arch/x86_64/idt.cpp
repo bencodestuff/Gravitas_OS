@@ -1,5 +1,6 @@
 #include "idt.h"
 #include "pic.h"
+#include "cpu.h"
 #include <stddef.h>
 #include "kernel/io.h"
 #include "kernel/dev/keyboard.h"
@@ -117,6 +118,18 @@ namespace IDT {
         
         // FLUSH KEYBOARD BEFORE ENABLING INTERRUPTS
         flush_keyboard();
+
+        // Silence the PIC first. Until PIC::remap() runs (later in boot) its
+        // vector mapping is still the firmware's, and that mapping puts IRQ0-7
+        // on vectors 8-15 — so an interrupt arriving in the window between here
+        // and the remap is delivered as an exception it is not.
+        PIC::mask_all();
+
+        // And take the local APIC away from the firmware, which may have left it
+        // and the IOAPIC programmed with vectors of their own. Masking the PIC
+        // is not enough by itself: an IOAPIC-routed interrupt never touches the
+        // PIC. See Cpu::disable_local_apic.
+        Cpu::disable_local_apic();
 
         // Enable interrupts!
         asm volatile ("sti"); 
