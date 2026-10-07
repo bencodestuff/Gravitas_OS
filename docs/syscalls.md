@@ -277,6 +277,13 @@ The mechanisms a window manager needs, without the kernel knowing what a
   (`from == -1`) with `type` = `GRV_EVT_SURFACE_ADDED` /
   `GRV_EVT_SURFACE_REMOVED` and `a` = the surface id. The authority also
   scans `SURFACE_LIST` once at startup for pre-existing surfaces.
+- **`SURFACE_RESIZE` (49)**, owner-only like the rest: a surface's buffer is
+  allocated once, and this reallocates it at a new size. The pixels move to a
+  new VA, so the owner has to re-read the geometry and re-bind. It is the
+  mechanism behind resizable windows: the WM *asks* a client for a size
+  (`GRV_WM_RESIZE`, userland policy in `<grv/wm.h>`) and the client answers with
+  the size it took (`GRV_WM_RESIZED`), which is how the decoration stays in step
+  with a client that clamps.
 - **`SURFACE_COMMIT` with a rect** damages only that surface-local
   rectangle, so a full-screen overlay can commit just its change:
 

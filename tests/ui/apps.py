@@ -233,9 +233,12 @@ def terminal_paste(g):
     term = g.await_window("term")
     g.click_title(term)
 
-    # Put a command in the clipboard (Lua writes the file for us).
+    # Put a command in the clipboard (Lua writes the file for us). The hosted
+    # shell's output goes to the window, not the serial log, so the sync is the
+    # kernel's record of that lua starting and finishing.
+    done = g.count(r"Task 'lua\.elf' (exited|terminated)")
     g.shell("run lua.elf -e io.open('/tmp/.clipboard','w'):write('ls\\n')")
-    g.wait_for(r"\[shell\] program finished")
+    g.wait_more(r"Task 'lua\.elf' (exited|terminated)", done + 1)
 
     n = g.count(r"User task 'ls\.elf' created")
     g.chord("ctrl", "shift", "v")   # paste "ls\n" -> the shell runs it
@@ -408,6 +411,14 @@ def window_resize(g):
         g.fail("the resized terminal pane is blank")
     if at(w["x"] + 300, w["y"] + nh + 40) == term_bg:
         g.fail("the window still covers the area it was shrunk away from")
+
+    # The maximize box (left of the close box) fills the frame and back.
+    g.click(w["x"] + nw - 23, w["y"] - 9)
+    g.wait_for(r"wm: maximize #[0-9]+ on")
+    g.wait_for(r"wm: resized #[0-9]+ 1276x756")
+    g.click(2 + 1276 - 23, 18 - 9)          # the box, now at the maximized spot
+    g.wait_for(r"wm: maximize #[0-9]+ off")
+    g.wait_for(r"wm: resized #[0-9]+ %dx%d" % (nw, nh))
 
 
 if __name__ == "__main__":
