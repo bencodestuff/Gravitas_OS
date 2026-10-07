@@ -290,11 +290,14 @@ def main():
         ninja.write(f"\nbuild {KERNEL_FILE}: link {' '.join(objects)}\n")
 
         user_elfs = []
-        # All userland programs share one flat address space, so each program
-        # gets its OWN load base. The shell owns 0x400000; everything else
-        # lives at 32MB upwards, far above the per-task user stacks
-        # (0x600000 + id * 1MB). Otherwise spawning one program zeroes
-        # another program's bss and everything explodes.
+        # Each program gets its own load base. Not to keep them apart — each
+        # task has its own address space (clone_kernel_space() zeroes the user
+        # half), so two programs at the same addresses cannot collide — but so a
+        # faulting RIP names one function: the symbol table is a flat list by
+        # address, and with every program at one base it would be ambiguous
+        # which `main` a RIP meant. It also leaves each image room to grow. The
+        # dynamic region (USER_VA_BASE = 256MB, for stacks, surfaces and
+        # mappings) is far above all of them.
         user_bases = {}
         next_base = 0x2000000
         for src in user_sources:
@@ -313,8 +316,9 @@ def main():
             ninja.write(f"  base = {user_bases[stem]:#x}\n")
             user_elfs.append(out)
 
-        # Lua: its own load base, continuing the allocation above. The objects
-        # are compiled once and linked with crt0 + the shared libc objects.
+        # Lua: its own load base, continuing the allocation above (same reason).
+        # The objects are compiled once and linked with crt0 + the shared libc
+        # objects.
         lua_objs = []
         for name in LUA_SOURCES:
             obj = f"obj/lua/{name}.o"
