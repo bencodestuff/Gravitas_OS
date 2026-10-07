@@ -35,4 +35,9 @@ build_and_run "test_printf (formatter)" \
 build_and_run "test_libm_std (math + stdlib)" \
     test_libm_std tools/test_libm_std.c -fno-builtin -lm
 
+# Not a C program: the syscall ABI is described in three places by hand, and
+# this is the one that catches them drifting apart.
+printf -- '-- check_syscalls (ABI vs docs)\n'
+python3 tools/check_syscalls.py || fail "check_syscalls: the ABI and its docs disagree"
+
 echo "HOST TESTS PASS"
