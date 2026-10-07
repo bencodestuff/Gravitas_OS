@@ -35,6 +35,14 @@ build_and_run "test_printf (formatter)" \
 build_and_run "test_libm_std (math + stdlib)" \
     test_libm_std tools/test_libm_std.c -fno-builtin -lm
 
+# Not a C program: the kernel and the libc describe the same syscall records in
+# two headers that cannot include each other, so this is the only place they can
+# be compared.
+printf -- '-- test_abi (kernel vs ABI records)\n'
+"${CXX:-c++}" -O2 -std=c++17 -Isrc -iquote src/libc/include tools/test_abi.cpp \
+    -o "$ART/test_abi" || fail "test_abi: compile failed"
+"$ART/test_abi" || fail "test_abi: the kernel and the ABI disagree"
+
 # Not a C program: the syscall ABI is described in three places by hand, and
 # this is the one that catches them drifting apart.
 printf -- '-- check_syscalls (ABI vs docs)\n'
