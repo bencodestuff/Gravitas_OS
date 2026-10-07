@@ -127,11 +127,10 @@ def terminal(g):
     g.screendump(before)
     g.shell("ls")
     g.wait_for(r"User task 'ls\.elf' created")
-    time.sleep(1.0)
-    g.screendump(after)
-    changed = diff_region(before, after,
-                          term["x"] + 2, term["y"] + 2,
-                          term["x"] + term["w"] - 2, term["y"] + term["h"] - 2)
+    changed = g.await_change(before, after,
+                             (term["x"] + 2, term["y"] + 2,
+                              term["x"] + term["w"] - 2, term["y"] + term["h"] - 2),
+                             201)
     if changed <= 200:
         g.fail("terminal did not render the hosted shell's output (keys missed it?)")
 
@@ -160,7 +159,6 @@ def terminal_scroll(g):
     n = g.count(r"User task 'flood\.elf' created")
     g.shell("run flood.elf")
     g.wait_count(r"User task 'flood\.elf' created", n + 1)
-    time.sleep(1.5)                       # let the output arrive and render
 
     # The wheel goes to the window under the pointer, so point at the body.
     g.move_to(term["x"] + 100, term["y"] + 100)
@@ -170,7 +168,14 @@ def terminal_scroll(g):
         g.screendump(p)
         return thumb_top(p, term)
 
-    y0 = shot("scroll_bottom.ppm")
+    # Wait for the thumb to exist (the scrollback has to be worth scrolling)
+    # rather than sleeping and hoping the output has rendered.
+    y0 = None
+    end = time.time() + 8
+    while time.time() < end:
+        y0 = shot("scroll_bottom.ppm")
+        if y0 is not None:
+            break
     if y0 is None:
         g.fail("no scrollbar thumb after flood (no scrollback?)")
 
@@ -208,16 +213,14 @@ def terminal_lua(g):
     n = g.count(r"User task 'lua\.elf' created")
     g.shell("run lua.elf")
     g.wait_count(r"User task 'lua\.elf' created", n + 1)
-    time.sleep(1.0)                        # the banner renders in the window
 
     g.shell("print(6*7)")                  # into the terminal -> the hosted lua
-    time.sleep(1.0)
 
     after = os.path.join(g.art, "lua_term_after.ppm")
-    g.screendump(after)
-    changed = diff_region(before, after,
-                          term["x"] + 2, term["y"] + 2,
-                          term["x"] + term["w"] - 2, term["y"] + term["h"] - 2)
+    changed = g.await_change(before, after,
+                             (term["x"] + 2, term["y"] + 2,
+                              term["x"] + term["w"] - 2, term["y"] + term["h"] - 2),
+                             101)
     if changed <= 100:
         g.fail("typing did not reach the hosted lua (window unchanged)")
 
@@ -312,17 +315,15 @@ def ide_run(g):
     g.key("f5")
     g.wait_for(r"ide: run run lua\.elf /tmp/ide\.lua")
     g.wait_count(r"User task 'lua\.elf' created", n + 1)
-    time.sleep(1.2)
 
     after = os.path.join(g.art, "ide_run_after.ppm")
-    g.screendump(after)
     # The terminal is the pane at the bottom of the window: the program's output
     # has to be painted there, not merely run.
     x0 = w["x"] + 4
     y0 = w["y"] + w["h"] - 218
     x1 = w["x"] + w["w"] - 4
     y1 = w["y"] + w["h"] - 26
-    if diff_region(before, after, x0, y0, x1, y1) <= 100:
+    if g.await_change(before, after, (x0, y0, x1, y1), 101) <= 100:
         g.fail("F5 ran the file but the terminal pane did not paint the output")
 
 
@@ -337,9 +338,7 @@ def ide_explorer(g):
     # The tree starts at "/": bin/ fonts/ lua/ Pictures/ tmp/ apps hello.txt.
     row = lambda i: w["y"] + 2 + i * 20 + 10
     g.click(w["x"] + 100, row(2))         # lua/ — a directory opens on one click
-    time.sleep(0.5)
     g.click(w["x"] + 100, row(1))         # hello.lua — select
-    time.sleep(0.3)
     g.click(w["x"] + 100, row(1))         # ... and open
 
     g.wait_for(r"ide: open /lua/hello\.lua")
@@ -373,11 +372,15 @@ def window_resize(g):
 
     g.move_to(x1, y1)
     g.cmd("mouse_button 1")
-    time.sleep(0.3)
+    time.sleep(0.15)
     g.move_to(x1 - 300, y1 - 200, step=60)
-    time.sleep(0.4)
+    time.sleep(0.15)
+    finals = g.count(r"wm: resize #\d+ \d+x\d+")
     g.cmd("mouse_button 0")
-    time.sleep(1.2)
+    # The release asks for one last, exact size and always logs it — wait for
+    # that line, not for an answer, since a request that changes nothing sends
+    # no message and so gets no answer.
+    g.wait_more(r"wm: resize #\d+ \d+x\d+", finals + 1)
 
     req = ack = None
     for m in re.finditer(r"wm: resize #(\d+) (\d+)x(\d+)", g.log()):
