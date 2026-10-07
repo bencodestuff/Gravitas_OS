@@ -278,5 +278,38 @@ def window_geometry(g):
     g.wait_for(r"window #[0-9]+ 'files\.elf' 500x400")
 
 
+@test
+def ide_layout(g):
+    # The IDE is a composition, not a monolith: it spawns the three apps we
+    # already have with --geometry/--role, and the WM places them by role
+    # (clients never move themselves). Explorer left, editor centre, terminal
+    # bottom — and the editor and terminal share one flush column.
+    g.desktop()
+    g.shell("bg ide.elf")
+    g.wait_for(r"ide: layout requested")
+    g.wait_for(r"wm: workspace 1 requested")
+
+    # The WM holds the request until every pane has announced its role, so the
+    # last pane to be placed is what we wait for.
+    ex = r"wm: pane explorer #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
+    ed = r"wm: pane editor #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
+    tm = r"wm: pane terminal #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
+    g.wait_for(tm)
+
+    E = re.search(ex, g.log())
+    D = re.search(ed, g.log())
+    T = re.search(tm, g.log())
+    if not (E and D and T):
+        g.fail("the IDE panes were not all placed")
+    if int(E.group(4)) >= int(D.group(4)):
+        g.fail("the explorer is not left of the editor: %s" % E.group(0))
+    if D.group(2) != T.group(2):
+        g.fail("editor and terminal columns differ: %s vs %s"
+               % (D.group(2), T.group(2)))
+    if int(D.group(4)) != int(T.group(4)) or int(D.group(5)) >= int(T.group(5)):
+        g.fail("the terminal is not below the editor: %s vs %s"
+               % (D.group(0), T.group(0)))
+
+
 if __name__ == "__main__":
     run_module(__file__)

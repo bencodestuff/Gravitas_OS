@@ -6,4 +6,5 @@ term.elf        Terminal
 files.elf       Files
 edit.elf        Text editor
 imageview.elf   Image viewer
+ide.elf         IDE
 win.elf         Demo window
