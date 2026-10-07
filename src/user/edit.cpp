@@ -22,8 +22,8 @@
 //
 // The title tracks the file name and a trailing '*' while modified.
 
-#define W        760
-#define H        520
+#define DEF_W    760
+#define DEF_H    520
 #define CW       8     /* glyph cell width — the PSF2 console font is 8px */
 #define SB_W     6     /* scrollbar strip on the right */
 #define MARGIN   6
@@ -32,6 +32,9 @@
 
 static struct gravity_app app;
 static struct gravity_buffer text;
+
+static int  win_w = DEF_W;  /* the window size (--geometry may change it) */
+static int  win_h = DEF_H;
 
 static char path[160] = "/tmp/untitled.txt";
 static char status[96];
@@ -324,7 +327,7 @@ static int on_close(struct gravity_app* a) {
 static void draw_scrollbar(int track) {
     int total = gravity_buffer_line_count(&text);
     if (total <= rows) return;
-    int x = W - SB_W;
+    int x = win_w - SB_W;
     gravity_fill(&app.canvas, x, 0, SB_W, track, SB_BG);
     int thumb_h = track * rows / total;
     if (thumb_h < 16) thumb_h = 16;
@@ -355,7 +358,7 @@ static int offset_at(int mx, int my) {
 static void scrollbar_drag_to(int my) {
     int total = gravity_buffer_line_count(&text);
     if (total <= rows) return;
-    int track = H - stat_h;
+    int track = win_h - stat_h;
     int thumb_h = track * rows / total;
     if (thumb_h < 16) thumb_h = 16;
     int span = track - thumb_h;
@@ -424,19 +427,19 @@ static void draw_view(void) {
         off = e + 1;
     }
 
-    draw_scrollbar(H - stat_h);
+    draw_scrollbar(win_h - stat_h);
 }
 
 static void draw_status(void) {
     struct gravity_canvas* c = &app.canvas;
-    int y = H - stat_h;
-    gravity_fill(c, 0, y, W, stat_h, STAT_BG);
+    int y = win_h - stat_h;
+    gravity_fill(c, 0, y, win_w, stat_h, STAT_BG);
     int ty = y + (stat_h - g_ch) / 2;
     gravity_text(c, MARGIN, ty, path, STAT_FG);
 
     if (status[0]) {
         int sw = gravity_text_width_of(status);
-        int sx = (W - sw) / 2;
+        int sx = (win_w - sw) / 2;
         if (sx > MARGIN) gravity_text(c, sx, ty, status, DIM);
     }
 
@@ -444,7 +447,7 @@ static void draw_status(void) {
     int line = lines_between(0, gravity_buffer_line_start(&text, cursor)) + 1;
     int col = gravity_buffer_col(&text, cursor) + 1;
     snprintf(buf, sizeof(buf), "%d:%d%s", line, col, modified ? " *" : "");
-    gravity_text(c, W - MARGIN - gravity_text_width_of(buf), ty, buf, STAT_FG);
+    gravity_text(c, win_w - MARGIN - gravity_text_width_of(buf), ty, buf, STAT_FG);
 }
 
 static void on_draw(struct gravity_app* a) {
@@ -518,7 +521,7 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         // The strip on the right is the scrollbar: click or drag it. The WM
         // captures the pointer while the button is held, so the drag keeps
         // arriving even if it leaves the strip.
-        if (held && (sb_drag || mx >= W - SB_W)) {
+        if (held && (sb_drag || mx >= win_w - SB_W)) {
             sb_drag = 1;
             mouse_held = 1;
             scrollbar_drag_to(my);
@@ -546,17 +549,20 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
 }
 
 int main(int argc, char** argv) {
-    if (argc > 1 && argv[1] && argv[1][0]) {
+    int role = 0, argi = 1;
+    gravity_args(argc, argv, &win_w, &win_h, &role, &argi);
+
+    if (argi < argc && argv[argi] && argv[argi][0]) {
         int i = 0;
-        while (argv[1][i] && i < (int)sizeof(path) - 1) { path[i] = argv[1][i]; i++; }
+        while (argv[argi][i] && i < (int)sizeof(path) - 1) { path[i] = argv[argi][i]; i++; }
         path[i] = '\0';
     }
 
     gravity_init(); // loads the font; needed to size the text grid
     g_ch = gravity_font_height();
     stat_h = g_ch + 6;
-    rows = (H - stat_h) / g_ch;
-    cols = (W - SB_W - 2 * MARGIN) / CW;
+    rows = (win_h - stat_h) / g_ch;
+    cols = (win_w - SB_W - 2 * MARGIN) / CW;
     if (rows < 1) rows = 1;
     if (cols < 1) cols = 1;
 
@@ -571,8 +577,9 @@ int main(int argc, char** argv) {
     app.on_draw = on_draw;
     app.on_close = on_close;
     app.user = 0;
+    app.wm_role = role;
 
     printf("edit: %s (%d bytes)\n", path, text.len);
-    gravity_run(&app, W, H);
+    gravity_run(&app, win_w, win_h);
     return 0;
 }

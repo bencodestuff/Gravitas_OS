@@ -16,6 +16,23 @@ static void maybe_draw(struct gravity_app* app) {
     app->redraw = 0;
 }
 
+// Tell the WM what a window is (its role), so it can place a workspace pane.
+// A control message the layout depends on, so retry: a burst of surface events
+// can fill the WM's mailbox for a moment, and a dropped role means the pane is
+// never placed.
+static void send_role(struct gravity_app* app, int sid, int role) {
+    struct grv_msg r;
+    r.from = 0;
+    r.type = GRV_WM_SET_ROLE;
+    r.a = (unsigned long)sid;
+    r.b = (unsigned long)role;
+    for (int i = 0; i < 20; i++) {
+        if (grv_send((long)app->wm_task, &r) == 0) return;
+        grv_sleep(5);
+    }
+    grv_puts("gravity: the WM would not take this window's role\n");
+}
+
 // Answer the WM's hello: always the title; for the popup surface also its
 // role (undecorated/on-top) and where we want it placed.
 static void answer_hello(struct gravity_app* app, const struct grv_msg* m) {
@@ -23,13 +40,11 @@ static void answer_hello(struct gravity_app* app, const struct grv_msg* m) {
 
     grv_wm_title_send((long)m->from, app->title ? app->title : "");
 
+    if ((int)m->a == app->canvas.surface_id && app->wm_role != 0)
+        send_role(app, app->canvas.surface_id, app->wm_role);
+
     if (app->popup_open && (int)m->a == app->popup.surface_id) {
-        struct grv_msg r;
-        r.from = 0;
-        r.type = GRV_WM_SET_ROLE;
-        r.a = (unsigned long)app->popup.surface_id;
-        r.b = GRV_WM_ROLE_POPUP;
-        grv_send((long)m->from, &r);
+        send_role(app, app->popup.surface_id, GRV_WM_ROLE_POPUP);
         // The WM cascaded it on discovery; move it where we want it now that
         // it knows this surface is a popup.
         grv_surface_move(app->popup.surface_id, app->popup_x, app->popup_y);
@@ -99,4 +114,54 @@ void gravity_set_title(struct gravity_app* app, const char* title) {
     app->title = title;
     if (app->wm_task <= 0) return; // no hello yet: the next answer uses it
     grv_wm_title_send(app->wm_task, title);
+}
+
+/* --- leading option flags --- */
+
+static int str_is(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+/* Parse a leading decimal and advance past it. 1 if any digit was consumed. */
+static int num_arg(const char** sp, int* out) {
+    const char* s = *sp;
+    if (*s < '0' || *s > '9') return 0;
+    int v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+    *sp = s;
+    *out = v;
+    return 1;
+}
+
+int gravity_args(int argc, char** argv, int* w, int* h, int* role, int* argi) {
+    int seen = 0;
+    int i = 1;
+    while (i < argc && argv[i] != 0 && argv[i][0] == '-' && argv[i][1] == '-') {
+        if (str_is(argv[i], "--geometry") && i + 1 < argc) {
+            const char* v = argv[i + 1];
+            int gw = 0, gh = 0;
+            if (num_arg(&v, &gw)) {
+                if (*v == 'x' || *v == 'X') v++;
+                num_arg(&v, &gh);
+                if (gw > 0 && w) *w = gw;
+                if (gh > 0 && h) *h = gh;
+                seen = 1;
+            }
+            i += 2;
+        } else if (str_is(argv[i], "--role") && i + 1 < argc) {
+            const char* v = argv[i + 1];
+            if (role) {
+                if (str_is(v, "explorer")) *role = GRV_WM_ROLE_EXPLORER;
+                else if (str_is(v, "editor")) *role = GRV_WM_ROLE_EDITOR;
+                else if (str_is(v, "terminal")) *role = GRV_WM_ROLE_TERMINAL;
+            }
+            seen = 1;
+            i += 2;
+        } else {
+            break; // an unknown flag: leave it to the app
+        }
+    }
+    if (argi) *argi = i;
+    return seen;
 }

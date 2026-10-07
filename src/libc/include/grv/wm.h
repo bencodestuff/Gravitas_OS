@@ -27,9 +27,19 @@ __BEGIN_DECLS
 #define GRV_WM_CLOSE      0x14 /* WM -> client: a = surface id (please exit) */
 #define GRV_WM_CLOSE_ACK  0x15 /* client -> WM: a = sid (handling the close) */
 #define GRV_WM_SET_TITLE2 0x16 /* client -> WM: the title's next 16 bytes    */
+#define GRV_WM_WORKSPACE  0x17 /* client -> WM: a = a GRV_WM_WS_* layout     */
 
-#define GRV_WM_ROLE_NORMAL 0
-#define GRV_WM_ROLE_POPUP  1 /* undecorated, on top, client-positioned      */
+/* What a window is, for the WM's benefit. A workspace layout places windows by
+   role; a normal window is just itself. */
+#define GRV_WM_ROLE_NORMAL   0
+#define GRV_WM_ROLE_POPUP    1 /* undecorated, on top, client-positioned      */
+#define GRV_WM_ROLE_EXPLORER 2 /* a workspace pane: the file tree, left       */
+#define GRV_WM_ROLE_EDITOR   3 /* a workspace pane: the editor, centre        */
+#define GRV_WM_ROLE_TERMINAL 4 /* a workspace pane: the terminal, bottom      */
+
+/* Workspace layouts. The client sizes its own surface (--geometry); the WM
+   owns where it goes, so a layout is a request to arrange, not to resize. */
+#define GRV_WM_WS_IDE 1 /* explorer left, editor centre, terminal bottom */
 
 /* A window title is at most 31 characters. Pack the first 16 bytes of a
    title into two payload words (a shorter title is NUL-padded). */
@@ -68,11 +78,27 @@ static inline void grv_wm_title_send(long wm_task, const char* s) {
     grv_wm_title_pack(s, &m.a, &m.b);
     grv_send(wm_task, &m);
 
-    if (s[16]) { // more title than one message carries
+    int n = 0;
+    while (s[n]) n++;
+    if (n > 16) { // more title than one message carries
         m.type = GRV_WM_SET_TITLE2;
         grv_wm_title_pack(s + 16, &m.a, &m.b);
         grv_send(wm_task, &m);
     }
+}
+
+/* Find a task by its exact name (e.g. "wm.elf"), or -1. The WM is just another
+   task and discovery is normally its hello to a new window's owner, so a client
+   that opens no window of its own (a launcher) needs this to reach it. */
+static inline long grv_task_by_name(const char* name) {
+    static struct grv_taskinfo tl[32];
+    int n = grv_task_list(tl, 32);
+    for (int i = 0; i < n; i++) {
+        int j = 0;
+        while (name[j] && tl[i].name[j] == name[j]) j++;
+        if (name[j] == 0 && tl[i].name[j] == 0) return tl[i].id;
+    }
+    return -1;
 }
 
 __END_DECLS

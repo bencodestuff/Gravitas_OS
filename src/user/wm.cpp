@@ -215,10 +215,16 @@ static Win* find_owner(int owner) {
     return 0;
 }
 
+static Win* find_role(int role) {
+    for (int i = 0; i < nwin; i++) if (wins[i].role == role) return &wins[i];
+    return 0;
+}
+
 // Repaint a screen rectangle of the overlay: clear it, then redraw every
 // window (bottom-to-top) that overlaps it, clipped to the rectangle.
 static void draw_taskbar(); // defined below; always drawn on top
 static void draw_menu();    // launcher popup, above the taskbar
+static void apply_workspace(); // places a requested workspace layout
 
 static void redraw(int x0, int y0, int x1, int y1) {
     x0 = maxi(x0, 0); y0 = maxi(y0, 0);
@@ -570,6 +576,7 @@ static void add_window(int sid) {
 
     printf("wm: window #%d '%s' %dx%d at %d,%d\n", sid, w->title, w->w, w->h, w->x, w->y);
     full_redraw();
+    apply_workspace(); // a requested layout may be waiting on this window
 }
 
 static void remove_window(int sid) {
@@ -586,6 +593,7 @@ static void remove_window(int sid) {
     }
     printf("wm: window #%d gone\n", sid);
     full_redraw();
+    apply_workspace();
 }
 
 static void scan_existing() {
@@ -741,30 +749,67 @@ static void on_release(int cx, int cy) {
     drag_sid = -1;
 }
 
-static void drag_to(int cx, int cy) {
-    Win* w = find_sid(drag_sid);
-    if (w == 0) { on_release(cx, cy); return; }
+// --- window placement -------------------------------------------------
+// The WM owns where a window sits (clients never move themselves), so both a
+// title-bar drag and a workspace layout go through place_window.
 
-    int nx = cx - drag_off_x;
-    int ny = cy - drag_off_y;
-    if (nx < BORDER) nx = BORDER;
-    if (nx + w->w > overlay_w - BORDER) nx = overlay_w - BORDER - w->w;
-    if (ny < TITLE_H) ny = TITLE_H;
-    if (ny + w->h > overlay_h - TASKBAR_H) ny = overlay_h - TASKBAR_H - w->h;
-    if (nx == w->x && ny == w->y) return;
+static void place_window(Win* w, int x, int y) {
+    if (x < BORDER) x = BORDER;
+    if (y < TITLE_H) y = TITLE_H;
+    if (x + w->w > overlay_w - BORDER) x = overlay_w - BORDER - w->w;
+    if (y + w->h > overlay_h - TASKBAR_H) y = overlay_h - TASKBAR_H - w->h;
+    if (x == w->x && y == w->y) return;
 
     int oa, ob, oc, od;
     decor_rect(w, &oa, &ob, &oc, &od);
 
-    grv_surface_move(w->sid, nx, ny);
-    w->x = nx; w->y = ny;
+    grv_surface_move(w->sid, x, y);
+    w->x = x; w->y = y;
 
     int na, nb, nc, nd;
     decor_rect(w, &na, &nb, &nc, &nd);
+    redraw(mini(oa, na) - 1, mini(ob, nb) - 1,
+           maxi(oa + oc, na + nc) + 1, maxi(ob + od, nb + nd) + 1);
+}
 
-    int x0 = mini(oa, na) - 1, y0 = mini(ob, nb) - 1;
-    int x1 = maxi(oa + oc, na + nc) + 1, y1 = maxi(ob + od, nb + nd) + 1;
-    redraw(x0, y0, x1, y1);
+static void drag_to(int cx, int cy) {
+    Win* w = find_sid(drag_sid);
+    if (w == 0) { on_release(cx, cy); return; }
+    place_window(w, cx - drag_off_x, cy - drag_off_y);
+}
+
+// --- workspace layouts ------------------------------------------------
+
+// A workspace request can arrive before the panes have announced their roles: a
+// surface is discovered asynchronously and the role comes with the client's
+// hello. So the request stays pending until every pane is known.
+static int ws_pending = 0;
+
+static void place_pane(Win* w, const char* what, int x, int y) {
+    if (w == 0) return;
+    place_window(w, x, y);
+    printf("wm: pane %s #%d %dx%d at %d,%d\n", what, w->sid, w->w, w->h, w->x, w->y);
+}
+
+// The IDE: explorer left, editor centre, terminal bottom. Each pane sized
+// itself (--geometry); the WM only decides where it goes.
+static void apply_workspace(void) {
+    if (!ws_pending) return;
+
+    Win* ex = find_role(GRV_WM_ROLE_EXPLORER);
+    Win* ed = find_role(GRV_WM_ROLE_EDITOR);
+    Win* tm = find_role(GRV_WM_ROLE_TERMINAL);
+    if (ex == 0 && ed == 0 && tm == 0) return;
+
+    int x = BORDER;
+    if (ex) {
+        place_pane(ex, "explorer", x, TITLE_H);
+        x = ex->x + ex->w + 2 * BORDER;
+    }
+    if (ed) place_pane(ed, "editor", x, TITLE_H);
+    if (tm) place_pane(tm, "terminal", x, overlay_h - TASKBAR_H - tm->h);
+
+    if (ex && ed && tm) ws_pending = 0; // the layout is complete
 }
 
 // --- main -----------------------------------------------------------
@@ -865,6 +910,7 @@ int main(int argc, char** argv) {
             }
             else if (m.type == GRV_WM_SET_ROLE) {
                 Win* w = find_sid((int)m.a);
+                printf("wm: role #%d = %d\n", (int)m.a, (int)m.b);
                 if (w) {
                     w->role = (int)m.b;
                     if (w->role == GRV_WM_ROLE_POPUP) {
@@ -876,7 +922,15 @@ int main(int argc, char** argv) {
                         printf("wm: popup #%d\n", tmp.sid);
                     }
                     full_redraw();
+                    apply_workspace(); // a pane just identified itself
                 }
+            }
+            else if (m.type == GRV_WM_WORKSPACE) {
+                // A client asked for a layout (the IDE). The panes may not all
+                // be known yet; apply_workspace places them as they arrive.
+                printf("wm: workspace %d requested\n", (int)m.a);
+                ws_pending = 1;
+                apply_workspace();
             }
         }
 

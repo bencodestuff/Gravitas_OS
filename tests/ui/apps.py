@@ -269,5 +269,14 @@ def popup(g):
     g.wait_for("popuptest: popup closed")
 
 
+@test
+def window_geometry(g):
+    # --geometry sizes the window; the WM still owns where it goes.
+    g.desktop()
+    g.shell("bg files.elf --geometry 500x400")
+    g.wait_for(r"bg: started 'files\.elf' as task [0-9]+")
+    g.wait_for(r"window #[0-9]+ 'files\.elf' 500x400")
+
+
 if __name__ == "__main__":
     run_module(__file__)

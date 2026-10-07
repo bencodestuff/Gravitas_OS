@@ -11,8 +11,8 @@
 // editor, an image in the viewer), Backspace goes up, and clicking a
 // directory enters it.
 
-#define W        520
-#define H        380
+#define DEF_W    520
+#define DEF_H    380
 #define PATH_H   26
 #define ROW_H    20
 #define MAXITEMS 160
@@ -20,6 +20,9 @@
 
 static struct gravity_app app;
 static struct gravity_list list;
+
+static int win_w = DEF_W;   /* the window size (--geometry may change it) */
+static int win_h = DEF_H;
 
 static char cwd[128] = "/";
 static char listing[2048];
@@ -170,15 +173,17 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
 static void on_draw(struct gravity_app* a) {
     struct gravity_canvas* c = &a->canvas;
     gravity_clear(c, 0xFF1E2430);
-    gravity_fill(c, 0, 0, W, PATH_H, 0xFF2C3546);
+    gravity_fill(c, 0, 0, win_w, PATH_H, 0xFF2C3546);
     gravity_text(c, 6, (PATH_H - gravity_font_height()) / 2, cwd, 0xFFE6EEF6);
     gravity_list_draw(&list, c);
 }
 
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;
+    int role = 0, argi = 1;
+    gravity_args(argc, argv, &win_w, &win_h, &role, &argi);
+    (void)role; (void)argi;
 
-    gravity_list_init(&list, 0, PATH_H, W, H - PATH_H, ROW_H,
+    gravity_list_init(&list, 0, PATH_H, win_w, win_h - PATH_H, ROW_H,
                       0xFFD0DCE8, 0xFF1E2430, 0xFFFFFFFF, 0xFF35507A);
     load_dir("/");
 
@@ -186,6 +191,7 @@ int main(int argc, char** argv) {
     app.on_draw = on_draw;
     app.title = "Files";
     app.user = 0;
-    gravity_run(&app, W, H);
+    app.wm_role = role;
+    gravity_run(&app, win_w, win_h);
     return 0;
 }

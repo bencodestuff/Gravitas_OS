@@ -285,6 +285,12 @@ Closing a window is `KILL`ing its owner — the kernel's teardown removes the
 surface (the authority cannot `SURFACE_DESTROY` another task's surface,
 since that would unmap memory the owner still holds).
 
+The **userland** half of this — the WM protocol (`GRV_WM_HELLO`, `SET_TITLE`,
+`SET_ROLE`, `CLOSE`, `WORKSPACE`) and the conventions built on it, like a pane
+declaring its role so a workspace layout can place it — is `<grv/wm.h>`, and the
+kernel knows nothing about any of it. A Gravity app's `--geometry WxH` /
+`--role NAME` flags are `<gravity/app.h>`.
+
 ## Input events
 
 A task that calls **`INPUT_MODE(1)`** receives input as messages in its
