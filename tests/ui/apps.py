@@ -171,38 +171,35 @@ def terminal(g):
 def terminal_line_edit(g):
     # Typing must stay on one line. The shell redraws by returning to the start
     # of the prompt, and a redraw that started a new line would scroll the
-    # terminal on every keystroke — the banner would climb out of the window.
+    # terminal on every keystroke — the scrollback would then be deeper than the
+    # window, which is exactly what the scrollbar thumb reports. (The console
+    # group checks the redraw *bytes*; this checks the terminal's own view.)
     term = g.await_window("term")
     g.click_title(term)
 
     before = os.path.join(g.art, "termline_before.ppm")
     after = os.path.join(g.art, "termline_after.ppm")
 
-    # Wait for the terminal to stop changing first: the previous command's
-    # prompt may still be arriving, and that would show up as "the top moved".
+    # Settle first: the previous test's command may still be arriving, and the
+    # thumb (and the window) move while it is. Three identical frames in a row.
+    same = 0
     prev = None
-    end = time.time() + 6
-    while time.time() < end:
+    end = time.time() + 8
+    while time.time() < end and same < 3:
         g.screendump(before)
         now = open(before, "rb").read()
-        if now == prev:
-            break
+        same = same + 1 if now == prev else 0
         prev = now
-        time.sleep(0.2)
+        time.sleep(0.25)
+    y0 = thumb_top(before, term)
 
     g.type("a fairly long line typed into the terminal")
+    time.sleep(1.0)                       # let it render
+    g.screendump(after)
+    y1 = thumb_top(after, term)
 
-    # Wait until it has rendered *somewhere* (the bottom), so that an unchanged
-    # top means "did not scroll" rather than "did not draw".
-    bottom = (term["x"] + 2, term["y"] + term["h"] * 2 // 3,
-              term["x"] + term["w"] - 2, term["y"] + term["h"] - 2)
-    if g.await_change(before, after, bottom, 20) < 20:
-        g.fail("typing did not reach the terminal")
-
-    top = diff_region(before, after, term["x"] + 2, term["y"] + 2,
-                      term["x"] + term["w"] - 2, term["y"] + term["h"] // 3)
-    if top >= 200:
-        g.fail("typing scrolled the terminal (%d pixels changed above the line)" % top)
+    if y1 != y0:
+        g.fail("typing scrolled the terminal (thumb %s -> %s)" % (y0, y1))
 
     g.ctrl("u")   # leave the line empty for the tests after this one
 
