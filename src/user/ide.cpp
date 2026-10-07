@@ -42,13 +42,13 @@ enum { P_EXPLORER = 0, P_EDITOR, P_TERMINAL };
 
 // Catppuccin Mocha (the user's theme across the desktop).
 static const unsigned int BG      = 0xFF1E1E2E; // base
-static const unsigned int CHROME  = 0xFF181825; // mantle (tab bar, status)
+static const unsigned int CHROME  = 0xFF11111B; // crust (tab bar, status)
 static const unsigned int SEP_C   = 0xFF313244; // surface0 (separators)
 static const unsigned int FG      = 0xFFCDD6F4; // text
 static const unsigned int DIM     = 0xFF7F849C; // overlay1
 static const unsigned int ACCENT  = 0xFF89B4FA; // blue (the focused pane)
-static const unsigned int TAB_ON  = 0xFF313244; // surface0
-static const unsigned int TAB_OFF = 0xFF181825; // mantle
+static const unsigned int TAB_ON  = 0xFF313244; // surface0: the active tab
+static const unsigned int TAB_OFF = 0xFF181825; // mantle: the others
 static const unsigned int TAB_FG  = 0xFFCDD6F4;
 static const unsigned int TAB_DIM = 0xFF7F849C;
 
