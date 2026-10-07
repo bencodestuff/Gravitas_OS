@@ -331,10 +331,13 @@ class Guest:
     def click(self, x=None, y=None):
         if x is not None:
             self.move_to(x, y)
+        # The WM collapses button edges across whatever packets it drains, so it
+        # sees a press and a release even when they land in the same pass — the
+        # gap only has to outlast one poll of QEMU's mouse queue, not a frame.
         self.cmd("mouse_button 1")
-        time.sleep(0.2)
+        time.sleep(0.08)
         self.cmd("mouse_button 0")
-        time.sleep(0.35)
+        time.sleep(0.12)
 
     def wheel(self, notches):
         """Inject wheel notches: positive = up/away.
@@ -349,6 +352,23 @@ class Guest:
                             "data": {"down": True, "button": button}}]}})
             time.sleep(0.05)
         time.sleep(0.2)
+
+    def await_change(self, before, after, region, min_pixels=100, timeout=5.0):
+        """Dump to 'after' until 'region' differs from 'before' by at least
+        'min_pixels' (or the timeout runs out). Returns the difference, so the
+        caller still asserts it and a failure reports the same way.
+
+        This is what a test wants when it would otherwise "sleep to let it
+        render": wait until it actually did, which is both faster and steadier.
+        """
+        x0, y0, x1, y1 = region
+        end = time.time() + timeout
+        while True:
+            self.screendump(after)
+            changed = diff_region(before, after, x0, y0, x1, y1)
+            if changed >= min_pixels or time.time() >= end:
+                return changed
+            time.sleep(0.05)
 
     def desktop(self):
         """Click empty desktop: focuses the console shell (dismisses popups)."""
