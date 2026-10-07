@@ -4,8 +4,9 @@
 #include <grv/input.h>
 #include <grv/clipboard.h>
 
-// term — the Gravitas terminal: a Gravity text grid that hosts the userland
-// shell. The kernel console endpoint carries the shell's stdio here (see the
+// term — a standalone window over the terminal widget (gravity_term). The grid
+// hosts the userland shell; this owns the window, the scrollbar and the keys.
+// The kernel console endpoint carries the shell's stdio here (see the
 // CONSOLE_* syscalls), so keystrokes go in and output comes back without the
 // kernel knowing what a terminal is.
 
@@ -13,7 +14,6 @@
 #define DEF_ROWS 25
 #define CELL_W   8
 #define CELL_H   16
-#define SB_W     6   /* scrollbar strip to the right of the grid */
 
 static const unsigned int FG = 0xFFD0E0F0;
 static const unsigned int BG = 0xFF101418;
@@ -25,40 +25,16 @@ static int shell_pid = -1;
 static int g_cols = DEF_COLS;   /* the grid size (--geometry may change it) */
 static int g_rows = DEF_ROWS;
 
+static int strip_x(void) { return g_cols * CELL_W; }
+static int strip_h(void) { return g_rows * CELL_H; }
+
 // Output arrives in our console ring, woken by an EV_CONSOLE_OUT mailbox
-// message; poll it each loop and feed the grid.
+// message; drain it each loop and feed the grid.
 static void on_poll(struct gravity_app* a) {
-    char buf[512];
-    long n;
-    int got = 0;
-    while ((n = grv_console_read(buf, sizeof(buf))) > 0) {
-        gravity_term_write(&term, buf, (int)n);
-        got = 1;
-    }
-    if (got) gravity_refresh(a);
+    if (gravity_term_pump(&term) > 0) gravity_refresh(a);
 }
 
 static int sb_drag = 0;   // dragging the scrollbar thumb
-
-// Map a point in the scrollbar strip to a scrollback position, centring the
-// thumb on it (so a click jumps and a held drag follows).
-static void scrollbar_drag_to(int my) {
-    int max = gravity_term_maxview(&term);
-    if (max <= 0) return;
-    int h = g_rows * CELL_H;
-    int total = max + g_rows;
-    int thumb = h * g_rows / total;
-    if (thumb < 16) thumb = 16;
-    int span = h - thumb;
-    if (span <= 0) return;
-
-    int top = my - thumb / 2;
-    if (top < 0) top = 0;
-    if (top > span) top = span;
-
-    int view = max - top * max / span;
-    gravity_term_scrollback(&term, view - gravity_term_view(&term));
-}
 
 static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     if (ev->type == GRV_EV_SCROLL) {
@@ -74,9 +50,9 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
         int mx = grv_mouse_x(ev->b);
         int my = grv_mouse_y(ev->b);
         int held = (ev->a & GRV_BTN_LEFT) != 0;
-        if (held && (sb_drag || mx >= g_cols * CELL_W)) {
+        if (held && (sb_drag || mx >= strip_x())) {
             sb_drag = 1;
-            scrollbar_drag_to(my);
+            gravity_term_scrollbar_drag(&term, my, strip_h());
             gravity_refresh(a);
         } else if (!held) {
             sb_drag = 0;
@@ -125,26 +101,13 @@ static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     gravity_refresh(a);
 }
 
-static void draw_scrollbar(struct gravity_canvas* c) {
-    int x = g_cols * CELL_W;
-    int h = g_rows * CELL_H;
-    gravity_fill(c, x, 0, SB_W, h, 0xFF202428); // track
-    int max = gravity_term_maxview(&term);
-    if (max <= 0) return;
-    int total = max + g_rows;
-    int thumb = h * g_rows / total;
-    if (thumb < 16) thumb = 16;
-    int view = gravity_term_view(&term);        // 0 = bottom, max = top
-    int y = (h - thumb) * (max - view) / max;
-    gravity_fill(c, x, y, SB_W, thumb, 0xFF6A7A8A);
-}
-
 static void on_draw(struct gravity_app* a) {
     // No clear: the grid owns every cell and repaints only the rows that
     // changed, so the surface must persist between frames. The first render
     // (all rows dirty) paints the whole thing.
     gravity_term_render(&term, &a->canvas, 0, 0);
-    draw_scrollbar(&a->canvas); // lives in the strip right of the grid
+    gravity_term_scrollbar_draw(&term, &a->canvas, strip_x(), 0,
+                                GRAVITY_TERM_SB, strip_h());
 }
 
 int main(int argc, char** argv) {
@@ -152,7 +115,7 @@ int main(int argc, char** argv) {
     gravity_args(argc, argv, &w, &h, &role, &argi);
 
     // The grid derives its cell count from the requested window size.
-    if (w > 0) g_cols = (w - SB_W) / CELL_W;
+    if (w > 0) g_cols = (w - GRAVITY_TERM_SB) / CELL_W;
     if (h > 0) g_rows = h / CELL_H;
     if (g_cols < 20) g_cols = 20;
     if (g_rows < 4) g_rows = 4;
@@ -162,17 +125,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    const char* cargv[1] = { "shell.elf" };
-    shell_pid = (int)grv_spawn_bg("shell.elf", cargv, 1);
-    if (shell_pid < 0) {
-        const char* msg = "term: cannot start shell\n";
-        int n = 0; while (msg[n]) n++;
-        gravity_term_write(&term, msg, n);
-    } else if (grv_console_attach(shell_pid) != 0) {
-        const char* msg = "term: cannot attach console\n";
-        int n = 0; while (msg[n]) n++;
-        gravity_term_write(&term, msg, n);
-    } else if (argi < argc) {
+    shell_pid = gravity_term_host(&term, "shell.elf");
+    if (shell_pid >= 0 && argi < argc) {
         // An initial command (e.g. `term cat /hello.txt`): type it for the
         // shell once attached, so a launcher can open a file straight away.
         static char cmd[256];
@@ -192,6 +146,6 @@ int main(int argc, char** argv) {
     app.title = "Terminal";
     app.user = 0;
     app.wm_role = role;
-    gravity_run(&app, g_cols * CELL_W + SB_W, g_rows * CELL_H);
+    gravity_run(&app, g_cols * CELL_W + GRAVITY_TERM_SB, g_rows * CELL_H);
     return 0;
 }

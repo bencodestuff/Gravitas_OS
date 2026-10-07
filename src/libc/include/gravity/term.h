@@ -57,6 +57,22 @@ void gravity_term_snap_bottom(struct gravity_term* t);
 int gravity_term_view(const struct gravity_term* t);
 int gravity_term_maxview(const struct gravity_term* t);
 
+/* The scrollback strip, for a host that shows one: draw it into the w x h area
+   at (x,y), and map a pointer at local y (within the strip) to a scrollback
+   position, centring the thumb on it so a click jumps and a held drag follows. */
+#define GRAVITY_TERM_SB 6 /* the strip's width, in pixels */
+void gravity_term_scrollbar_draw(struct gravity_term* t,
+                                 struct gravity_canvas* c,
+                                 int x, int y, int w, int h);
+void gravity_term_scrollbar_drag(struct gravity_term* t, int y, int h);
+
+/* Host a program in the grid: spawn it, bind its console to us (the CONSOLE_*
+   syscalls), and return its task id — or -1, with a message written into the
+   grid. Feed the grid from that console with gravity_term_pump, which returns
+   the bytes it took (0 when nothing is waiting). */
+int  gravity_term_host(struct gravity_term* t, const char* prog);
+int  gravity_term_pump(struct gravity_term* t);
+
 __END_DECLS
 
 #endif

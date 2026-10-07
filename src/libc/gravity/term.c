@@ -1,4 +1,5 @@
 #include <gravity/term.h>
+#include <grv/syscall.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -174,4 +175,73 @@ int gravity_term_view(const struct gravity_term* t) { return t->view; }
 int gravity_term_maxview(const struct gravity_term* t) {
     int m = t->used - t->rows;
     return m > 0 ? m : 0;
+}
+
+/* --- the scrollback strip (the host's scrollbar) --- */
+
+// Catppuccin Mocha, the desktop theme (see gravity_editor for the same note).
+static const unsigned int SB_TRACK = 0xFF202428;
+static const unsigned int SB_THUMB = 0xFF6A7A8A;
+
+void gravity_term_scrollbar_draw(struct gravity_term* t,
+                                 struct gravity_canvas* c,
+                                 int x, int y, int w, int h) {
+    gravity_fill(c, x, y, w, h, SB_TRACK);
+    int max = gravity_term_maxview(t);
+    if (max <= 0) return; // nothing scrolled back: no thumb
+    int total = max + t->rows;
+    int thumb = h * t->rows / total;
+    if (thumb < 16) thumb = 16;
+    int ty = (h - thumb) * (max - t->view) / max;
+    gravity_fill(c, x, y + ty, w, thumb, SB_THUMB);
+}
+
+void gravity_term_scrollbar_drag(struct gravity_term* t, int y, int h) {
+    int max = gravity_term_maxview(t);
+    if (max <= 0) return;
+    int total = max + t->rows;
+    int thumb = h * t->rows / total;
+    if (thumb < 16) thumb = 16;
+    int span = h - thumb;
+    if (span <= 0) return;
+
+    int top = y - thumb / 2;
+    if (top < 0) top = 0;
+    if (top > span) top = span;
+
+    int view = max - top * max / span;
+    gravity_term_scrollback(t, view - t->view);
+}
+
+/* --- hosting a program (the console endpoint) --- */
+
+int gravity_term_host(struct gravity_term* t, const char* prog) {
+    const char* argv[1] = { prog };
+    int pid = (int)grv_spawn_bg(prog, argv, 1);
+    if (pid < 0) {
+        static const char m[] = "cannot start ";
+        gravity_term_write(t, m, (int)sizeof(m) - 1);
+        int n = 0;
+        while (prog[n]) n++;
+        gravity_term_write(t, prog, n);
+        gravity_term_write(t, "\n", 1);
+        return -1;
+    }
+    if (grv_console_attach(pid) != 0) {
+        static const char m[] = "cannot attach console\n";
+        gravity_term_write(t, m, (int)sizeof(m) - 1);
+        return -1;
+    }
+    return pid;
+}
+
+int gravity_term_pump(struct gravity_term* t) {
+    char buf[512];
+    long n;
+    int got = 0;
+    while ((n = grv_console_read(buf, sizeof(buf))) > 0) {
+        gravity_term_write(t, buf, (int)n);
+        got += (int)n;
+    }
+    return got;
 }

@@ -14,6 +14,7 @@
 #include <gravity/app.h>
 #include <gravity/widget.h>
 #include <gravity/list.h>
+#include <gravity/filer.h>
 #include <gravity/term.h>
 #include <gravity/buffer.h>
 #include <gravity/editor.h>
