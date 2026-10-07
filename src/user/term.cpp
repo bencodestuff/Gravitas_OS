@@ -110,6 +110,20 @@ static void on_draw(struct gravity_app* a) {
                                 GRAVITY_TERM_SB, strip_h());
 }
 
+static void on_resize(struct gravity_app* a, int w, int h) {
+    (void)a;
+    int cols = (w - GRAVITY_TERM_SB) / CELL_W;
+    int rows = h / CELL_H;
+    if (cols < 20) cols = 20;
+    if (rows < 4) rows = 4;
+    // The grid may refuse (no memory); keep our idea of the size in step with
+    // what it actually took, since the strip is placed from it.
+    if (gravity_term_resize(&term, cols, rows) == 0) {
+        g_cols = cols;
+        g_rows = rows;
+    }
+}
+
 int main(int argc, char** argv) {
     int w = 0, h = 0, argi = 1;
     gravity_args(argc, argv, &w, &h, &argi);
@@ -143,6 +157,7 @@ int main(int argc, char** argv) {
     app.on_event = on_event;
     app.on_draw = on_draw;
     app.on_poll = on_poll;
+    app.on_resize = on_resize;
     app.title = "Terminal";
     app.user = 0;
     gravity_run(&app, g_cols * CELL_W + GRAVITY_TERM_SB, g_rows * CELL_H);

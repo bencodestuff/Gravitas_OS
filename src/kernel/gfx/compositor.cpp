@@ -573,8 +573,11 @@ static bool cursor_seen = false;
 
 static void cursor_pos(int* x, int* y) {
     int mx = Mouse::cursor_x(), my = Mouse::cursor_y();
-    if (mx > (int)fb_w - CURSOR_W) mx = (int)fb_w - CURSOR_W;
-    if (my > (int)fb_h - CURSOR_H) my = (int)fb_h - CURSOR_H;
+    // Clamp the HOTSPOT, not the sprite: the pointer must be able to reach the
+    // screen edge (a window flush to it has to stay grabbable), so a sprite
+    // that hangs over is clipped instead.
+    if (mx > (int)fb_w - 1) mx = (int)fb_w - 1;
+    if (my > (int)fb_h - 1) my = (int)fb_h - 1;
     if (mx < 0) mx = 0;
     if (my < 0) my = 0;
     Mouse::apply_position_clamp(mx, my);
@@ -585,11 +588,15 @@ static void draw_cursor() {
     int mx, my;
     cursor_pos(&mx, &my);
     for (int cy = 0; cy < CURSOR_H; cy++) {
-        uint32_t* dst = g_paint + (uint64_t)(my + cy) * fb_pitch_px + mx;
+        int y = my + cy;
+        if (y < 0 || y >= (int)fb_h) continue;   // clipped at the bottom
+        uint32_t* dst = g_paint + (uint64_t)y * fb_pitch_px + mx;
         for (int cx = 0; cx < CURSOR_W; cx++) {
+            int x = mx + cx;
+            if (x < 0 || x >= (int)fb_w) continue; // clipped at the right
             uint8_t v = cursor_sprite16[cy][cx];
-            if (v == 0) { dst++; continue; }
-            *dst++ = (v == 1) ? 0x00000000 : 0x00FFFFFF;
+            if (v == 0) continue;
+            dst[cx] = (v == 1) ? 0x00000000 : 0x00FFFFFF;
         }
     }
     last_cursor_x = mx;

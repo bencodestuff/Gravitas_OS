@@ -454,6 +454,15 @@ void gravity_editor_free(struct gravity_editor* e) {
     gravity_buffer_free(&e->text);
 }
 
+void gravity_editor_resize(struct gravity_editor* e, int x, int y, int w, int h) {
+    e->x = x; e->y = y; e->w = w; e->h = h;
+    e->rows = h / e->g_ch;
+    e->cols = (w - SB_W) / CW;
+    if (e->rows < 1) e->rows = 1;
+    if (e->cols < 1) e->cols = 1;
+    ensure_visible(e); // the caret may now be outside the new viewport
+}
+
 int gravity_editor_dirty(const struct gravity_editor* e) { return e->modified; }
 int gravity_editor_len(const struct gravity_editor* e) { return e->text.len; }
 int gravity_editor_rev(const struct gravity_editor* e) { return e->rev; }

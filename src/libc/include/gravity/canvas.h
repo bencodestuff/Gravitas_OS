@@ -28,6 +28,11 @@ int gravity_text_width_of(const char* s);
 int gravity_canvas_init(struct gravity_canvas* c, int w, int h);
 void gravity_canvas_done(struct gravity_canvas* c);
 
+/* Resize the surface to w*h and re-bind the canvas to the new pixels (the
+   buffer is reallocated, so the address changes and everything needs repaint).
+   0 on success, -1 if the surface refused. */
+int gravity_canvas_resize(struct gravity_canvas* c, int w, int h);
+
 /* Mark a rectangle as needing commit. Primitives call this themselves. */
 void gravity_invalidate(struct gravity_canvas* c, int x, int y, int w, int h);
 

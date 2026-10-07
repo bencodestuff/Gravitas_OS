@@ -45,6 +45,9 @@ int  gravity_editor_init(struct gravity_editor* e, const char* path,
                          int x, int y, int w, int h);
 void gravity_editor_free(struct gravity_editor* e);
 
+/* Move/resize the viewport (the caret stays put; the view follows it). */
+void gravity_editor_resize(struct gravity_editor* e, int x, int y, int w, int h);
+
 /* Re-read the file, discarding edits / write it back. save() returns the byte
    count written, or -1 (and sets msg). */
 void gravity_editor_reload(struct gravity_editor* e);

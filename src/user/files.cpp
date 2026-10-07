@@ -84,6 +84,13 @@ static void on_draw(struct gravity_app* a) {
     gravity_list_draw(&filer.list, c);
 }
 
+static void on_resize(struct gravity_app* a, int w, int h) {
+    (void)a;
+    win_w = w;
+    win_h = h;
+    gravity_filer_resize(&filer, 0, PATH_H, win_w, win_h - PATH_H);
+}
+
 int main(int argc, char** argv) {
     int argi = 1;
     gravity_args(argc, argv, &win_w, &win_h, &argi);
@@ -93,6 +100,7 @@ int main(int argc, char** argv) {
 
     app.on_event = on_event;
     app.on_draw = on_draw;
+    app.on_resize = on_resize;
     app.title = "Files";
     app.user = 0;
     gravity_run(&app, win_w, win_h);

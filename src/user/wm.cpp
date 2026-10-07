@@ -25,6 +25,9 @@ static const int TITLE_H = 18;
 static const int BORDER  = 2;
 static const int CLOSE_W = 12;
 static const int CLOSE_H = 12;
+static const int MAXBOX_W = 12;          // the maximize box, left of the close box
+static const int RESIZE_BAND = 5;        // the grab margin just outside the body
+static const int MIN_W = 120, MIN_H = 80;
 static const int MAXWIN  = 32;
 static const int TASKBAR_H = 24;
 static const int CLOCK_W   = 40;   // "HH:MM" at 8 px per glyph
@@ -34,6 +37,8 @@ static const unsigned int FOCUS_BAR   = 0xFF3B5A8C;
 static const unsigned int UNFOCUS_BAR = 0xFF4A4A4A;
 static const unsigned int EDGE        = 0xFF202020;
 static const unsigned int CLOSE_BG    = 0xFFC04040;
+static const unsigned int MAXBOX_BG   = 0xFF4A5568;
+static const unsigned int MAXBOX_ON   = 0xFF6A8AB0;
 static const unsigned int TITLE_FG    = 0xFFFFFFFF;
 static const unsigned int BAR_BG      = 0xFF17191C;
 static const unsigned int LAUNCH_BG   = 0xFF356B46;
@@ -49,6 +54,8 @@ struct Win {
     int  w, h;         // surface size
     int  role;         // GRV_WM_ROLE_NORMAL or _POPUP
     unsigned long close_deadline; // tick to force-kill a close request, 0 = none
+    int  maximized;    // and where it was before, to restore
+    int  rest_x, rest_y, rest_w, rest_h;
     char title[33];
 };
 
@@ -70,6 +77,15 @@ static int   last_fx = -1, last_fy = -1; // last forwarded pointer position
 static int   dragging = 0;
 static int   drag_sid = -1;
 static int   drag_off_x = 0, drag_off_y = 0;
+
+// An edge-drag resize in progress (see the resizing section below).
+static int   resizing = 0;
+static int   resize_sid = -1;
+static int   resize_edge = 0;                     // 1 = right, 2 = bottom, 3 = corner
+static int   resize_w0 = 0, resize_h0 = 0;        // size when the drag began
+static int   resize_px = 0, resize_py = 0;        // pointer when it began
+static int   resize_sent_w = 0, resize_sent_h = 0; // the last size asked for
+
 static unsigned char btn_prev = 0;
 
 static int mini(int a, int b) { return a < b ? a : b; }
@@ -166,6 +182,13 @@ static void close_rect(const Win* w, int* rx, int* ry, int* rw, int* rh) {
     *ry = w->y - TITLE_H + (TITLE_H - CLOSE_H) / 2;
 }
 
+static void max_rect(const Win* w, int* rx, int* ry, int* rw, int* rh) {
+    *rw = MAXBOX_W;
+    *rh = CLOSE_H;
+    *rx = w->x + w->w - CLOSE_W - 2 - MAXBOX_W - 3;
+    *ry = w->y - TITLE_H + (TITLE_H - CLOSE_H) / 2;
+}
+
 static int in_rect(int px, int py, int x, int y, int w, int h) {
     return px >= x && px < x + w && py >= y && py < y + h;
 }
@@ -184,6 +207,23 @@ static int in_close(const Win* w, int px, int py) {
     return in_rect(px, py, x, y, cw, ch);
 }
 
+static int in_maxbox(const Win* w, int px, int py) {
+    int x, y, cw, ch;
+    max_rect(w, &x, &y, &cw, &ch);
+    return in_rect(px, py, x, y, cw, ch);
+}
+
+// The resize grab margin, straddling the edge: 2 px inside and 3 px outside, so
+// a window flush to the screen edge can still be grabbed, and an app's own
+// right edge (a scrollbar) keeps most of its clicks.
+static int in_resize_band(const Win* w, int px, int py) {
+    if (in_rect(px, py, w->x + w->w - 2, w->y, RESIZE_BAND, w->h + RESIZE_BAND))
+        return 1;   // right edge (and the corner)
+    if (in_rect(px, py, w->x, w->y + w->h - 2, w->w + RESIZE_BAND, RESIZE_BAND))
+        return 1;   // bottom edge
+    return 0;
+}
+
 static void draw_window(const Win* w) {
     if (w->role == GRV_WM_ROLE_POPUP) return; // popups have no decoration
     unsigned int bar = (w->owner == focused) ? FOCUS_BAR : UNFOCUS_BAR;
@@ -197,6 +237,11 @@ static void draw_window(const Win* w) {
     int cx, cy, cw, ch;
     close_rect(w, &cx, &cy, &cw, &ch);
     fill(cx, cy, cw, ch, CLOSE_BG);                         // close box
+
+    // The maximize box, left of it: filled when maximized.
+    max_rect(w, &cx, &cy, &cw, &ch);
+    if (w->maximized) fill(cx, cy, cw, ch, MAXBOX_ON);
+    else              fill(cx, cy, cw, ch, MAXBOX_BG);
 
     // Title text, clipped to the bar (never over the close box).
     int sx1 = clip_x1;
@@ -219,6 +264,10 @@ static Win* find_owner(int owner) {
 // window (bottom-to-top) that overlaps it, clipped to the rectangle.
 static void draw_taskbar(); // defined below; always drawn on top
 static void draw_menu();    // launcher popup, above the taskbar
+static void request_resize(Win* w, int nw, int nh); // below (needs place_window)
+static void maximize_toggle(Win* w);
+static void resize_to(int cx, int cy);
+static void resize_wanted(int cx, int cy, int* nw, int* nh);
 
 static void redraw(int x0, int y0, int x1, int y1) {
     x0 = maxi(x0, 0); y0 = maxi(y0, 0);
@@ -540,6 +589,8 @@ static void add_window(int sid) {
     w->h = (int)si->height;
     w->role = GRV_WM_ROLE_NORMAL;
     w->close_deadline = 0;
+    w->maximized = 0;
+    w->rest_x = w->rest_y = w->rest_w = w->rest_h = 0;
     owner_name(w->owner, w->title);
 
     // Cascade new windows so they do not pile up at (0,0).
@@ -578,6 +629,8 @@ static void remove_window(int sid) {
     if (idx < 0) return;
 
     int owner = wins[idx].owner;
+    if (resize_sid == sid) { resizing = 0; resize_sid = -1; }
+    if (drag_sid == sid) { dragging = 0; drag_sid = -1; }
     for (int i = idx; i < nwin - 1; i++) wins[i] = wins[i + 1];
     nwin--;
 
@@ -708,12 +761,34 @@ static void on_press(int cx, int cy) {
             grv_send(w->owner, &cm);
             return;
         }
+        if (w->role != GRV_WM_ROLE_POPUP && in_maxbox(w, cx, cy)) {
+            maximize_toggle(w);
+            return;
+        }
         if (in_title(w, cx, cy)) {
             focus_window(w);
             dragging = 1;
             drag_sid = w->sid;
             drag_off_x = cx - w->x;
             drag_off_y = cy - w->y;
+            return;
+        }
+        // A popup has no decoration; every other window can be resized from its
+        // edge band (checked before the body, since the band straddles it).
+        if (w->role != GRV_WM_ROLE_POPUP && in_resize_band(w, cx, cy)) {
+            focus_window(w);
+            resizing = 1;
+            resize_sid = w->sid;
+            int right = cx >= w->x + w->w - 2;
+            int bottom = cy >= w->y + w->h - 2;
+            resize_edge = (right && bottom) ? 3 : (right ? 1 : 2);
+            resize_w0 = w->w;
+            resize_h0 = w->h;
+            resize_px = cx;
+            resize_py = cy;
+            resize_sent_w = w->w;
+            resize_sent_h = w->h;
+            printf("wm: resize #%d begin %dx%d\n", w->sid, w->w, w->h);
             return;
         }
         if (in_body(w, cx, cy)) {
@@ -731,6 +806,19 @@ static void on_press(int cx, int cy) {
 }
 
 static void on_release(int cx, int cy) {
+    if (resizing) {
+        Win* w = find_sid(resize_sid);
+        if (w != 0) {
+            // One last request at the exact size: the drag asks in 8-pixel
+            // steps, so without this the window could end up a few pixels off.
+            int nw, nh;
+            resize_wanted(cx, cy, &nw, &nh);
+            request_resize(w, nw, nh);
+            printf("wm: resize #%d %dx%d\n", w->sid, w->w, w->h);
+        }
+        resizing = 0;
+        resize_sid = -1;
+    }
     if (click_sid >= 0) {
         Win* w = find_sid(click_sid);
         if (w != 0) forward_mouse(w, 0, cx, cy);
@@ -768,6 +856,82 @@ static void drag_to(int cx, int cy) {
     Win* w = find_sid(drag_sid);
     if (w == 0) { on_release(cx, cy); return; }
     place_window(w, cx - drag_off_x, cy - drag_off_y);
+}
+
+// --- resizing ---------------------------------------------------------
+// The client owns its surface's pixels, so the WM only *asks* for a size
+// (GRV_WM_RESIZE); the client answers GRV_WM_RESIZED with the size it took.
+// The WM's own w/h follow the request at once, so the decoration tracks the
+// drag, and the answer corrects them if the client clamped.
+
+static void request_resize(Win* w, int nw, int nh) {
+    if (nw < MIN_W) nw = MIN_W;
+    if (nh < MIN_H) nh = MIN_H;
+    if (nw > overlay_w - 2 * BORDER) nw = overlay_w - 2 * BORDER;
+    if (nh > overlay_h - TASKBAR_H - TITLE_H - BORDER)
+        nh = overlay_h - TASKBAR_H - TITLE_H - BORDER;
+    if (nw == (int)w->w && nh == (int)w->h) return;
+
+    int oa, ob, oc, od;
+    decor_rect(w, &oa, &ob, &oc, &od);
+
+    w->w = nw;   // optimistic: the decoration follows the pointer now
+    w->h = nh;
+
+    int na, nb, nc, nd;
+    decor_rect(w, &na, &nb, &nc, &nd);
+    redraw(mini(oa, na) - 1, mini(ob, nb) - 1,
+           maxi(oa + oc, na + nc) + 1, maxi(ob + od, nb + nd) + 1);
+
+    struct grv_msg m;
+    m.from = 0;
+    m.type = GRV_WM_RESIZE;
+    m.a = (unsigned long)w->sid;
+    m.b = grv_wm_size_pack(nw, nh);
+    grv_send(w->owner, &m);
+}
+
+/* The size a pointer position asks for, given where the drag began. */
+static void resize_wanted(int cx, int cy, int* nw, int* nh) {
+    *nw = resize_w0 + (cx - resize_px);
+    *nh = resize_h0 + (cy - resize_py);
+    if (resize_edge == 1) *nh = resize_h0; // right edge: height unchanged
+    if (resize_edge == 2) *nw = resize_w0; // bottom edge: width unchanged
+}
+
+static void resize_to(int cx, int cy) {
+    Win* w = find_sid(resize_sid);
+    if (w == 0) { resizing = 0; return; }
+
+    int nw, nh;
+    resize_wanted(cx, cy, &nw, &nh);
+
+    // Reallocating a surface per pixel would be silly: ask in steps (the
+    // release sends the exact size).
+    int dw = nw - resize_sent_w, dh = nh - resize_sent_h;
+    if (dw < 0) dw = -dw;
+    if (dh < 0) dh = -dh;
+    if (dw < 8 && dh < 8) return;
+    resize_sent_w = nw;
+    resize_sent_h = nh;
+    request_resize(w, nw, nh);
+}
+
+static void maximize_toggle(Win* w) {
+    if (!w->maximized) {
+        w->rest_x = w->x; w->rest_y = w->y;
+        w->rest_w = w->w; w->rest_h = w->h;
+        w->maximized = 1;
+        request_resize(w, overlay_w - 2 * BORDER,
+                       overlay_h - TASKBAR_H - TITLE_H - BORDER);
+        place_window(w, BORDER, TITLE_H);
+    } else {
+        w->maximized = 0;
+        request_resize(w, w->rest_w, w->rest_h);
+        place_window(w, w->rest_x, w->rest_y);
+    }
+    printf("wm: maximize #%d %s\n", w->sid, w->maximized ? "on" : "off");
+    full_redraw();
 }
 
 // --- main -----------------------------------------------------------
@@ -860,6 +1024,17 @@ int main(int argc, char** argv) {
                     full_redraw();
                 }
             }
+            else if (m.type == GRV_WM_RESIZED) {
+                // The client resized its surface to the size it took (it may
+                // clamp); our w/h and the decoration follow.
+                Win* w = find_sid((int)m.a);
+                if (w) {
+                    w->w = grv_wm_size_w(m.b);
+                    w->h = grv_wm_size_h(m.b);
+                    printf("wm: resized #%d %dx%d\n", w->sid, w->w, w->h);
+                    full_redraw();
+                }
+            }
             else if (m.type == GRV_WM_CLOSE_ACK) {
                 // The client is handling the close (e.g. prompting to save):
                 // stand down the force-kill.
@@ -903,6 +1078,8 @@ int main(int argc, char** argv) {
 
         if (dragging) {
             drag_to(cx, cy); // WM-driven title-bar drag
+        } else if (resizing) {
+            resize_to(cx, cy); // WM-driven edge drag
         } else if (!pressed && grab_owner >= 0 && (btn_prev & 1)) {
             // Pointer captured by a window: motion goes to it wherever the
             // cursor is, so the app can track a drag past its own edges.

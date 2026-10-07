@@ -359,5 +359,56 @@ def ide_close_tab(g):
     g.wait_for(r"wm: title #[0-9]+ 'Gravitas IDE — ide\.lua'")
 
 
+@test
+def window_resize(g):
+    # Dragging a window's corner asks the client to resize; the client resizes
+    # its own surface and answers with the size it took, so the WM's decoration
+    # and the surface agree.
+    w = g.await_window("Gravitas IDE")
+    g.click_title(w)
+    x1, y1 = w["x"] + w["w"] - 1, w["y"] + w["h"] - 1
+
+    g.move_to(x1, y1)
+    g.cmd("mouse_button 1")
+    time.sleep(0.3)
+    g.move_to(x1 - 300, y1 - 200, step=60)
+    time.sleep(0.4)
+    g.cmd("mouse_button 0")
+    time.sleep(1.2)
+
+    req = ack = None
+    for m in re.finditer(r"wm: resize #(\d+) (\d+)x(\d+)", g.log()):
+        req = m
+    for m in re.finditer(r"wm: resized #(\d+) (\d+)x(\d+)", g.log()):
+        ack = m
+    if not req or not ack:
+        g.fail("no resize request/answer pair in the log")
+    nw, nh = int(req.group(2)), int(req.group(3))
+    if (nw, nh) != (int(ack.group(2)), int(ack.group(3))):
+        g.fail("the client answered a different size: %s vs %s"
+               % (req.group(0), ack.group(0)))
+    if nw >= w["w"] or nh >= w["h"]:
+        g.fail("the drag did not shrink the window: %s" % req.group(0))
+
+    # The window really is that size: its bottom pane is painted, and the strip
+    # it no longer covers shows the desktop instead.
+    shot = os.path.join(g.art, "resized.ppm")
+    g.screendump(shot)
+    wpx, hpx, data = ppm(shot)
+    def at(x, y):
+        j = (y * wpx + x) * 3
+        return (data[j], data[j + 1], data[j + 2])
+    term_bg = (16, 20, 24)
+    inside = 0
+    for y in range(w["y"] + nh - 150, w["y"] + nh - 10, 2):
+        for x in range(w["x"] + 280, w["x"] + 700, 4):
+            if at(x, y) != term_bg:
+                inside += 1
+    if inside < 100:
+        g.fail("the resized terminal pane is blank")
+    if at(w["x"] + 300, w["y"] + nh + 40) == term_bg:
+        g.fail("the window still covers the area it was shrunk away from")
+
+
 if __name__ == "__main__":
     run_module(__file__)

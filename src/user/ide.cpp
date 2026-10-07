@@ -386,6 +386,29 @@ static void on_draw(struct gravity_app* a) {
 
 /* --- events --- */
 
+static void on_resize(struct gravity_app* a, int w, int h) {
+    (void)a;
+    win_w = w;
+    win_h = h;
+    layout();
+
+    gravity_filer_resize(&filer, ex_x, ex_y, ex_w, ex_h);
+    for (int i = 0; i < ntab; i++)
+        gravity_editor_resize(&tabs[i], ed_x, ed_y, ed_w, ed_h);
+
+    if (gravity_term_resize(&term, grid_cols, grid_rows) != 0) {
+        // No memory for a bigger grid: keep the pane geometry in step with the
+        // grid the terminal actually has.
+        grid_cols = term.cols;
+        grid_rows = term.rows;
+        grid_w = grid_cols * CELL_W;
+        grid_h = grid_rows * CELL_H;
+    }
+    gravity_term_redraw(&term);
+
+    dirty_chrome = dirty_ex = dirty_ed = dirty_term = 1;
+}
+
 static void on_poll(struct gravity_app* a) {
     if (gravity_term_pump(&term) > 0) {
         dirty_term = 1;
@@ -639,6 +662,7 @@ int main(int argc, char** argv) {
     app.on_event = on_event;
     app.on_draw = on_draw;
     app.on_poll = on_poll;
+    app.on_resize = on_resize;
     app.on_close = on_close;
     app.title = "Gravitas IDE";
     app.user = 0;

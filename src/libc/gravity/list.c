@@ -13,13 +13,19 @@ void gravity_list_init(struct gravity_list* l, int x, int y, int w, int h,
     l->items = 0;
 }
 
+static void reveal(struct gravity_list* l);
+
+void gravity_list_resize(struct gravity_list* l, int x, int y, int w, int h) {
+    l->x = x; l->y = y; l->w = w; l->h = h;
+    reveal(l); // the selection has to stay in view
+}
+
 int gravity_list_rows(const struct gravity_list* l) {
     return l->h / l->row_h;
 }
 
 // Keep the selection inside the visible window.
-static void reveal(struct gravity_list* l) {
-    int rows = gravity_list_rows(l);
+static void reveal(struct gravity_list* l) {    int rows = gravity_list_rows(l);
     if (rows <= 0) { l->top = 0; return; }
     if (l->sel < 0) { l->top = 0; return; }
     if (l->sel < l->top) l->top = l->sel;

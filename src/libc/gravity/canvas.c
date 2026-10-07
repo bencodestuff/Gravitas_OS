@@ -31,6 +31,25 @@ int gravity_canvas_init(struct gravity_canvas* c, int w, int h) {
     return id;
 }
 
+int gravity_canvas_resize(struct gravity_canvas* c, int w, int h) {
+    if (w <= 0 || h <= 0) return -1;
+    if (w == c->w && h == c->h) return 0;
+
+    struct grv_surface_info si;
+    if (grv_surface_resize(c->surface_id, (unsigned long)w, (unsigned long)h,
+                           &si) != 0) {
+        return -1;
+    }
+
+    c->px = (unsigned int*)si.address; // the buffer moved
+    c->w = w;
+    c->h = h;
+    // The kernel hands back zeroed pixels, so every cell needs painting.
+    c->dx0 = c->dy0 = c->dx1 = c->dy1 = 0;
+    gravity_invalidate(c, 0, 0, w, h);
+    return 0;
+}
+
 void gravity_canvas_done(struct gravity_canvas* c) {
     if (c->surface_id >= 0) grv_surface_destroy(c->surface_id);
     c->surface_id = -1;

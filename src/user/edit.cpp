@@ -97,6 +97,16 @@ static void on_draw(struct gravity_app* a) {
     gravity_text(c, win_w - MARGIN - gravity_text_width_of(buf), ty, buf, STAT_FG);
 }
 
+static void on_resize(struct gravity_app* a, int w, int h) {
+    (void)a;
+    win_w = w;
+    win_h = h;
+    stat_h = gravity_font_height() + 6;
+    int ed_h = win_h - stat_h;
+    if (ed_h < 1) ed_h = 1;
+    gravity_editor_resize(&ed, MARGIN, 0, win_w - MARGIN, ed_h);
+}
+
 static void on_event(struct gravity_app* a, const struct gravity_event* ev) {
     (void)a;
 
@@ -155,6 +165,7 @@ int main(int argc, char** argv) {
     app.on_event = on_event;
     app.on_draw = on_draw;
     app.on_close = on_close;
+    app.on_resize = on_resize;
     app.user = 0;
 
     printf("edit: %s (%d bytes)\n", gravity_editor_path(&ed),

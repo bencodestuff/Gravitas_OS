@@ -27,6 +27,18 @@ __BEGIN_DECLS
 #define GRV_WM_CLOSE      0x14 /* WM -> client: a = surface id (please exit) */
 #define GRV_WM_CLOSE_ACK  0x15 /* client -> WM: a = sid (handling the close) */
 #define GRV_WM_SET_TITLE2 0x16 /* client -> WM: the title's next 16 bytes    */
+#define GRV_WM_RESIZE     0x18 /* WM -> client: a = sid, b = a packed w,h    */
+#define GRV_WM_RESIZED    0x19 /* client -> WM: a = sid, b = the size it took */
+
+/* A window size packs into one payload word: 16 bits per axis (surfaces are
+   capped well below that). A resize is the WM's *request*: the client resizes
+   its surface and answers with GRV_WM_RESIZED, which is how the WM learns the
+   size a client actually took (one may clamp to its own minimum). */
+static inline unsigned long grv_wm_size_pack(int w, int h) {
+    return ((unsigned long)(unsigned)w << 16) | (unsigned long)(unsigned)h;
+}
+static inline int grv_wm_size_w(unsigned long b) { return (int)(b >> 16); }
+static inline int grv_wm_size_h(unsigned long b) { return (int)(b & 0xFFFF); }
 
 /* What a window is, for the WM's benefit. A normal window is decorated, placed
    and listed in the taskbar; a popup is none of those. */

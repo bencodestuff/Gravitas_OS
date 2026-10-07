@@ -33,6 +33,10 @@ struct gravity_app {
        work that arrives outside the input mailbox — e.g. a terminal
        draining the output of the programs it hosts. */
     void (*on_poll)(struct gravity_app* app);
+    /* Optional: the WM resized us to w*h (the canvas is already re-bound and
+       everything needs repainting). Re-lay out here; Gravity redraws after.
+       Without it, Gravity just repaints with the app's existing layout. */
+    void (*on_resize)(struct gravity_app* app, int w, int h);
     /* Optional: the WM asked us to close. Return nonzero to exit now, 0 to
        stay open (e.g. after prompting to save). With no handler Gravity
        exits straight away. */

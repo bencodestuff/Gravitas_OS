@@ -26,7 +26,8 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCREEN_W, SCREEN_H = 1280, 800      # the guest's framebuffer
-CURSOR = 16                         # kernel cursor sprite: pointer max = screen - 16
+CURSOR = 1                          # the pointer hotspot reaches the last pixel
+                                    # (the kernel clips the sprite at the edge)
 TASKBAR_H = 24
 MENU_W, MENU_ITEM_H = 150, 22       # WM launcher geometry (src/user/wm.cpp)
 
@@ -412,7 +413,7 @@ class Guest:
 
     def apps_button(self):
         """The taskbar "Apps" button (clamped to the reachable pointer area)."""
-        return (28, SCREEN_H - CURSOR)
+        return (28, SCREEN_H - 12)
 
     def menu_item(self, index):
         n = len(APP_LIST)

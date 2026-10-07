@@ -130,3 +130,7 @@ int gravity_filer_init(struct gravity_filer* f, const char* path,
     gravity_list_init(&f->list, x, y, w, h, row_h, FG, BG, SEL_FG, SEL_BG);
     return gravity_filer_load(f, path);
 }
+
+void gravity_filer_resize(struct gravity_filer* f, int x, int y, int w, int h) {
+    gravity_list_resize(&f->list, x, y, w, h);
+}

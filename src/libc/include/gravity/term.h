@@ -33,6 +33,11 @@ int  gravity_term_init(struct gravity_term* t, int cols, int rows,
                        int cell_w, int cell_h, unsigned int fg, unsigned int bg);
 void gravity_term_free(struct gravity_term* t);
 
+/* Resize the grid, carrying over the visible screen (each line truncated to the
+   new width). Returns 0, or -1 if the new grid cannot be allocated — in which
+   case the old one is untouched. */
+int  gravity_term_resize(struct gravity_term* t, int cols, int rows);
+
 /* Reset the screen and scrollback (like a fresh terminal). */
 void gravity_term_clear(struct gravity_term* t);
 

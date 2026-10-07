@@ -45,6 +45,61 @@ void gravity_term_free(struct gravity_term* t) {
     t->dirty = 0;
 }
 
+int gravity_term_resize(struct gravity_term* t, int cols, int rows) {
+    if (cols <= 0 || rows <= 0) return -1;
+    if (cols == t->cols && rows == t->rows) return 0;
+
+    int new_cap = rows + GRAVITY_TERM_SCROLL;
+    unsigned long cells = (unsigned long)new_cap * (unsigned long)cols;
+    unsigned char* nc = (unsigned char*)malloc(cells);
+    unsigned int*  nf = (unsigned int*)malloc(cells * sizeof(unsigned int));
+    unsigned char* nd = (unsigned char*)malloc((unsigned long)new_cap);
+    if (!nc || !nf || !nd) {
+        if (nc) free(nc);
+        if (nf) free(nf);
+        if (nd) free(nd);
+        return -1; // the old grid is still intact
+    }
+
+    memset(nc, ' ', cells);
+    for (unsigned long i = 0; i < cells; i++) nf[i] = t->def_fg;
+    memset(nd, 1, (unsigned long)new_cap);
+
+    // Carry over what the user was looking at: the lines from the current view
+    // to the end, each truncated to the new width, placed at the top.
+    int vis_first = t->used - t->rows - t->view;
+    if (vis_first < 0) vis_first = 0;
+    int keep = t->used - vis_first;
+    if (keep > rows) keep = rows;
+
+    int copy_cols = t->cols < cols ? t->cols : cols;
+    for (int r = 0; r < keep; r++) {
+        unsigned long src = (unsigned long)(vis_first + r) * (unsigned long)t->cols;
+        unsigned long dst = (unsigned long)r * (unsigned long)cols;
+        for (int c = 0; c < copy_cols; c++) {
+            nc[dst + c] = t->chars[src + c];
+            nf[dst + c] = t->fg[src + c];
+        }
+    }
+
+    free(t->chars);
+    free(t->fg);
+    free(t->dirty);
+    t->chars = nc;
+    t->fg = nf;
+    t->dirty = nd;
+    t->cols = cols;
+    t->rows = rows;
+    t->capacity = new_cap;
+    t->used = keep > 0 ? keep : 1;
+    t->cur = t->used - 1;
+    if (t->cx >= cols) t->cx = cols - 1; // the cursor may be past the new edge
+    if (t->cx < 0) t->cx = 0;
+    t->view = 0;
+    t->all_dirty = 1;
+    return 0;
+}
+
 void gravity_term_clear(struct gravity_term* t) {
     unsigned long cells = (unsigned long)t->capacity * (unsigned long)t->cols;
     memset(t->chars, ' ', cells);

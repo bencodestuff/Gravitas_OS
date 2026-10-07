@@ -26,6 +26,9 @@ void gravity_list_init(struct gravity_list* l, int x, int y, int w, int h,
                        int row_h, unsigned int fg, unsigned int bg,
                        unsigned int sel_fg, unsigned int sel_bg);
 
+/* Move/resize the viewport, keeping the selection visible. */
+void gravity_list_resize(struct gravity_list* l, int x, int y, int w, int h);
+
 /* Replace the items (the caller keeps them alive) and clamp the selection. */
 void gravity_list_set(struct gravity_list* l, const char* const* items, int n);
 

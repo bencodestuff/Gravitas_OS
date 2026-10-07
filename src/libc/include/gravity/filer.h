@@ -37,6 +37,9 @@ int  gravity_filer_init(struct gravity_filer* f, const char* path,
    not be read. */
 int  gravity_filer_load(struct gravity_filer* f, const char* path);
 
+/* Move/resize the listing viewport. */
+void gravity_filer_resize(struct gravity_filer* f, int x, int y, int w, int h);
+
 /* Go to the parent directory. Returns 0 when already at the root. */
 int  gravity_filer_up(struct gravity_filer* f);
 

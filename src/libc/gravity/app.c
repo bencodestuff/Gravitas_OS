@@ -77,6 +77,23 @@ void gravity_run(struct gravity_app* app, int w, int h) {
             if (app->on_event) app->on_event(app, &ev);
         } else if (m.type == GRV_WM_HELLO) {
             answer_hello(app, &m);
+        } else if (m.type == GRV_WM_RESIZE) {
+            // The WM wants this window at a new size. Resize, let the app
+            // re-lay out, repaint, and tell the WM the size we ended up with
+            // (a client may clamp to its own minimum, and the WM's decoration
+            // has to agree with the surface).
+            gravity_canvas_resize(&app->canvas, grv_wm_size_w(m.b),
+                                  grv_wm_size_h(m.b));
+            if (app->on_resize)
+                app->on_resize(app, app->canvas.w, app->canvas.h);
+            app->redraw = 1;
+
+            struct grv_msg ack;
+            ack.from = 0;
+            ack.type = GRV_WM_RESIZED;
+            ack.a = m.a;
+            ack.b = grv_wm_size_pack(app->canvas.w, app->canvas.h);
+            grv_send((long)m.from, &ack);
         } else if (m.type == GRV_WM_DISMISS) {
             // The WM saw a click away from a popup: let the app close it (it
             // owns the policy — what to redraw, whether to keep state).
