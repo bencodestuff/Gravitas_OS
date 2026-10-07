@@ -316,6 +316,7 @@ namespace Tar {
         .mkdir    = nullptr,   // read-only
         .truncate = nullptr,   // read-only
         .unlink   = nullptr,   // read-only
+        .rename   = nullptr,   // read-only
     };
 
     VFS::Filesystem* vfs_instance() {

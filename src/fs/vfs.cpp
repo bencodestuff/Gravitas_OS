@@ -22,8 +22,10 @@ void init() {
 // Canonicalizes a path into 'out': absolute, no trailing slash, resolves
 // '.' and '..'. Returns out.
 static char* normalize(const char* path, char* out, uint64_t out_max) {
-    // components stack: offsets into out of each component's start
-    static uint64_t starts[32];
+    // component starts, as offsets into out — on the stack, like every other
+    // buffer on this path: a syscall can be preempted by the timer, so a static
+    // would be shared with whatever task runs next.
+    uint64_t starts[32];
     int depth = 0;
     uint64_t len = 0;
 
@@ -91,17 +93,29 @@ static Mount* find_mount(const char* canon_path) {
     return best;
 }
 
-Filesystem* resolve(const char* path, const char** rel_path) {
-    static char canon[256];
+// Resolve a path to a filesystem, writing the fs-relative path into 'rel_out'
+// (the caller owns that storage). Longest mount-prefix wins; relative paths
+// resolve against the current task's CWD. Returns nullptr if nothing covers the
+// path. Nothing here is shared between calls, so two resolutions can be live at
+// once — rename() needs exactly that.
+Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max) {
+    char canon[256];
     normalize(path, canon, sizeof(canon));
 
     Mount* m = find_mount(canon);
-    if (m == nullptr) return nullptr;
+    if (m == nullptr) {
+        rel_out[0] = '\0';
+        return nullptr;
+    }
 
     uint64_t ml = 0;
     while (m->path[ml]) ml++;
-    *rel_path = canon + ml;         // "/bin/ls.elf" -> "/ls.elf"
-    if (**rel_path == '/') (*rel_path)++;  // -> "ls.elf"; "/" -> ""
+    const char* rel = canon + ml;          // "/bin/ls.elf" -> "/ls.elf"
+    if (*rel == '/') rel++;                // -> "ls.elf"; "/" -> ""
+
+    uint64_t i = 0;
+    while (rel[i] && i + 1 < rel_max) { rel_out[i] = rel[i]; i++; }
+    rel_out[i] = '\0';
     return m->fs;
 }
 
@@ -141,8 +155,8 @@ static const char* const kProgramPath[] = { "/bin", "/bin/tests" };
 
 // Does the absolute path 'full' name an existing file or directory?
 static bool path_exists(const char* full) {
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(full, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(full, rel, sizeof(rel));
     if (fs == nullptr) return false;
     if (fs->is_dir && fs->is_dir(fs->priv, rel)) return true;
     if (fs->open) {
@@ -164,7 +178,7 @@ static char* join_dir(const char* dir, const char* name, char* out, uint64_t out
 }
 
 static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
-                                  const char** effective) {
+                                  const char** effective, bool for_create) {
     bool has_slash = false;
     for (const char* p = path; *p; p++) {
         if (*p == '/') { has_slash = true; break; }
@@ -181,6 +195,14 @@ static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
     char cwdtry[256];
     effective_path(path, cwdtry, sizeof(cwdtry));
     if (path_exists(cwdtry)) {
+        *effective = effective_path(path, out, out_max);
+        return true;
+    }
+
+    // A creation never searches: a bare name is then purely CWD-relative, the
+    // same rule mkdir and unlink follow. Otherwise `open("notes.txt", O_CREATE)`
+    // would create /bin/notes.txt just because nothing by that name exists yet.
+    if (for_create) {
         *effective = effective_path(path, out, out_max);
         return true;
     }
@@ -244,12 +266,12 @@ bool mount(const char* path, Filesystem* fs) {
 }
 
 bool is_directory(const char* path) {
-    static char fixed[256];
+    char fixed[256];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(effective, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel));
     if (fs == nullptr || fs->is_dir == nullptr) return false;
     return fs->is_dir(fs->priv, rel);
 }
@@ -258,9 +280,9 @@ void canonicalize(const char* path, char* out, uint64_t out_max) {
     // Go through the same fallback resolution is_directory uses —
     // otherwise `cd Pictures` validates against /bin/Pictures but STORES
     // /Pictures (a nonexistent path), and every later ls/cd breaks.
-    static char fixed[256];
+    char fixed[256];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
     normalize(effective, out, out_max);
 }
 
@@ -307,12 +329,15 @@ int fd_slot_alloc(Filesystem* fs, void* fs_handle, uint64_t size) {
 // Failures return a negated Errno code (see kernel/core/errno.h); libc turns
 // them into -1 + errno.
 int open_fd(const char* path, int flags) {
-    static char fixed[256];
+    char fixed[256];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    // A creation is CWD-relative: it must not search /bin (see
+    // resolve_path_fallback).
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective,
+                          (flags & O_CREATE) != 0);
 
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(effective, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel));
     if (fs == nullptr || fs->open == nullptr) return -Errno::ENOENT;
 
     uint64_t size = 0;
@@ -352,6 +377,10 @@ long write_fd(int fd, const void* buf, uint64_t count) {
     if (h->fs->write == nullptr) return -Errno::EROFS;
     uint64_t n = h->fs->write(h->fs->priv, h->fs_handle, buf, count, h->offset);
     h->offset += n;
+    // The handle's size was captured at open; a write that extends the file
+    // has to update it, or a later read (or lseek END) on the same fd would
+    // still believe the old length.
+    if (h->offset > h->size) h->size = h->offset;
     return (long)n;
 }
 
@@ -386,19 +415,19 @@ long lseek_fd(int fd, long offset, int whence) {
 }
 
 // Path rule (see vfs.h): lookups (open/stat) accept a bare name and search
-// the CWD then /bin; creation and removal are always CWD-relative, so a
-// typo never lands in the read-only system tree.
+// the CWD then /bin; creation and removal (open with O_CREATE, mkdir, unlink)
+// are always CWD-relative, so a typo never lands in a program directory.
 int mkdir(const char* path) {
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(path, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(path, rel, sizeof(rel));
     if (fs == nullptr) return -Errno::ENOENT;
     if (fs->mkdir == nullptr) return -Errno::EROFS;
     return fs->mkdir(fs->priv, rel) == 0 ? 0 : -Errno::EIO;
 }
 
 int unlink(const char* path) {
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(path, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(path, rel, sizeof(rel));
     if (fs == nullptr) return -Errno::ENOENT;
     if (fs->unlink == nullptr) return -Errno::EROFS;
     return fs->unlink(fs->priv, rel) == 0 ? 0 : -Errno::ENOENT;
@@ -407,20 +436,14 @@ int unlink(const char* path) {
 // Rename resolves like mkdir/unlink: against the CWD (or an absolute path)
 // only, never through the program search path. Both sides must be on the same
 // filesystem — there is no cross-device move.
-//
-// resolve() hands back a pointer into one static buffer, so the relative paths
-// must be copied out before the second call overwrites it.
 int rename(const char* from, const char* to) {
-    static char from_rel[256], to_rel[256];
+    char from_rel[256], to_rel[256];
 
-    const char* r = nullptr;
-    Filesystem* from_fs = resolve(from, &r);
+    Filesystem* from_fs = resolve(from, from_rel, sizeof(from_rel));
     if (from_fs == nullptr) return -Errno::ENOENT;
-    for (int i = 0; i < 255; i++) { from_rel[i] = r[i]; if (r[i] == '\0') break; }
 
-    Filesystem* to_fs = resolve(to, &r);
+    Filesystem* to_fs = resolve(to, to_rel, sizeof(to_rel));
     if (to_fs == nullptr) return -Errno::ENOENT;
-    for (int i = 0; i < 255; i++) { to_rel[i] = r[i]; if (r[i] == '\0') break; }
 
     if (from_fs != to_fs) return -Errno::EINVAL;
     if (from_fs->rename == nullptr) return -Errno::EROFS;
@@ -438,12 +461,12 @@ int ftruncate_fd(int fd, uint64_t size) {
 
 int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
     // A lookup: same resolution as open (CWD, then /bin for a bare name).
-    static char fixed[256];
+    char fixed[256];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(effective, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel));
     if (fs == nullptr) return -Errno::ENOENT;
 
     if (fs->is_dir && fs->is_dir(fs->priv, rel)) {
@@ -463,12 +486,12 @@ int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
 
 // --- Whole-file read (spawn + kernel use) ---
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
-    static char fixed[256];
+    char fixed[256];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(effective, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel));
     if (fs == nullptr || fs->open == nullptr) return false;
 
     uint64_t size = 0;
@@ -484,12 +507,12 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
 
 // --- readdir passthrough (syscall 2 shim) ---
 uint64_t readdir(const char* path, char* buf, uint64_t max) {
-    static char fixed[256];
+    char fixed[256];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective);
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    const char* rel = nullptr;
-    Filesystem* fs = resolve(effective, &rel);
+    char rel[256];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel));
     if (fs == nullptr || fs->readdir == nullptr) return 0;
     return fs->readdir(fs->priv, rel, buf, max);
 }

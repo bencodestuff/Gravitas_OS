@@ -109,8 +109,9 @@ void close_fd_for(FileHandle** fds, int fd);          // arbitrary table (task e
 
 // Resolve a path to (filesystem, fs-relative path). Longest mount-prefix
 // wins. Relative paths resolve against the current task's CWD.
-// Returns nullptr if nothing covers the path.
-Filesystem* resolve(const char* path, const char** rel_path);
+// The relative path is written into 'rel_out' (the caller owns it, so two
+// resolutions can be live at once). Returns nullptr if nothing covers the path.
+Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max);
 
 // Is this path an existing directory? (relative paths resolve vs CWD)
 bool is_directory(const char* path);

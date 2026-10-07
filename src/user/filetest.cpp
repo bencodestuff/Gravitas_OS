@@ -4,7 +4,8 @@
 #include <grv/syscall.h>
 
 // filetest — exercises seek/stat/truncate/create/remove/rename on the writable
-// ramfs (/tmp). Prints PASS/FAIL for the test harness.
+// filesystem, the bare-name creation rule, and unlink-while-open. Prints
+// PASS/FAIL for the test harness.
 
 static int fails = 0;
 static void check(int ok, const char* what) {
@@ -91,6 +92,49 @@ int main(int argc, char** argv) {
     errno = 0;
     check(rename("/tmp/ftdir/nope", "/tmp/ftdir/x") == -1 && errno == ENOENT,
           "rename missing source -> ENOENT");
+
+    // --- a bare name is created in the CWD, never on the search path ---
+    // A lookup searches the CWD then /bin; a *creation* must not, or
+    // open("notes.txt", O_CREATE) would land in /bin/notes.txt.
+    const char* bare = "ft-bare.txt";
+    grv_unlink(bare);
+    fd = grv_open(bare, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "create by bare name");
+    grv_write_fd(fd, "cwd", 3);
+    grv_close(fd);
+    check(grv_stat("/ft-bare.txt", &st) == 0 && st.size == 3,
+          "a bare create lands in the CWD");
+    check(grv_stat("/bin/ft-bare.txt", &st) != 0,
+          "a bare create does not land in /bin");
+    check(grv_unlink(bare) == 0, "unlink the bare name");
+
+    // --- unlink while open: the handle keeps the node alive ---
+    // unlink drops the directory entry; a reader that already has the file must
+    // still see its own bytes, even after the freed memory would be reused.
+    const char* uaf   = "/tmp/ftdir/uaf.txt";
+    const char* reuse = "/tmp/ftdir/reuse.txt";
+    grv_unlink(uaf);
+    grv_unlink(reuse);
+
+    fd = grv_open(uaf, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "open for unlink-while-open");
+    grv_write_fd(fd, "keepme", 6);
+    check(grv_unlink(uaf) == 0, "unlink while open");
+    check(grv_stat(uaf, &st) != 0, "the unlinked name is gone");
+
+    // Churn the heap so a freed buffer would be handed to the next file.
+    int rfd = grv_open(reuse, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    grv_write_fd(rfd, "ZZZZZZZZZZZZZZZZZZZZZZZZ", 24);
+    grv_close(rfd);
+
+    check(grv_lseek(fd, 0, 0) == 0, "seek the unlinked handle");
+    check(grv_write_fd(fd, "KEEP", 4) == 4, "write the unlinked handle");
+    check(grv_lseek(fd, 0, 0) == 0, "seek back");
+    n = grv_read_fd(fd, buf, sizeof(buf));
+    check(n == 6 && memcmp(buf, "KEEPme", 6) == 0,
+          "the open handle still reads and writes its own bytes");
+    grv_close(fd);
+    check(grv_unlink(reuse) == 0, "unlink the reuse file");
 
     if (fails == 0) { printf("filetest: all checks pass\n"); return 0; }
     printf("filetest: %d check(s) failed\n", fails);

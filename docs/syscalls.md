@@ -57,9 +57,9 @@ directory, which children inherit when they are spawned. A **bare name** (no
 `/`) is a lookup convenience for existing files: `OPEN` and `STAT` try the
 CWD first and then each program directory on the search path — `/bin`, then
 `/bin/tests` for the test suite (`run ls` finds `ls.elf`).
-`MKDIR`, `UNLINK` and `RENAME` never search: they resolve against the CWD (or
-an absolute path) only, so a typo cannot quietly create or delete something
-under a program directory.
+`MKDIR`, `UNLINK`, `RENAME` and `OPEN` with `O_CREATE` never search: they
+resolve against the CWD (or an absolute path) only, so a typo cannot quietly
+create or delete something under a program directory.
 
 The root is an **overlay**: the tar image is the read-only lower layer and a
 ramfs is the writable upper layer over it, so the whole tree is writable. A

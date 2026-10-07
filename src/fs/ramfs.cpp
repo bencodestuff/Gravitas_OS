@@ -16,6 +16,7 @@ struct Node {
     uint8_t* data;
     uint64_t size;
     uint64_t capacity;
+    int refs;              // 1 for being in the tree, +1 per open handle
     Node* first_child;
     Node* next_sibling;
 };
@@ -32,9 +33,19 @@ static Node* new_node(const char* name, bool is_dir) {
     n->data = nullptr;
     n->size = 0;
     n->capacity = 0;
+    n->refs = 1;           // the tree holds one reference
     n->first_child = nullptr;
     n->next_sibling = nullptr;
     return n;
+}
+
+// Drop a reference; the node is freed when the tree and every open handle have
+// let go. This is what makes unlink-while-open safe: the directory entry goes
+// away, the bytes a reader is using do not.
+static void node_unref(Node* n) {
+    if (--n->refs > 0) return;
+    if (n->data) delete[] n->data;
+    delete n;
 }
 
 static Node* find_child(Node* dir, const char* name) {
@@ -54,7 +65,7 @@ static Node* walk(Node* base, const char* path, bool create_dirs) {
     Node* cur = base;
     const char* p = path;
 
-    static char component[32];
+    char component[32];
     while (*p) {
         while (*p == '/') p++;
         if (*p == '\0') break;
@@ -89,6 +100,7 @@ static void* ramfs_open(void* priv, const char* path, int flags, uint64_t* out_s
     if (n == nullptr) return nullptr;
     if (n->is_dir) return nullptr; // open(2) on a dir: not supported
     if (flags & VFS::O_TRUNC) n->size = 0;
+    n->refs++;                     // the handle keeps the node alive
     *out_size = n->size;
     return n;
 }
@@ -128,7 +140,8 @@ static uint64_t ramfs_write(void* priv, void* handle, const void* buf,
 }
 
 static void ramfs_close(void* priv, void* handle) {
-    (void)priv; (void)handle; // nodes live in the tree; nothing to free
+    (void)priv;
+    if (handle) node_unref((Node*)handle);
 }
 
 static uint64_t ramfs_readdir(void* priv, const char* path, char* buf, uint64_t max) {
@@ -215,7 +228,7 @@ static void detach(Node* dir, Node* node) {
 
 static int ramfs_unlink(void* priv, const char* path) {
     (void)priv;
-    static char parent[128], name[32];
+    char parent[128], name[32];
     Node* dir = split_parent(path, parent, name);
     if (dir == nullptr || !dir->is_dir) return -1;
 
@@ -224,8 +237,7 @@ static int ramfs_unlink(void* priv, const char* path) {
     if (c->is_dir && c->first_child) return -1;   // non-empty dir
 
     detach(dir, c);
-    if (c->data) delete[] c->data;
-    delete c;
+    node_unref(c); // the tree's reference; an open handle keeps the node alive
     return 0;
 }
 
@@ -234,7 +246,7 @@ static int ramfs_unlink(void* priv, const char* path) {
 // not detected: nodes carry no parent pointer.)
 static int ramfs_rename(void* priv, const char* from, const char* to) {
     (void)priv;
-    static char from_parent[128], to_parent[128], from_name[32], to_name[32];
+    char from_parent[128], to_parent[128], from_name[32], to_name[32];
     Node* fdir = split_parent(from, from_parent, from_name);
     Node* tdir = split_parent(to, to_parent, to_name);
     if (fdir == nullptr || !fdir->is_dir) return -1;
@@ -248,8 +260,7 @@ static int ramfs_rename(void* priv, const char* from, const char* to) {
     if (dst != nullptr && dst != src) {
         if (dst->is_dir && dst->first_child) return -1;   // non-empty dir
         detach(tdir, dst);
-        if (dst->data) delete[] dst->data;
-        delete dst;
+        node_unref(dst); // as in unlink: an open handle keeps it alive
     }
 
     detach(fdir, src);
