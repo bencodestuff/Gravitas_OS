@@ -345,5 +345,19 @@ def ide_explorer(g):
     g.wait_for(r"wm: title #[0-9]+ 'Gravitas IDE — hello\.lua'")
 
 
+@test
+def ide_close_tab(g):
+    # Each tab has a close box at its right edge. The tabs are "ide.lua" then
+    # "hello.lua", so the second tab's box is what this clicks.
+    w = g.await_window("Gravitas IDE")
+    g.click_title(w)
+
+    n = g.count(r"ide: close ")
+    g.click(w["x"] + 262 + 2 + 80 + 2 + 96 - 6, w["y"] + 10)  # tab 1's close box
+    g.wait_count(r"ide: close ", n + 1)
+    g.wait_for(r"ide: close /lua/hello\.lua")
+    g.wait_for(r"wm: title #[0-9]+ 'Gravitas IDE — ide\.lua'")
+
+
 if __name__ == "__main__":
     run_module(__file__)

@@ -32,6 +32,7 @@
 #define DEF_TERM_H 200   /* the terminal pane's height */
 #define SEP        2     /* the gap between panes */
 #define RING       2     /* the focused pane's accent strip */
+#define TAB_CLOSE  12    /* the close box at a tab's right edge */
 #define MAX_TABS   8
 #define CELL_W     8     /* the terminal grid's cell, matching the console font */
 #define CELL_H     16
@@ -51,6 +52,7 @@ static const unsigned int TAB_ON  = 0xFF313244; // surface0: the active tab
 static const unsigned int TAB_OFF = 0xFF181825; // mantle: the others
 static const unsigned int TAB_FG  = 0xFFCDD6F4;
 static const unsigned int TAB_DIM = 0xFF7F849C;
+static const unsigned int TAB_X   = 0xFFF38BA8; // red: the close box
 
 static struct gravity_app app;
 static struct gravity_editor tabs[MAX_TABS];
@@ -144,6 +146,27 @@ static void tab_label(int i, char* out, int max) {
     out[n] = '\0';
 }
 
+/* The tabs that fit in the bar, laid out once so drawing and hit-testing cannot
+   drift apart (the WM's taskbar does the same). */
+struct TabBox { int x, w; };
+static TabBox tbox[MAX_TABS];
+static int ntbox = 0;
+
+static void tabbar_layout(void) {
+    ntbox = 0;
+    int x = rx + 2;
+    for (int i = 0; i < ntab && ntbox < MAX_TABS; i++) {
+        char label[40];
+        tab_label(i, label, sizeof(label));
+        int w = gravity_text_width_of(label) + 12 + TAB_CLOSE;
+        if (x + w > rx + rw) break;
+        tbox[ntbox].x = x;
+        tbox[ntbox].w = w;
+        ntbox++;
+        x += w + 2;
+    }
+}
+
 /* Open 'path' in a tab (or activate the tab that already has it). */
 static int open_in_tab(const char* path) {
     for (int i = 0; i < ntab; i++) {
@@ -169,8 +192,7 @@ static void close_tab(int i) {
     if (i < 0 || i >= ntab) return;
     if (gravity_editor_dirty(&tabs[i]) && !close_asked[i]) {
         close_asked[i] = 1;
-        gravity_editor_set_msg(&tabs[i],
-            "unsaved changes: Ctrl+W again to discard, Ctrl+S to save");
+        set_note("unsaved changes: Ctrl+W again to discard, Ctrl+S to save");
         return;
     }
     printf("ide: close %s\n", gravity_editor_path(&tabs[i]));
@@ -179,6 +201,7 @@ static void close_tab(int i) {
     ntab--;
     if (active >= ntab) active = ntab > 0 ? ntab - 1 : 0;
     if (ntab == 0) open_in_tab("/tmp/untitled.txt"); // never leave it empty
+    set_note("");
 }
 
 static void update_title(void) {
@@ -290,18 +313,18 @@ static int on_close(struct gravity_app* a) {
 static void draw_chrome(struct gravity_canvas* c) {
     gravity_clear(c, BG);
 
-    // The tab bar: one cell per open file, the active one lit.
+    // The tab bar: one cell per open file, the active one lit, each with a
+    // close box at its right edge.
     gravity_fill(c, rx, 0, rw, tab_h, CHROME);
-    int x = rx + 2;
-    for (int i = 0; i < ntab; i++) {
+    tabbar_layout();
+    for (int i = 0; i < ntbox; i++) {
         char label[40];
         tab_label(i, label, sizeof(label));
-        int w = gravity_text_width_of(label) + 12;
-        if (x + w > rx + rw) break;
+        int x = tbox[i].x, w = tbox[i].w;
         int on = (i == active);
         gravity_fill(c, x, 2, w, tab_h - 2, on ? TAB_ON : TAB_OFF);
         gravity_text(c, x + 6, (tab_h - g_ch) / 2, label, on ? TAB_FG : TAB_DIM);
-        x += w + 2;
+        gravity_text(c, x + w - TAB_CLOSE + 2, (tab_h - g_ch) / 2, "x", TAB_X);
     }
 
     // Separators between the panes.
@@ -526,21 +549,19 @@ static void on_mouse(struct gravity_app* a, const struct gravity_event* ev) {
                 dirty_ex = 1;
             }
         } else if (p == P_EDITOR && ntab > 0) {
-            if (my >= ed_y) gravity_editor_mouse(&tabs[active], mx, my, 1);
-            else {
-                // A click on the tab bar selects a tab.
-                int x = rx + 2;
-                for (int i = 0; i < ntab; i++) {
-                    char label[40];
-                    tab_label(i, label, sizeof(label));
-                    int w = gravity_text_width_of(label) + 12;
-                    if (mx >= x && mx < x + w) {
-                        active = i;
-                        dirty_chrome = dirty_ed = 1;
-                        update_title();
-                        break;
-                    }
-                    x += w + 2;
+            if (my >= ed_y) {
+                gravity_editor_mouse(&tabs[active], mx, my, 1);
+            } else {
+                // The tab bar: the close box closes a tab, the rest of the tab
+                // activates it.
+                tabbar_layout();
+                for (int i = 0; i < ntbox; i++) {
+                    if (mx < tbox[i].x || mx >= tbox[i].x + tbox[i].w) continue;
+                    if (mx >= tbox[i].x + tbox[i].w - TAB_CLOSE) close_tab(i);
+                    else active = i;
+                    dirty_chrome = dirty_ed = 1;
+                    update_title();
+                    break;
                 }
             }
         }
