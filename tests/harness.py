@@ -60,7 +60,11 @@ APP_LIST = load_apps()
 
 
 class Guest:
-    PACE = 0.04     # per-scancode pacing: we only type while the guest is idle
+    # Per-scancode pacing. QEMU injects a key the moment sendkey is called (no
+    # floor of its own — measured), so this is the only limit; the guest's PS/2
+    # controller drops keys if they arrive faster than its IRQ handler drains
+    # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
+    PACE = 0.015
 
     def __init__(self, name):
         self.name = name
@@ -114,6 +118,11 @@ class Guest:
         accel = ["-enable-kvm"] if os.path.exists("/dev/kvm") else []
         self.qemu = subprocess.Popen([
             "qemu-system-x86_64", "-cdrom", iso, "-m", "512M",
+            # q35 boots in ~3.4s against the default i440fx's ~7.3s: the older
+            # machine's IDE path makes Limine's read of the (tens of MB) tar
+            # module the slowest thing in the whole suite. Both machines are
+            # exercised by hand, and the kernel is happy on either.
+            "-machine", "q35",
             "-display", "none", "-no-reboot", *accel,
             "-serial", "file:" + self.log_path,
             "-monitor", "unix:%s,server,nowait" % self.sock_path,

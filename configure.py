@@ -249,14 +249,12 @@ def main():
         # Note the spaces inside the quotes for 'command', 'description', and 'pool'
         ninja.write(f"rule run\n")
         # KVM when available (10-50x TCG), else TCG fallback.
-        # VNC instead of a local SDL/GTK window: QEMU's local display
-        # scaling + pointer grab corrupts the presented framebuffer (the
-        # guest's own framebuffer is correct — verified by screendump). VNC
-        # carries dirty rectangles straight to the viewer.
-        #   connect a viewer to localhost:5900 (e.g. `vncviewer localhost:0`)
-        # Serial stays in this terminal.
+        # The display is QEMU's own SDL window; VNC was tried and deliberately
+        # reverted. The serial stays in this terminal. q35, as the test harness
+        # uses: it boots in about half the time, because Limine's read of the
+        # (tens of MB) tar module takes a faster path on the newer machine.
         accel = "-enable-kvm" if os.path.exists("/dev/kvm") else ""
-        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl {accel}\n")
+        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl -machine q35 {accel}\n")
         ninja.write(f"  description = RUN gravitas.iso\n")
         ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
