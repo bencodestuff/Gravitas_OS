@@ -159,21 +159,43 @@ static VFS::Filesystem inst = {
 };
 
 // --- reading ---
-// The transfer unit is the sector, so this is the one place partial-sector
-// reads are assembled; everything above it names bytes and blocks.
+// The transfer unit is the sector, so this is the one place partial-sector reads
+// are assembled. Whole sectors go straight into the destination in a single
+// request, which matters now that a real disk sits below this: a 1 KB block is
+// one command, not two.
 static bool read_bytes(Fs* f, uint64_t off, void* dst, uint32_t n) {
     uint8_t* d = (uint8_t*)dst;
-    uint8_t sec[Block::SECTOR];
-    while (n > 0) {
-        uint64_t lba = off / Block::SECTOR;
+
+    // Up to the next sector boundary.
+    while (n > 0 && (off % Block::SECTOR) != 0) {
+        uint8_t sec[Block::SECTOR];
+        if (f->dev->read(f->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+            return false;
         uint32_t boff = (uint32_t)(off % Block::SECTOR);
         uint32_t chunk = Block::SECTOR - boff;
         if (chunk > n) chunk = n;
-        if (f->dev->read(f->dev->priv, lba, 1, sec) != 1) return false;
         for (uint32_t i = 0; i < chunk; i++) d[i] = sec[boff + i];
         d += chunk;
         off += chunk;
         n -= chunk;
+    }
+
+    // Whole sectors, straight into the caller's buffer.
+    uint32_t whole = n / Block::SECTOR;
+    if (whole > 0) {
+        if (f->dev->read(f->dev->priv, off / Block::SECTOR, whole, d) != whole)
+            return false;
+        d += (uint64_t)whole * Block::SECTOR;
+        off += (uint64_t)whole * Block::SECTOR;
+        n -= whole * Block::SECTOR;
+    }
+
+    // The remainder.
+    if (n > 0) {
+        uint8_t sec[Block::SECTOR];
+        if (f->dev->read(f->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+            return false;
+        for (uint32_t i = 0; i < n; i++) d[i] = sec[i];
     }
     return true;
 }

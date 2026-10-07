@@ -17,9 +17,13 @@ def boot_identity(g):
         g.fail("font fallback triggered (expected PSF2 8x16)")
     g.wait_for(r"\[font\] loaded .*8x16")
 
-    # The RAM disk comes up and passes its own read/write/bounds self-test.
-    g.wait_for(r"\[Block\] sectors: [0-9]+")
+    # The Block layer's self-test runs on a scratch RAM disk of its own; the
+    # data disk below is a real ATA drive the harness attaches.
     g.wait_for(r"\[Block\] self-test ok")
+    g.wait_for(r"\[ATA\] ata0: [0-9]+ sectors, LBA(28|48)")
+    # A second drive on the controller is scratch, and its self-test is the only
+    # place the ATA write path runs.
+    g.wait_for(r"\[Block\] scratch drive self-test ok")
 
     # The read-only ext2 image: a real on-disk filesystem, mounted from a RAM
     # disk seeded with the Limine module.

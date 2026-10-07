@@ -94,14 +94,27 @@ can be written and tested before any driver exists. It passes its own
 read/write/bounds self-test at boot.
 
 There is one disk image, and it is read-only end to end. `disk.img` is made on
-the host with `mke2fs` (`tools/mkext2.py`), handed over as a Limine module
-(alongside `files.tar` — see `src/kernel/dev/modules.h`), copied by a RAM disk,
-and mounted as **ext2** at `/disk` (`src/kernel/dev/ext2.cpp`). The guest cannot
-touch the file, and the mount has no writer, so a `write` there fails at the VFS
-with `EROFS` — which is what a read-only filesystem should do. The reader covers
-the superblock, group descriptors, inode tables, directory records and the
-direct/indirect block pointers; it does not model symlinks, extents, extended
-attributes or 64-bit filesystems, and refuses a filesystem that would need them.
+the host with `mke2fs` (`tools/mkext2.py`) and reaches the guest two ways: as a
+Limine module (alongside `files.tar` — see `src/kernel/dev/modules.h`) copied
+into a RAM disk, or as a real drive the kernel drives over **ATA PIO**
+(`src/kernel/dev/ata.cpp`) when the machine has one. The kernel prefers the real
+drive and falls back to the module, so the guest boots either way, and the mount
+above cannot tell which it got. It is then mounted as **ext2** at `/disk`
+(`src/kernel/dev/ext2.cpp`).
+
+The mount has no writer, so a `write` there fails at the VFS with `EROFS` — which
+is what a read-only filesystem should do. The reader covers the superblock, group
+descriptors, inode tables, directory records and the direct/indirect block
+pointers; it does not model symlinks, extents, extended attributes or 64-bit
+filesystems, and refuses a filesystem that would need them.
+
+The ATA driver is polled PIO on the primary channel's legacy task file: no
+interrupts, and a spin cap on every status poll so a device that never answers
+cannot hang the kernel. It does not use the secondary channel, and it does not
+fall back to CHS — a drive that cannot do LBA is reported unusable rather than
+driven wrongly. One thing worth knowing: a controller that is AHCI only (QEMU's
+q35, for instance) has no legacy task file at all, so the test harness adds a
+`piix4-ide` device for the driver to talk to.
 
 ## Message types
 

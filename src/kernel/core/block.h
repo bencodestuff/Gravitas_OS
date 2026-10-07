@@ -9,8 +9,9 @@
 // contract, no cache (the cache worth having is a page cache, and that belongs
 // with the filesystem that knows what its pages mean).
 //
-// Devices are registered at boot. The first is the "primary" disk — what a
-// filesystem mounts when nothing says otherwise.
+// Devices are registered at boot. There is no "primary" here on purpose: which
+// disk holds the data is a boot policy decision, so the caller keeps the device
+// it created rather than asking the layer to guess.
 
 namespace Block {
 
@@ -33,10 +34,6 @@ constexpr int MAX_DEVICES = 4;
 
 // Register a device. False if the table is full or the device is malformed.
 bool add(Device* dev);
-
-int count();
-Device* get(int i);
-Device* primary();                  // the first registered, or nullptr
 
 // Exercise a device: write a pattern, read it back, check the bounds, and put
 // back exactly what was there (it may hold a filesystem image). Returns whether

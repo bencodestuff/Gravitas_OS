@@ -66,8 +66,9 @@ class Guest:
     # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
     PACE = 0.03
 
-    def __init__(self, name):
+    def __init__(self, name, disk=True):
         self.name = name
+        self.disk = disk
         self.art = os.path.join(ROOT, "test_artifacts", name)
         os.makedirs(self.art, exist_ok=True)
         self.log_path = os.path.join(self.art, "serial.log")
@@ -113,9 +114,40 @@ class Guest:
         iso = os.path.join(ROOT, "gravitas.iso")
         if not os.path.exists(iso):
             fail("gravitas.iso missing - run 'ninja iso' first")
+        # The data disk. It also ships inside the ISO as a Limine module, so the
+        # guest boots without it; attaching it as a drive is what exercises the
+        # ATA driver instead of the RAM disk fallback.
+        disk = os.path.join(ROOT, "iso_root", "disk.img")
+        if self.disk and not os.path.exists(disk):
+            fail("iso_root/disk.img missing - run 'ninja iso' first")
         if shutil.which("qemu-system-x86_64") is None:
             fail("qemu-system-x86_64 not installed")
         accel = ["-enable-kvm"] if os.path.exists("/dev/kvm") else []
+        # A group may ask for no drive (see BOOT in tests/kernel/fallback.py):
+        # the disk is then only the Limine module, which is the path a machine
+        # without an ATA disk takes.
+        ide = [
+            # q35's built-in SATA is AHCI and has no legacy task file, so the
+            # guest gets a classic IDE controller to put the disk on. That is
+            # what src/kernel/dev/ata.cpp drives. snapshot=on because a driver
+            # bug must not be able to corrupt the image the build produced.
+            "-device", "piix4-ide,id=ideb",
+        ] + ([
+            "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
+            "-device", "ide-hd,drive=disk0,bus=ideb.0",
+        ] if self.disk else [])
+        if self.disk:
+            # A second drive as the slave, all zeros and thrown away with the
+            # temp dir. The kernel treats it as scratch and runs the Block
+            # self-test on it, which is the only place the ATA *write* path is
+            # exercised. The data disk is never written to.
+            scratch = os.path.join(self.tmp, "scratch.img")
+            with open(scratch, "wb") as f:
+                f.truncate(128 * 512)
+            ide += [
+                "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch,
+                "-device", "ide-hd,drive=scratch0,bus=ideb.0",
+            ]
         self.qemu = subprocess.Popen([
             "qemu-system-x86_64", "-cdrom", iso, "-m", "512M",
             # q35 boots in ~3.4s against the default i440fx's ~7.3s: the older
@@ -123,6 +155,7 @@ class Guest:
             # module the slowest thing in the whole suite. Both machines are
             # exercised by hand, and the kernel is happy on either.
             "-machine", "q35",
+            *ide,
             "-display", "none", "-no-reboot", *accel,
             "-serial", "file:" + self.log_path,
             "-monitor", "unix:%s,server,nowait" % self.sock_path,
@@ -568,8 +601,11 @@ def test(fn):
 def run_module(path):
     name = os.path.splitext(os.path.basename(path))[0]
     print("== group: %s ==" % name, flush=True)
+    # A group may ask for a different boot with a module-level BOOT dict. Only
+    # one group does: tests/kernel/fallback.py wants no drive attached.
+    boot = getattr(sys.modules["__main__"], "BOOT", {})
     try:
-        g = Guest(name)
+        g = Guest(name, **boot)
     except TestFailure as e:
         # A boot failure is the hardest to diagnose, so say what the machine had
         # got as far as: the last lines it managed to print.

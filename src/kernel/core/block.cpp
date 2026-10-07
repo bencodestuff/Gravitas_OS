@@ -16,14 +16,6 @@ bool add(Device* dev) {
     return true;
 }
 
-int count() { return ndevices; }
-
-Device* get(int i) {
-    return (i >= 0 && i < ndevices) ? devices[i] : nullptr;
-}
-
-Device* primary() { return ndevices > 0 ? devices[0] : nullptr; }
-
 bool self_test(Device* dev) {
     if (dev == nullptr || dev->sectors < 8) return false;
 

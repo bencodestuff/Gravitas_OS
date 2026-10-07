@@ -28,6 +28,7 @@
 #include "kernel/core/block.h"
 #include "kernel/dev/memblock.h"
 #include "kernel/dev/modules.h"
+#include "kernel/dev/ata.h"
 #include "kernel/dev/ext2.h"
 #include "fs/ramfs.h"
 #include "fs/overlay.h"
@@ -204,15 +205,14 @@ extern "C" void kmain(void) {
     kprint_uint(PIC::get_mask(12));
     kprint(" (want 0)\n");
 
-    // A disk in RAM: the substrate the storage work builds on (see
-    // kernel/dev/memblock.h). No image yet, so it comes up empty.
-    Block::Device* ramdisk = MemBlock::create("ram0", 8192, nullptr, 0);
-    if (ramdisk == nullptr) {
-        kprint("[Block] no RAM disk\n");
+    // The Block layer's boot self-test needs a device that is nobody's data, so
+    // it runs on a small RAM disk of its own. 64 sectors: the test needs eight,
+    // and the real data disk comes from the machine or the bootloader.
+    Block::Device* scratch = MemBlock::create("ram0", 64, nullptr, 0);
+    if (scratch == nullptr) {
+        kprint("[Block] no scratch device\n");
     } else {
-        kprint3("[Block] ", ramdisk->name, " ready\n");
-        kprint_lus("[Block] sectors: ", ramdisk->sectors, "\n");
-        kprint(Block::self_test(ramdisk) ? "[Block] self-test ok\n"
+        kprint(Block::self_test(scratch) ? "[Block] self-test ok\n"
                                         : "[Block] self-test FAILED\n");
     }
 
@@ -228,18 +228,37 @@ extern "C" void kmain(void) {
     VFS::mount("/", Overlay::instance());
     kprint("[VFS] Mounted / (overlay: ramfs over tarfs).\n");
 
-    // 3. The read-only disk: a Limine module (disk.img) handed to a RAM disk,
-    //    which copies it — so the guest can never touch the file on the ISO,
-    //    and a reboot starts from the image again. ext2 on top of it.
-    Modules::Module img;
-    if (!Modules::find(".img", &img) || img.size == 0) {
-        kprint("[Ext2] no disk image module\n");
+    // 3. The data disk: a real ATA drive when the machine has one, otherwise
+    //    the disk.img module copied into a RAM disk. Either way ext2 goes on
+    //    top of it, read-only, and the rest of the system cannot tell which.
+    Block::Device* disk = Ata::init();   // logs [ATA] ... when it finds one
+    if (disk == nullptr) {
+        Modules::Module img;
+        if (Modules::find(".img", &img) && img.size > 0) {
+            uint64_t sectors = (img.size + Block::SECTOR - 1) / Block::SECTOR;
+            disk = MemBlock::create("disk0", sectors, img.data, img.size);
+            if (disk != nullptr)
+                kprint("[Disk] no ATA drive; disk.img copied into RAM\n");
+        }
+    }
+
+    // A drive the controller has besides the data disk is not used as data by
+    // this kernel, so it is scratch: the test machine attaches one (see
+    // tests/harness.py) and the write path gets exercised without anything
+    // being written to the disk the filesystem lives on.
+    for (int i = 1; i < Ata::count(); i++) {
+        Block::Device* scratch = Ata::device(i);
+        kprint(Block::self_test(scratch)
+                   ? "[Block] scratch drive self-test ok\n"
+                   : "[Block] scratch drive self-test FAILED\n");
+    }
+
+    if (disk == nullptr) {
+        kprint("[Disk] no disk image\n");
     } else {
-        uint64_t sectors = (img.size + Block::SECTOR - 1) / Block::SECTOR;
-        Block::Device* disk = MemBlock::create("disk0", sectors, img.data, img.size);
-        VFS::Filesystem* ext2 = (disk != nullptr) ? Ext2::mount(disk) : nullptr;
+        VFS::Filesystem* ext2 = Ext2::mount(disk);
         if (ext2 == nullptr) {
-            kprint("[Ext2] the disk image is not ext2\n");
+            kprint("[Ext2] the disk is not ext2\n");
         } else if (!VFS::mount("/disk", ext2)) {
             kprint("[Ext2] no room in the mount table\n");
         }
