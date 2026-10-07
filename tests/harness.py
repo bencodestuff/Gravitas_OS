@@ -202,6 +202,19 @@ class Guest:
         except OSError:
             return ""
 
+    def raw_log(self):
+        """The serial log exactly as written, carriage returns and all.
+
+        Text-mode reading translates a lone '\\r' into '\\n' (universal
+        newlines), which is precisely the difference a redraw test has to see:
+        "back to the start of the line" and "a new line" are the same thing
+        otherwise."""
+        try:
+            with open(self.log_path, newline="", errors="ignore") as f:
+                return f.read()
+        except OSError:
+            return ""
+
     def count(self, pat):
         # re.M so ^/$ anchor to log lines, not the whole log.
         return len(re.findall(pat, self.log(), re.M))

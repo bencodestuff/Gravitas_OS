@@ -168,6 +168,46 @@ def terminal(g):
 
 
 @test
+def terminal_line_edit(g):
+    # Typing must stay on one line. The shell redraws by returning to the start
+    # of the prompt, and a redraw that started a new line would scroll the
+    # terminal on every keystroke — the banner would climb out of the window.
+    term = g.await_window("term")
+    g.click_title(term)
+
+    before = os.path.join(g.art, "termline_before.ppm")
+    after = os.path.join(g.art, "termline_after.ppm")
+
+    # Wait for the terminal to stop changing first: the previous command's
+    # prompt may still be arriving, and that would show up as "the top moved".
+    prev = None
+    end = time.time() + 6
+    while time.time() < end:
+        g.screendump(before)
+        now = open(before, "rb").read()
+        if now == prev:
+            break
+        prev = now
+        time.sleep(0.2)
+
+    g.type("a fairly long line typed into the terminal")
+
+    # Wait until it has rendered *somewhere* (the bottom), so that an unchanged
+    # top means "did not scroll" rather than "did not draw".
+    bottom = (term["x"] + 2, term["y"] + term["h"] * 2 // 3,
+              term["x"] + term["w"] - 2, term["y"] + term["h"] - 2)
+    if g.await_change(before, after, bottom, 20) < 20:
+        g.fail("typing did not reach the terminal")
+
+    top = diff_region(before, after, term["x"] + 2, term["y"] + 2,
+                      term["x"] + term["w"] - 2, term["y"] + term["h"] // 3)
+    if top >= 200:
+        g.fail("typing scrolled the terminal (%d pixels changed above the line)" % top)
+
+    g.ctrl("u")   # leave the line empty for the tests after this one
+
+
+@test
 def terminal_interrupt(g):
     # The previous test focused the launched terminal, so typing goes to its
     # hosted shell. Ctrl+C must reach that shell's foreground job through the

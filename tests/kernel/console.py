@@ -120,6 +120,19 @@ def shell_line_edit(g):
     g.type("t hello.txt")
     g.key("home")
     g.type("ca")                      # -> "cat hello.txt"
+
+    # A redraw returns to the start of the line — it must not start a new one.
+    # (The prompt is printed once with its newline; the text a redraw reprints
+    # must not carry it, or every keystroke would scroll. Read raw: a translated
+    # '\r' would look like a newline, which is the whole difference.)
+    end = time.time() + 10
+    while time.time() < end:
+        if re.search(r"\r/ root@gravitas# cat hello\.txt", g.raw_log()):
+            break
+        time.sleep(0.05)
+    else:
+        g.fail("redrawing the line started a new one (\\r was followed by \\n)")
+
     g.key("ret")
     g.wait_for("Hello from the Gravitas tar")
 

@@ -304,9 +304,12 @@ int main(int argc, char** argv) {
         // Prompt shows the CWD
         static char cwd[64];
         grv_getcwd(cwd, sizeof(cwd));
+        // The prompt is printed once, on a line of its own; the *text* is what
+        // a redraw reprints, so it must not carry that leading newline (or
+        // every redraw would start a new line).
         static char prompt[96];
-        snprintf(prompt, sizeof(prompt), "\n%s root@gravitas# ", cwd);
-        printf("%s", prompt);
+        snprintf(prompt, sizeof(prompt), "%s root@gravitas# ", cwd);
+        printf("\n%s", prompt);
 
         // The reader: a line editor. Backspace is swallowed once everything
         // typed is gone, so the cursor can never ride back across the prompt.
