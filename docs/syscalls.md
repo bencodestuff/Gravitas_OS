@@ -270,6 +270,15 @@ the tar at boot. It covers the kernel **and** every program — a fault is usual
 in a program's own code, and the table cannot be linked into the kernel it
 describes, because adding it would move the addresses it names.
 
+## Leaving
+
+`POWEROFF` and `REBOOT` are one-way: by the time the machine answered, it is
+already going down, so anything that needs flushing belongs *before* the call
+(`poweroff.elf` is the userland command; `poweroff -r` resets). On QEMU the
+shutdown is a write to ACPI's PM1a control register and the reset is the 8042's
+pulse-reset line; on real hardware the port and sleep type come from the FADT,
+which is a Phase 6 concern along with the flushing.
+
 ## Memory mappings
 
 Surfaces are one kind of shared memory; these are the other two. Both map frames
