@@ -148,15 +148,10 @@ void gravity_term_putc(struct gravity_term* t, int c) {
     if (c == '\n') { term_newline(t); return; }
     if (c == '\r') { t->cx = 0; t->dirty[t->cur] = 1; return; }
     if (c == '\b') {
-        // Destructive backspace, matching the kernel console: the shell
-        // erases with a bare '\b' and expects the cell to blank.
-        if (t->cx > 0) {
-            t->cx--;
-            unsigned long idx =
-                (unsigned long)t->cur * (unsigned long)t->cols + t->cx;
-            t->chars[idx] = ' ';
-            t->fg[idx] = t->def_fg;
-        }
+        // Move left; erasing is the writer's business (print '\b' + ' ' + '\b'),
+        // so a line editor can move its cursor without destroying the line.
+        // Matches the kernel console.
+        if (t->cx > 0) t->cx--;
         t->dirty[t->cur] = 1;
         return;
     }

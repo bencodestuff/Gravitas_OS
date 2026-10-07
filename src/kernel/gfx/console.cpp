@@ -120,10 +120,11 @@ void print(const char* s) {
         char c = s[i];
 
         if (c == '\b') {
-            if (cur_x > 0) {
-                cur_x--;
-                put_cell(cur_x, cur_y, ' ');
-            }
+            // Move left, leaving the cell alone. A reader that wants to erase
+            // prints '\b' + ' ' + '\b' itself; a reader that wants to *move*
+            // (a line editor) needs a cursor that does not destroy what it
+            // passes over. This is what a terminal's backspace does.
+            if (cur_x > 0) cur_x--;
             continue;
         }
 

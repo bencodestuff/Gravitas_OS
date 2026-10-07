@@ -112,5 +112,17 @@ def shell_history(g):
     g.wait_count(r"User task 'ls\.elf' created", n + 3)
 
 
+@test
+def shell_line_edit(g):
+    # The console's '\b' moves without erasing (as a terminal's does), so the
+    # shell's reader can keep a cursor anywhere in the line: Home puts it at the
+    # start, and what is typed next goes in *there*.
+    g.type("t hello.txt")
+    g.key("home")
+    g.type("ca")                      # -> "cat hello.txt"
+    g.key("ret")
+    g.wait_for("Hello from the Gravitas tar")
+
+
 if __name__ == "__main__":
     run_module(__file__)

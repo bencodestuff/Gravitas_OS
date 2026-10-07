@@ -33,10 +33,15 @@ int __stdio_getc(void) {
     // Read one console byte and echo it. The kernel console does not echo —
     // each reader does — and a program reading a terminal (Lua's REPL, a
     // line-oriented read(0)) expects to see what it typed. Printable
-    // characters and newline echo as themselves; the console's '\b' moves and
-    // blanks the cell, so it erases; other control bytes are silent.
+    // characters and newline echo as themselves; a backspace erases (the
+    // console's '\b' only *moves*, so the erase is the three-byte idiom);
+    // other control bytes are silent.
     int c = (unsigned char)grv_getc();
     if (c == '\n' || (c >= 32 && c < 127)) grv_putc((char)c);
-    else if (c == '\b') grv_putc('\b');
+    else if (c == '\b') {
+        grv_putc('\b');
+        grv_putc(' ');
+        grv_putc('\b');
+    }
     return c;
 }

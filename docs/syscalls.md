@@ -391,6 +391,13 @@ events are produced by the WM (it alone has the pointer): it hit-tests the
 window under the cursor and sends `GRV_EV_MOUSE` with coordinates relative
 to that window's surface.
 
+**A console is a byte stream, and it behaves like a terminal's.** `'\n'` moves
+to the next line, `'\r'` returns to the start of the line, and `'\b'` *moves*
+left without erasing — so a reader that keeps a cursor anywhere in a line (the
+shell) can move it without destroying what it passes. Erasing is the usual
+three-byte idiom, `'\b' ' ' '\b'`. There is no erase-to-end-of-line, so a
+redraw pads over a longer previous line.
+
 ## Console endpoint (per-task stdio)
 
 How a userland terminal hosts a real program without the kernel knowing
@@ -409,8 +416,7 @@ injects the bound task's input with `CONSOLE_WRITE`.
 - **`CONSOLE_WRITE` (38)**, owner-only, injects bytes into `task_id`'s
   `GETC` ring (as if typed). Returns the bytes accepted (a full ring takes
   fewer) or −1 if the caller is not the owner.
-- **`CONSOLE_DETACH` (36)** unbinds (owner only). The binding also clears
-  itself if the owner dies; a ring that fills simply drops (a full tty).
+- **`CONSOLE_DETACH` (36)** unbinds (owner only). The binding also clears  itself if the owner dies; a ring that fills simply drops (a full tty).
 
 With no owner (the default, `-1`) `PUTC`/`GETC` keep using the kernel
 console exactly as before, so nothing changes for tasks that never opt in.

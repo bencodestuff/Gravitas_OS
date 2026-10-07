@@ -237,12 +237,13 @@ static void execute(char* line) {
 
 // --- the line reader ---
 // A byte-stream line editor: the console gives bytes, so the arrows arrive as
-// the readline codes (^P/^N for up/down, ^B/^F for left/right) and the editing
-// chords arrive as themselves. What it does with them is up to it.
+// the readline codes (^P/^N for up/down, ^B/^F for left/right, ^A/^E for
+// home/end) and the editing chords arrive as themselves.
 //
-// The cursor lives at the end of the line: this console's '\b' blanks the cell
-// it leaves, so a cursor that could sit mid-line needs a non-destructive move
-// the console does not have yet. History and the line kills work regardless.
+// The console's '\b' moves without erasing (as a terminal's does), so the
+// cursor can sit anywhere in the line: moving is one '\b', and erasing is the
+// three-byte idiom. Redrawing goes back to the start of the prompt and pads
+// over a longer previous line, because there is no erase-to-end-of-line.
 
 #define HIST_MAX 16
 
@@ -267,20 +268,25 @@ static const char* hist_back(int n) {
     return hist[(hist_next + HIST_MAX - n) % HIST_MAX];
 }
 
-// Put 's' on the line, redrawing in place: back to the start of the prompt,
-// print the prompt and the text, then blank whatever a longer previous line
-// left behind (the console has no erase-to-end-of-line).
-static int line_set(char* line, int* len, const char* prompt, const char* s,
-                    int drawn) {
+// Repaint the line with the cursor at 'cur'.
+static void line_draw(const char* prompt, const char* line, int len, int cur,
+                      int* drawn) {
+    putchar('\r');
+    for (const char* p = prompt; *p; p++) putchar(*p);
+    for (int i = 0; i < len; i++) putchar(line[i]);
+    for (int i = len; i < *drawn; i++) putchar(' '); // a longer line's tail
+    *drawn = len;
+    for (int i = len; i > cur; i--) putchar('\b');   // moves, does not erase
+}
+
+// Put 's' on the line, cursor at the end.
+static void line_set(char* line, int* len, int* cur, const char* prompt,
+                     const char* s, int* drawn) {
     int n = 0;
     while (s[n] && n < 120) { line[n] = s[n]; n++; }
     *len = n;
-
-    putchar('\r');
-    for (const char* p = prompt; *p; p++) putchar(*p);
-    for (int i = 0; i < n; i++) putchar(line[i]);
-    for (int i = n; i < drawn; i++) putchar(' ');
-    return n;
+    *cur = n;
+    line_draw(prompt, line, *len, *cur, drawn);
 }
 
 int main(int argc, char** argv) {
@@ -302,66 +308,98 @@ int main(int argc, char** argv) {
         snprintf(prompt, sizeof(prompt), "\n%s root@gravitas# ", cwd);
         printf("%s", prompt);
 
-        // The reader: backspace is swallowed once everything typed is gone, so
-        // the cursor can never ride back across the prompt text and erase it.
-        // Up/Down walk the history; ^U and ^W kill the line and the last word.
-        int len = 0, drawn = 0, back = 0;
+        // The reader: a line editor. Backspace is swallowed once everything
+        // typed is gone, so the cursor can never ride back across the prompt.
+        int len = 0, cur = 0, drawn = 0, back = 0;
         while (1) {
             char c = grv_getc();
 
             if (c == '\n') { putchar('\n'); line[len] = '\0'; break; }
-            if (c == '\b') {
-                if (len > 0) { // the console '\b' moves AND blanks the cell
-                    putchar('\b');
+
+            if (c == '\b') {                  // rub out before the cursor
+                if (cur > 0) {
+                    for (int i = cur - 1; i < len - 1; i++) line[i] = line[i + 1];
                     len--;
-                    drawn = len;
+                    cur--;
+                    line_draw(prompt, line, len, cur, &drawn);
                     back = 0;
                 }
                 continue;
             }
-            if (c == 16) {  // ^P: back through the history
+            if (c == 1) {                     // ^A: start of the line
+                cur = 0;
+                line_draw(prompt, line, len, cur, &drawn);
+                continue;
+            }
+            if (c == 5) {                     // ^E: end of it
+                cur = len;
+                line_draw(prompt, line, len, cur, &drawn);
+                continue;
+            }
+            if (c == 2) {                     // ^B: one left
+                if (cur > 0) cur--;
+                line_draw(prompt, line, len, cur, &drawn);
+                continue;
+            }
+            if (c == 6) {                     // ^F: one right
+                if (cur < len) cur++;
+                line_draw(prompt, line, len, cur, &drawn);
+                continue;
+            }
+            if (c == 11) {                    // ^K: kill to the end
+                len = cur;
+                line_draw(prompt, line, len, cur, &drawn);
+                back = 0;
+                continue;
+            }
+            if (c == 21) {                    // ^U: kill the whole line
+                len = 0;
+                cur = 0;
+                line_draw(prompt, line, len, cur, &drawn);
+                back = 0;
+                continue;
+            }
+            if (c == 23) {                    // ^W: kill the word before
+                int start = cur;
+                while (start > 0 && line[start - 1] == ' ') start--;
+                while (start > 0 && line[start - 1] != ' ') start--;
+                for (int i = start; i + (cur - start) < len; i++)
+                    line[i] = line[i + (cur - start)];
+                len -= cur - start;
+                cur = start;
+                line_draw(prompt, line, len, cur, &drawn);
+                back = 0;
+                continue;
+            }
+            if (c == 16) {                    // ^P: back through the history
                 const char* h = hist_back(back + 1);
                 if (h != 0) {
                     back++;
-                    drawn = line_set(line, &len, prompt, h, drawn);
+                    line_set(line, &len, &cur, prompt, h, &drawn);
                 }
                 continue;
             }
-            if (c == 14) {  // ^N: forward through it
+            if (c == 14) {                    // ^N: forward through it
                 if (back > 1) {
                     back--;
-                    drawn = line_set(line, &len, prompt, hist_back(back), drawn);
+                    line_set(line, &len, &cur, prompt, hist_back(back), &drawn);
                 } else if (back == 1) {
                     back = 0;
-                    drawn = line_set(line, &len, prompt, "", drawn);
+                    line_set(line, &len, &cur, prompt, "", &drawn);
                 }
                 continue;
             }
-            if (c == 21) {  // ^U: kill the whole line
-                while (len > 0) { putchar('\b'); len--; }
-                drawn = 0;
-                back = 0;
-                continue;
-            }
-            if (c == 23) {  // ^W: kill the last word
-                int start = len;
-                while (start > 0 && line[start - 1] == ' ') start--;
-                while (start > 0 && line[start - 1] != ' ') start--;
-                while (len > start) { putchar('\b'); len--; }
-                drawn = len;
-                back = 0;
-                continue;
-            }
-            if (c >= 32 && c < 127) { // printable only
+            if (c >= 32 && c < 127) {         // a printable character
                 if (len < 120) {
-                    line[len++] = c;
-                    putchar(c);
-                    drawn = len;
+                    for (int i = len; i > cur; i--) line[i] = line[i - 1];
+                    line[cur++] = c;
+                    len++;
+                    line_draw(prompt, line, len, cur, &drawn);
                     back = 0;
                 } else putchar(0x07); // alert on overflow
                 continue;
             }
-            // anything else (^A/^B/^E/^F/^K and the rest): swallowed
+            // anything else: swallowed
         }
         hist_add(line);
         execute(line);
