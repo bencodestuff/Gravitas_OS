@@ -17,6 +17,10 @@ def boot_identity(g):
         g.fail("font fallback triggered (expected PSF2 8x16)")
     g.wait_for(r"\[font\] loaded .*8x16")
 
+    # The RAM disk comes up and passes its own read/write/bounds self-test.
+    g.wait_for(r"\[Block\] sectors: [0-9]+")
+    g.wait_for(r"\[Block\] self-test ok")
+
 
 @test
 def wall_clock(g):

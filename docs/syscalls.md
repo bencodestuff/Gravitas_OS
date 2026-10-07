@@ -78,6 +78,21 @@ program starts with is something you can read and change; `LUA_PATH` (where Lua
 looks for modules) is the first thing to use it. There is no `setenv`: nothing
 writes the block after the kernel builds it.
 
+## Block devices
+
+The storage direction, below the VFS: a filesystem should not care whether its
+bytes come from RAM, a Limine module or a real disk, so everything above talks in
+512-byte sectors through `Block::Device` (`src/kernel/core/block.h`) — a name, a
+size, and read/write of a sector run. It is a registry and a contract, not a
+cache. A request that runs past the end moves nothing, in either direction,
+because a caller asking past the end is broken and a short read would hide it.
+
+There is no syscall here; the layer is internal. The first device is a
+**RAM disk** (`src/kernel/dev/memblock.cpp`): a heap buffer with the contract in
+front of it, optionally seeded from a host-made image, which is how a filesystem
+can be written and tested before any driver exists. It passes its own
+read/write/bounds self-test at boot.
+
 ## Message types
 
 `SEND`/`RECV` carry a free-form `type`; the kernel only reserves the values

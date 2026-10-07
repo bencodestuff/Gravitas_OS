@@ -25,6 +25,8 @@
 #include "fs/vfs.h"
 #include "kernel/core/symbols.h"
 #include "kernel/core/env.h"
+#include "kernel/core/block.h"
+#include "kernel/dev/memblock.h"
 #include "fs/ramfs.h"
 #include "fs/overlay.h"
 
@@ -199,6 +201,18 @@ extern "C" void kmain(void) {
     kprint("[PIC] IRQ12 mask bit: ");
     kprint_uint(PIC::get_mask(12));
     kprint(" (want 0)\n");
+
+    // A disk in RAM: the substrate the storage work builds on (see
+    // kernel/dev/memblock.h). No image yet, so it comes up empty.
+    Block::Device* ramdisk = MemBlock::create("ram0", 8192, nullptr, 0);
+    if (ramdisk == nullptr) {
+        kprint("[Block] no RAM disk\n");
+    } else {
+        kprint3("[Block] ", ramdisk->name, " ready\n");
+        kprint_lus("[Block] sectors: ", ramdisk->sectors, "\n");
+        kprint(Block::self_test(ramdisk) ? "[Block] self-test ok\n"
+                                        : "[Block] self-test FAILED\n");
+    }
 
     // --- Filesystem layer ---
     // 1. Locate the tar module (the file tree: /bin, /fonts, /Pictures, /tmp)
