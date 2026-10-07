@@ -287,8 +287,7 @@ static void load(void) {
 static int save(void) {
     int fd = grv_open(path, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
     if (fd < 0) {
-        if (errno == EROFS) set_status("read-only filesystem — save under /tmp");
-        else snprintf(status, sizeof(status), "save failed (errno %d)", errno);
+        snprintf(status, sizeof(status), "save failed (errno %d)", errno);
         return -1;
     }
     long n = grv_write_fd(fd, text.buf, (unsigned long)text.len);

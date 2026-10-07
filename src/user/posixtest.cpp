@@ -7,8 +7,8 @@
 #include <stdio.h>
 
 // posixtest — exercises the POSIX facade (fcntl/unistd/sys-stat/dirent) against
-// the ramfs, the read-only tarfs, and the console descriptors 0/1/2. Prints
-// PASS/FAIL for the test harness.
+// the filesystem and the console descriptors 0/1/2. Prints PASS/FAIL for the
+// test harness.
 
 static int fails = 0;
 static void check(int ok, const char* what) {

@@ -58,7 +58,8 @@ directory, which children inherit when they are spawned. A **bare name** (no
 CWD first and then each program directory on the search path — `/bin`, then
 `/bin/tests` for the test suite (`run ls` finds `ls.elf`).
 `MKDIR`, `UNLINK` and `RENAME` never search: they resolve against the CWD (or
-an absolute path) only, so a typo cannot land in the read-only system tree.
+an absolute path) only, so a typo cannot quietly create or delete something
+under a program directory.
 
 The root is an **overlay**: the tar image is the read-only lower layer and a
 ramfs is the writable upper layer over it, so the whole tree is writable. A

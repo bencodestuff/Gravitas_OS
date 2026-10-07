@@ -289,11 +289,13 @@ def ide_layout(g):
     g.wait_for(r"ide: layout requested")
     g.wait_for(r"wm: workspace 1 requested")
 
-    # The WM holds the request until every pane has announced its role, so the
-    # last pane to be placed is what we wait for.
+    # The WM holds the request until every pane has announced its role, and the
+    # panes start concurrently, so wait for all three before comparing them.
     ex = r"wm: pane explorer #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
     ed = r"wm: pane editor #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
     tm = r"wm: pane terminal #(\d+) (\d+)x(\d+) at (\d+),(\d+)"
+    g.wait_for(ex)
+    g.wait_for(ed)
     g.wait_for(tm)
 
     E = re.search(ex, g.log())
