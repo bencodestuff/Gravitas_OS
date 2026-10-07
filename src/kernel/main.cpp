@@ -23,6 +23,7 @@
 #include "fs/elf.h"
 #include "fs/tar.h"
 #include "fs/vfs.h"
+#include "kernel/core/symbols.h"
 #include "fs/ramfs.h"
 #include "fs/overlay.h"
 
@@ -243,6 +244,27 @@ extern "C" void kmain(void) {
             }
             kprint(ok ? "[VFS] SELF-TEST OK: ramfs write+read round-trip\n"
                       : "[VFS] SELF-TEST FAIL: data mismatch\n");
+        }
+    }
+
+    // The symbol table for the fault handler. It is generated at build time and
+    // read here rather than linked in, because a table of the kernel's symbols
+    // changes the addresses it would be describing. A missing table just means
+    // faults print bare addresses.
+    {
+        static char symtab[256 * 1024];
+        uint64_t symsize = 0;
+        if (VFS::read_full("/symbols.bin", symtab, sizeof(symtab), &symsize) &&
+            symsize > 0) {
+            Symbols::init(symtab, symsize);
+            kprint_lus("[Symbols] functions named: ", (uint64_t)Symbols::count(), "\n");
+            // The table covers the kernel and every program. A userland fault is
+            // easy to see in a test; this proves our own half resolves too.
+            char self[80];
+            if (Symbols::resolve((uint64_t)&kprint, self, sizeof(self)))
+                kprint3("[Symbols] self-check: ", self, "\n");
+        } else {
+            kprint("[Symbols] no table (faults will print bare addresses)\n");
         }
     }
 

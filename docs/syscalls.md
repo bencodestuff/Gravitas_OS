@@ -262,6 +262,12 @@ struct grv_fault_record {
 };
 ```
 
+The kernel's dump names the RIP's function (`RIP=0x... (main(int, char**)+0x2C)`)
+using a symbol table generated at build time by `tools/mksyms.py` and read from
+the tar at boot. It covers the kernel **and** every program — a fault is usually
+in a program's own code, and the table cannot be linked into the kernel it
+describes, because adding it would move the addresses it names.
+
 ## Memory mappings
 
 Surfaces are one kind of shared memory; these are the other two. Both map frames

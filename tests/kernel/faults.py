@@ -9,8 +9,12 @@ from harness import test, run_module
 
 @test
 def crash_contract(g):
+    # The symbol table covers the kernel and every program, so the dump names
+    # the function a RIP is in — here the crashing program's own main.
+    g.wait_for(r"\[Symbols\] self-check: kprint\+0x[0-9A-F]+")
     g.shell("run crash.elf")
     g.wait_for(r"FAULT: USERLAND in task 'crash\.elf'")
+    g.wait_for(r"\[fault\] RIP=0x[0-9A-F]+ \(main\(.*\)\+0x[0-9A-F]+\)")
     g.wait_for("terminating task per the fault contract")
     g.wait_after("terminating task per the fault contract", "program finished")
 

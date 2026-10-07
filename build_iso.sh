@@ -28,6 +28,12 @@ if [ -d bin/tests ]; then
     mkdir -p tar_root/bin/tests
     cp bin/tests/*.elf tar_root/bin/tests/
 fi
+# 2b. The symbol table the fault handler names a RIP with: every function in the
+#     kernel and in every program, sorted by address. Generated here because it
+#     is only knowable once they are linked (and it cannot live in the kernel it
+#     describes).
+python3 tools/mksyms.py tar_root/symbols.bin bin/gravitas.elf bin/*.elf bin/tests/*.elf
+
 tar --format=ustar -cf iso_root/files.tar -C tar_root .
 
 # 3. Copy the Config

@@ -1,6 +1,7 @@
 #include "kernel/core/fault.h"
 #include "kernel/klib/klib.h"
 #include "kernel/core/sched.h"
+#include "kernel/core/symbols.h"
 #include "kernel/gfx/console.h"
 #include "kernel/gfx/compositor.h"
 #include "kernel/io.h"
@@ -102,6 +103,16 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
 
     kprint("[fault] RIP=");
     kprint_hex(regs->rip);
+    // Name it if we can: the table covers the kernel and every program, so this
+    // works whether the fault is ours or the task's.
+    {
+        char sym[80];
+        if (Symbols::resolve(regs->rip, sym, sizeof(sym))) {
+            kprint(" (");
+            kprint(sym);
+            kprint(")");
+        }
+    }
     kprint(" CS=");
     kprint_hex(regs->cs);
     kprint(" RFLAGS=");
