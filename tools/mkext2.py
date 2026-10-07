@@ -30,6 +30,12 @@ OUT = os.path.join(ROOT, "iso_root", "disk.img")
 BLOCKS = 4096        # 1 KB blocks -> a 4 MB image
 BIG_SIZE = 20000     # > 12 KB, so the direct pointers are not enough
 
+# A name longer than 128 bytes. ext2 allows 255, and the point of NAME_MAX 256
+# is that a file like this lists and opens instead of being silently cut down.
+# Its contents are its own name, so a guest test can check what it read without
+# the name being written down in two places.
+LONG_NAME = "long-name-" + ("abcdefghij" * 19) + ".txt"   # 204 bytes
+
 
 def big_byte(i):
     """Byte i of big.bin: printable, and a function of the offset so the guest
@@ -49,6 +55,11 @@ def main():
         with open(os.path.join(stage, "sub", "nested.txt"), "w") as f:
             f.write("A nested file.\n")
         os.chmod(os.path.join(stage, "sub", "nested.txt"), 0o644)
+
+        long_path = os.path.join(stage, "sub", LONG_NAME)
+        with open(long_path, "w") as f:
+            f.write(LONG_NAME)
+        os.chmod(long_path, 0o644)
 
         with open(os.path.join(stage, "big.bin"), "w") as f:
             f.write("".join(chr(big_byte(i)) for i in range(BIG_SIZE)))

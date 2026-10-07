@@ -2,11 +2,15 @@
 #include <stdlib.h>
 #include <grv/syscall.h>
 
-// opendir snapshots the directory into an array of the kernel's typed entries;
+// opendir reads the directory into an array of the kernel's typed entries;
 // readdir walks that array. The inode number and the type come straight from
-// the kernel now, so d_ino and d_type mean something.
+// the kernel, so d_ino and d_type mean something.
+//
+// The array grows: the kernel fills at most what it is given, so a full reply
+// means "there may be more" and the buffer doubles. Any size of directory is
+// therefore readable, and the common case costs one call and one small buffer.
 
-#define DIR_MAX 256
+#define DIR_START 32
 
 struct __dirstream {
     struct grv_dirent* ents;
@@ -21,12 +25,20 @@ DIR* opendir(const char* name) {
     struct grv_stat st;
     if (grv_stat(name, &st) != 0 || !st.is_dir) return 0;   // errno is set
 
-    struct grv_dirent* ents =
-        (struct grv_dirent*)malloc(DIR_MAX * sizeof(*ents));
-    if (ents == 0) return 0;
+    long cap = DIR_START;
+    struct grv_dirent* ents = 0;
+    long n = 0;
+    for (;;) {
+        struct grv_dirent* grown =
+            (struct grv_dirent*)realloc(ents, (size_t)cap * sizeof(*ents));
+        if (grown == 0) { free(ents); return 0; }
+        ents = grown;
 
-    long n = grv_readdir(name, ents, DIR_MAX);
-    if (n < 0) { free(ents); return 0; }
+        n = grv_readdir(name, ents, cap);
+        if (n < 0) { free(ents); return 0; }
+        if (n < cap) break;              // the whole directory fit
+        cap *= 2;
+    }
 
     DIR* d = (DIR*)malloc(sizeof(DIR));
     if (d == 0) { free(ents); return 0; }

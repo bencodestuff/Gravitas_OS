@@ -153,7 +153,7 @@ static inline char grv_getc(void) {
 #define GRV_DT_REG     8
 
 struct grv_dirent {
-    char          name[128];
+    char          name[256];
     unsigned char type;
     unsigned int  ino;       /* stable identity within the filesystem; 0 = none */
 };

@@ -1,5 +1,6 @@
 #include "idt.h"
 #include "pic.h"
+#include <stddef.h>
 #include "kernel/io.h"
 #include "kernel/dev/keyboard.h"
 #include "kernel/core/fault.h"
@@ -233,8 +234,10 @@ static void sys_getc(IDT::Registers* regs) {
 
 // The kernel's VFS::DirEntry and the ABI's struct grv_dirent are the same
 // record, so LISTDIR fills the caller's array directly (as STAT and GETCWD do).
-// This is the assertion that keeps them the same record.
-static_assert(sizeof(VFS::DirEntry) == 136,
+// This is the assertion that keeps them the same record. (The host test
+// tools/test_abi.cpp compares the two headers field by field; this one only
+// guards against the size drifting out from under the cast.)
+static_assert(sizeof(VFS::DirEntry) == 264,
               "VFS::DirEntry must match struct grv_dirent in grv/syscall.h");
 
 static void sys_listdir(IDT::Registers* regs) {
@@ -261,13 +264,18 @@ static void sys_chdir(IDT::Registers* regs) {
     const char* path = (const char*)regs->rdi;
     if (!VFS::is_directory(path)) {
         regs->rax = (uint64_t)-Errno::ENOENT;
-    } else {
-        // Store the canonical path (cwd-relative + ./.. resolved).
-        static char canon[64];
-        VFS::canonicalize(path, canon, sizeof(canon));
-        Sched::current_task_set_cwd(canon);
-        regs->rax = 0;
+        return;
     }
+    // Store the canonical path (cwd-relative + ./.. resolved). The CWD has its
+    // own, smaller limit than a path does, so a deep one is refused here rather
+    // than silently truncated into a different directory.
+    static char canon[64];
+    if (!VFS::canonicalize(path, canon, sizeof(canon))) {
+        regs->rax = (uint64_t)-Errno::ENAMETOOLONG;
+        return;
+    }
+    Sched::current_task_set_cwd(canon);
+    regs->rax = 0;
 }
 
 static void sys_getcwd(IDT::Registers* regs) {
@@ -512,7 +520,8 @@ static void sys_lseek(IDT::Registers* regs) {
 }
 
 static void sys_stat(IDT::Registers* regs) {
-    // Mirrors struct grv_stat in grv/syscall.h.
+    // Mirrors struct grv_stat in grv/syscall.h. The host test pins that side's
+    // offsets; this pins ours to the same numbers.
     struct StatPkt {
         uint64_t size;
         uint64_t is_dir;
@@ -520,6 +529,8 @@ static void sys_stat(IDT::Registers* regs) {
         uint64_t mode;
         uint64_t mtime;
     };
+    static_assert(sizeof(StatPkt) == 40 && offsetof(StatPkt, mtime) == 32,
+                  "StatPkt must match struct grv_stat in grv/syscall.h");
     VFS::Stat st;
     int r = VFS::stat_path((const char*)regs->rdi, &st);
     if (r == 0 && regs->rsi) {

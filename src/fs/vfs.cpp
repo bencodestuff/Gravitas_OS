@@ -20,8 +20,11 @@ void init() {
 
 // --- Path normalization ---
 // Canonicalizes a path into 'out': absolute, no trailing slash, resolves
-// '.' and '..'. Returns out.
-static char* normalize(const char* path, char* out, uint64_t out_max) {
+// '.' and '..'. Returns false when the path cannot be represented at all (more
+// components than can be tracked, or too long for 'out'). Dropping a component
+// silently would name a *different* file, which is the one failure mode worth
+// being loud about.
+static bool normalize(const char* path, char* out, uint64_t out_max) {
     // component starts, as offsets into out — on the stack, like every other
     // buffer on this path: a syscall can be preempted by the timer, so a static
     // would be shared with whatever task runs next.
@@ -30,13 +33,9 @@ static char* normalize(const char* path, char* out, uint64_t out_max) {
     uint64_t len = 0;
 
     out[0] = '\0';
-    if (path == nullptr) return out;
+    if (path == nullptr) return false;
 
     const char* p = path;
-    if (*p != '/') {
-        // relative path: caller treats it as relative to "/" for now
-    }
-
     while (*p) {
         while (*p == '/') p++;              // collapse slashes
         if (*p == '\0') break;
@@ -51,18 +50,18 @@ static char* normalize(const char* path, char* out, uint64_t out_max) {
         } else if (clen == 2 && p[0] == '.' && p[1] == '.') {
             if (depth > 0) { len = starts[--depth]; out[len] = '\0'; }
         } else {
-            if (depth < 32 && len + clen + 2 < out_max) {
-                starts[depth++] = len;
-                out[len++] = '/';
-                for (uint64_t i = 0; i < clen; i++) out[len++] = p[i];
-                out[len] = '\0';
-            }
+            if (depth >= (int)(sizeof(starts) / sizeof(starts[0]))) return false;
+            if (len + clen + 2 >= out_max) return false;
+            starts[depth++] = len;
+            out[len++] = '/';
+            for (uint64_t i = 0; i < clen; i++) out[len++] = p[i];
+            out[len] = '\0';
         }
         p = end;
     }
 
     if (len == 0) { out[0] = '/'; out[1] = '\0'; }
-    return out;
+    return true;
 }
 
 // --- Mount resolution: longest matching prefix wins ---
@@ -96,14 +95,22 @@ static Mount* find_mount(const char* canon_path) {
 // Resolve a path to a filesystem, writing the fs-relative path into 'rel_out'
 // (the caller owns that storage). Longest mount-prefix wins. Nothing here is
 // shared between calls, so two resolutions can be live at once — rename()
-// needs exactly that. Returns nullptr if nothing covers the path.
-static Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max) {
-    char canon[256];
-    normalize(path, canon, sizeof(canon));
+// needs exactly that. Returns nullptr if nothing covers the path, setting *err
+// to why: ENAMETOOLONG when the path cannot be represented at all, ENOENT when
+// no mount covers it.
+static Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max,
+                           int* err) {
+    char canon[PATH_MAX];
+    if (!normalize(path, canon, sizeof(canon))) {
+        rel_out[0] = '\0';
+        if (err) *err = (int)Errno::ENAMETOOLONG;
+        return nullptr;
+    }
 
     Mount* m = find_mount(canon);
     if (m == nullptr) {
         rel_out[0] = '\0';
+        if (err) *err = (int)Errno::ENOENT;
         return nullptr;
     }
 
@@ -113,8 +120,32 @@ static Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max) {
     if (*rel == '/') rel++;                // -> "ls.elf"; "/" -> ""
 
     uint64_t i = 0;
-    while (rel[i] && i + 1 < rel_max) { rel_out[i] = rel[i]; i++; }
+    while (rel[i]) {
+        if (i + 1 >= rel_max) {            // as in normalize: never truncate
+            rel_out[0] = '\0';
+            if (err) *err = (int)Errno::ENAMETOOLONG;
+            return nullptr;
+        }
+        rel_out[i] = rel[i];
+        i++;
+    }
     rel_out[i] = '\0';
+
+    // A component longer than NAME_MAX cannot name anything, and saying so here
+    // means every caller reports ENAMETOOLONG instead of a lookup that failed
+    // for reasons the caller cannot see. (The walkers refuse it too; this is the
+    // one that can say why.)
+    for (const char* c = rel_out; *c; ) {
+        uint64_t len = 0;
+        while (c[len] && c[len] != '/') len++;
+        if (len >= (uint64_t)NAME_MAX) {
+            rel_out[0] = '\0';
+            if (err) *err = (int)Errno::ENAMETOOLONG;
+            return nullptr;
+        }
+        c += len;
+        while (*c == '/') c++;
+    }
     return m->fs;
 }
 
@@ -153,8 +184,8 @@ static const char* const kProgramPath[] = { "/bin", "/bin/tests" };
 
 // Does the absolute path 'full' name an existing file or directory?
 static bool path_exists(const char* full) {
-    char rel[256];
-    Filesystem* fs = resolve(full, rel, sizeof(rel));
+    char rel[PATH_MAX];
+    Filesystem* fs = resolve(full, rel, sizeof(rel), nullptr);
     if (fs == nullptr) return false;
     Node* n = node_walk(fs, rel);
     if (n == nullptr) return false;
@@ -187,7 +218,7 @@ static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
     }
 
     // try CWD-relative: if it exists there (file OR dir), use it
-    char cwdtry[256];
+    char cwdtry[PATH_MAX];
     effective_path(path, cwdtry, sizeof(cwdtry));
     if (path_exists(cwdtry)) {
         *effective = effective_path(path, out, out_max);
@@ -229,15 +260,24 @@ Node* node_new(Filesystem* fs, FileType type) {
     return n;
 }
 
-// One component of a path into 'out' (NAME_MAX bytes); returns the position
-// just past it, or nullptr when the path ends.
-static const char* next_component(const char* p, char* out) {
-    while (*p == '/') p++;
-    if (*p == '\0') return nullptr;
+// One component of a path into 'out' (NAME_MAX bytes); advances *p. A component
+// that does not fit is an error, not something to truncate: a truncated name
+// could match a different file.
+enum CompResult { COMP_END, COMP_OK, COMP_TOO_LONG };
+
+static CompResult next_component(const char** p, char* out) {
+    const char* s = *p;
+    while (*s == '/') s++;
+    if (*s == '\0') { *p = s; return COMP_END; }
+
     uint64_t i = 0;
-    while (*p && *p != '/' && i + 1 < NAME_MAX) out[i++] = *p++;
+    while (*s && *s != '/') {
+        if (i + 1 >= NAME_MAX) return COMP_TOO_LONG;
+        out[i++] = *s++;
+    }
     out[i] = '\0';
-    return p;
+    *p = s;
+    return COMP_OK;
 }
 
 Node* node_walk(Filesystem* fs, const char* rel) {
@@ -248,13 +288,15 @@ Node* node_walk(Filesystem* fs, const char* rel) {
 
     char comp[NAME_MAX];
     const char* p = rel;
-    while ((p = next_component(p, comp)) != nullptr) {
+    CompResult r;
+    while ((r = next_component(&p, comp)) == COMP_OK) {
         if (cur->type != FT_DIR) { fs->release(fs->priv, cur); return nullptr; }
         Node* next = fs->lookup(fs->priv, cur, comp);
         fs->release(fs->priv, cur);
         if (next == nullptr) return nullptr;
         cur = next;
     }
+    if (r == COMP_TOO_LONG) { fs->release(fs->priv, cur); return nullptr; }
     return cur;
 }
 
@@ -267,7 +309,8 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type) {
 
     char comp[NAME_MAX];
     const char* p = rel;
-    while ((p = next_component(p, comp)) != nullptr) {
+    CompResult r;
+    while ((r = next_component(&p, comp)) == COMP_OK) {
         bool last = true;
         for (const char* q = p; *q; q++)
             if (*q != '/') { last = false; break; }
@@ -285,6 +328,7 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type) {
         fs->release(fs->priv, cur);
         cur = next;
     }
+    if (r == COMP_TOO_LONG) { fs->release(fs->priv, cur); return nullptr; }
     return cur;
 }
 
@@ -297,7 +341,10 @@ bool node_split(const char* rel, char* parent, char* name) {
         if (rel[i] == '/') slash = i + 1;
 
     uint64_t n = 0;
-    for (uint64_t i = slash; i < len && n + 1 < NAME_MAX; i++) name[n++] = rel[i];
+    for (uint64_t i = slash; i < len; i++) {
+        if (n + 1 >= NAME_MAX) return false;   // a name too long to be one
+        name[n++] = rel[i];
+    }
     name[n] = '\0';
     if (n == 0) return false;
 
@@ -310,7 +357,7 @@ bool node_split(const char* rel, char* parent, char* name) {
 bool mount(const char* path, Filesystem* fs) {
     if (mount_count >= MAX_MOUNTS) return false;
     static char canon_storage[MAX_MOUNTS][128];
-    normalize(path, canon_storage[mount_count], 128);
+    if (!normalize(path, canon_storage[mount_count], 128)) return false;
     mounts[mount_count].path = canon_storage[mount_count];
     mounts[mount_count].fs = fs;
     mount_count++;
@@ -355,12 +402,12 @@ bool mount(const char* path, Filesystem* fs) {
 }
 
 bool is_directory(const char* path) {
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    char rel[256];
-    Filesystem* fs = resolve(effective, rel, sizeof(rel));
+    char rel[PATH_MAX];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), nullptr);
     if (fs == nullptr) return false;
     Node* n = node_walk(fs, rel);
     if (n == nullptr) return false;
@@ -369,14 +416,14 @@ bool is_directory(const char* path) {
     return dir;
 }
 
-void canonicalize(const char* path, char* out, uint64_t out_max) {
+bool canonicalize(const char* path, char* out, uint64_t out_max) {
     // Go through the same fallback resolution is_directory uses —
     // otherwise `cd Pictures` validates against /bin/Pictures but STORES
     // /Pictures (a nonexistent path), and every later ls/cd breaks.
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
-    normalize(effective, out, out_max);
+    return normalize(effective, out, out_max);
 }
 
 // --- fd plumbing: the table lives in the current task ---
@@ -420,16 +467,17 @@ int fd_slot_alloc(Node* node) {
 // Failures return a negated Errno code (see kernel/core/errno.h); libc turns
 // them into -1 + errno.
 int open_fd(const char* path, int flags) {
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     // A creation is CWD-relative: it must not search /bin (see
     // resolve_path_fallback).
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective,
                           (flags & O_CREATE) != 0);
 
-    char rel[256];
-    Filesystem* fs = resolve(effective, rel, sizeof(rel));
-    if (fs == nullptr) return -Errno::ENOENT;
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
 
     // A filesystem with no write at all is read-only, so a request that would
     // need one is refused here rather than handed an fd that cannot deliver.
@@ -532,9 +580,10 @@ long lseek_fd(int fd, long offset, int whence) {
 // the CWD then /bin; creation and removal (open with O_CREATE, mkdir, unlink)
 // are always CWD-relative, so a typo never lands in a program directory.
 int mkdir(const char* path) {
-    char rel[256];
-    Filesystem* fs = resolve(path, rel, sizeof(rel));
-    if (fs == nullptr) return -Errno::ENOENT;
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(path, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
     if (fs->create == nullptr) return -Errno::EROFS;
     Node* made = node_create(fs, rel, FT_DIR);
     if (made == nullptr) return -Errno::EIO;
@@ -543,13 +592,14 @@ int mkdir(const char* path) {
 }
 
 int unlink(const char* path) {
-    char rel[256];
-    Filesystem* fs = resolve(path, rel, sizeof(rel));
-    if (fs == nullptr) return -Errno::ENOENT;
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(path, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
     if (fs->unlink == nullptr) return -Errno::EROFS;
 
-    char parent[256], name[NAME_MAX];
-    if (!node_split(rel, parent, name)) return -Errno::EINVAL;
+    char parent[PATH_MAX], name[NAME_MAX];
+    if (!node_split(rel, parent, name)) return -Errno::ENAMETOOLONG;
     Node* dir = node_walk(fs, parent);
     if (dir == nullptr) return -Errno::ENOENT;
     int r = fs->unlink(fs->priv, dir, name);
@@ -561,21 +611,22 @@ int unlink(const char* path) {
 // only, never through the program search path. Both sides must be on the same
 // filesystem — there is no cross-device move.
 int rename(const char* from, const char* to) {
-    char from_rel[256], to_rel[256];
+    char from_rel[PATH_MAX], to_rel[PATH_MAX];
+    int err = 0;
 
-    Filesystem* from_fs = resolve(from, from_rel, sizeof(from_rel));
-    if (from_fs == nullptr) return -Errno::ENOENT;
+    Filesystem* from_fs = resolve(from, from_rel, sizeof(from_rel), &err);
+    if (from_fs == nullptr) return -err;
 
-    Filesystem* to_fs = resolve(to, to_rel, sizeof(to_rel));
-    if (to_fs == nullptr) return -Errno::ENOENT;
+    Filesystem* to_fs = resolve(to, to_rel, sizeof(to_rel), &err);
+    if (to_fs == nullptr) return -err;
 
     if (from_fs != to_fs) return -Errno::EINVAL;
     if (from_fs->rename == nullptr) return -Errno::EROFS;
 
-    char from_parent[256], from_name[NAME_MAX];
-    char to_parent[256], to_name[NAME_MAX];
-    if (!node_split(from_rel, from_parent, from_name)) return -Errno::EINVAL;
-    if (!node_split(to_rel, to_parent, to_name)) return -Errno::EINVAL;
+    char from_parent[PATH_MAX], from_name[NAME_MAX];
+    char to_parent[PATH_MAX], to_name[NAME_MAX];
+    if (!node_split(from_rel, from_parent, from_name)) return -Errno::ENAMETOOLONG;
+    if (!node_split(to_rel, to_parent, to_name)) return -Errno::ENAMETOOLONG;
 
     Node* fdir = node_walk(from_fs, from_parent);
     if (fdir == nullptr) return -Errno::ENOENT;
@@ -601,13 +652,14 @@ int ftruncate_fd(int fd, uint64_t size) {
 
 int stat_path(const char* path, Stat* out) {
     // A lookup: same resolution as open (CWD, then /bin for a bare name).
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    char rel[256];
-    Filesystem* fs = resolve(effective, rel, sizeof(rel));
-    if (fs == nullptr) return -Errno::ENOENT;
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
 
     Node* n = node_walk(fs, rel);
     if (n == nullptr) return -Errno::ENOENT;
@@ -624,13 +676,15 @@ int stat_path(const char* path, Stat* out) {
 
 // --- A file's bytes, for a zero-copy mapping (see vfs.h) ---
 int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size) {
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    char rel[256];
-    Filesystem* fs = resolve(effective, rel, sizeof(rel));
-    if (fs == nullptr || fs->map == nullptr) return -Errno::ENOENT;
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
+    if (fs->map == nullptr) return -Errno::ENOENT;
 
     Node* n = node_walk(fs, rel);
     if (n == nullptr) return -Errno::ENOENT;
@@ -641,12 +695,12 @@ int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size) {
 
 // --- Whole-file read (spawn + kernel use) ---
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    char rel[256];
-    Filesystem* fs = resolve(effective, rel, sizeof(rel));
+    char rel[PATH_MAX];
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), nullptr);
     if (fs == nullptr || fs->read == nullptr) return false;
 
     Node* n = node_walk(fs, rel);
@@ -664,13 +718,15 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
 
 // --- directory entries, typed (the LISTDIR syscall) ---
 long readdir_entries(const char* path, DirEntry* out, uint64_t max) {
-    char fixed[256];
+    char fixed[PATH_MAX];
     const char* effective = nullptr;
     resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
 
-    char rel[256];
-    Filesystem* fs = resolve(effective, rel, sizeof(rel));
-    if (fs == nullptr || fs->readdir == nullptr) return -Errno::ENOENT;
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
+    if (fs->readdir == nullptr) return -Errno::ENOENT;
 
     Node* dir = node_walk(fs, rel);
     if (dir == nullptr) return -Errno::ENOENT;

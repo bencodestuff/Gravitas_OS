@@ -106,6 +106,15 @@ def ext2_disk(g):
 
 
 @test
+def path_limits(g):
+    # A path or a name that does not fit is refused, never truncated: a
+    # shortened path names a different file. Covers the depth limit, a 200-byte
+    # ext2 name, and a name past NAME_MAX.
+    g.shell("run pathtest.elf")
+    g.wait_for("pathtest: all checks pass")
+
+
+@test
 def shared_memory(g):
     # File mappings (zero-copy, out of the immutable image) and a shared region
     # that two tasks read and write through.

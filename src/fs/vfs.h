@@ -19,8 +19,17 @@ constexpr int MAX_FDS     = 16;
 constexpr int MAX_MOUNTS  = 8;
 constexpr int MAX_HANDLES = 64;   // open files kernel-wide
 
+// The longest absolute path the VFS will carry. It has to be comfortably more
+// than NAME_MAX: a maximal 255-byte name still needs room for the directory it
+// lives in, and a path that does not fit is refused rather than cut down.
+// (The CWD is separate and much smaller — see the scheduler.)
+constexpr int PATH_MAX = 512;
+
 // The longest single name any backend may hand back (and the ABI's ceiling).
-constexpr int NAME_MAX = 128;
+// ext2 permits 255 bytes, so 256 is the smallest value that can hold one: a
+// smaller cap would silently truncate a real filesystem's names, and a name that
+// lists but cannot be opened is worse than a refusal.
+constexpr int NAME_MAX = 256;
 
 // Descriptors 0, 1 and 2 are reserved for the standard streams. The kernel has
 // no console file object — userland maps those three to the console — but
@@ -152,8 +161,8 @@ Node* node_walk(Filesystem* fs, const char* rel);
 Node* node_create(Filesystem* fs, const char* rel, FileType final_type);
 
 // Split a filesystem-relative path into the parent's path and the final name.
-// False when there is no final name ("" or "/"). 'parent' holds 256 bytes,
-// 'name' holds NAME_MAX.
+// False when there is no final name ("" or "/"), or when the name does not fit
+// NAME_MAX. 'parent' holds PATH_MAX bytes, 'name' holds NAME_MAX.
 bool node_split(const char* rel, char* parent, char* name);
 
 // --- Kernel API ---
@@ -181,8 +190,9 @@ void close_fd_for(FileHandle** fds, int fd);          // arbitrary table (task e
 bool is_directory(const char* path);
 
 // Canonicalize a path: CWD-relative join, '.'/'..' resolution, absolute.
-// Used by chdir to store the real working directory.
-void canonicalize(const char* path, char* out, uint64_t out_max);
+// Used by chdir to store the real working directory. False when the path cannot
+// be represented (see normalize).
+bool canonicalize(const char* path, char* out, uint64_t out_max);
 
 // Convenience: read a whole file into a buffer (kernel-side; used by spawn)
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size);
