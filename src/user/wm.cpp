@@ -489,7 +489,7 @@ static void launch(const char* prog) {
 
 static int load_wallpaper(const char* path, int sw, int sh) {
     struct gravity_image img;
-    if (gravity_image_load(&img, path) != 0) return -1;
+    if (gravity_image_load_mapped(&img, path) != 0) return -1;
 
     struct grv_surface_info si;
     int sid = grv_surface_create((unsigned long)sw, (unsigned long)sh, &si);

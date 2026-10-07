@@ -20,6 +20,15 @@ struct gravity_image {
    that has more than one frame, only the first is returned. */
 int  gravity_image_load(struct gravity_image* img, const char* path);
 
+/* Like gravity_image_load, but mapping the file instead of reading it when the
+   filesystem can: a picture in the immutable image is decoded in place, with no
+   copy of its bytes. Falls back to a plain read. */
+int  gravity_image_load_mapped(struct gravity_image* img, const char* path);
+
+/* Decode bytes that are already in memory (a mapped file, say). */
+int  gravity_image_decode(struct gravity_image* img, const void* data,
+                          unsigned long size);
+
 /* Release a loaded image. Safe on an already-free image. */
 void gravity_image_free(struct gravity_image* img);
 

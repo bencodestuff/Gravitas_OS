@@ -89,22 +89,41 @@ static int decode_bmp(struct gravity_image* img, const unsigned char* d,
     return 0;
 }
 
-int gravity_image_load(struct gravity_image* img, const char* path) {
+// Decode bytes that are already in memory (see image.h).
+int gravity_image_decode(struct gravity_image* img, const void* data,
+                         unsigned long size) {
     img->px = 0;
     img->w = 0;
     img->h = 0;
 
+    const unsigned char* d = (const unsigned char*)data;
+    if (d == 0 || size < 2) return -1;
+    if (d[0] == 'B' && d[1] == 'M') return decode_bmp(img, d, size);
+    // More formats plug in here (check their magic, decode into img).
+    return -1;
+}
+
+int gravity_image_load(struct gravity_image* img, const char* path) {
     unsigned long size = 0;
     unsigned char* d = read_file(path, &size);
     if (!d) return -1;
-
-    int rc = -1;
-    if (size >= 2 && d[0] == 'B' && d[1] == 'M')
-        rc = decode_bmp(img, d, size);
-    // More formats plug in here (check their magic, decode into img).
-
+    int rc = gravity_image_decode(img, d, size);
     free(d);
     return rc;
+}
+
+int gravity_image_load_mapped(struct gravity_image* img, const char* path) {
+    // A file in the immutable image can be mapped read-only, zero-copy: no
+    // buffer, no copy, and the decoder copies what it needs, so the mapping
+    // goes as soon as it has run.
+    struct grv_map m;
+    if (grv_map_file(path, &m) == 0 && m.size > 0) {
+        int rc = gravity_image_decode(img, (const void*)m.address, m.size);
+        grv_munmap(m.address);
+        if (rc == 0) return 0;
+    }
+    // A file the filesystem cannot map (it can be rewritten): read it instead.
+    return gravity_image_load(img, path);
 }
 
 void gravity_image_free(struct gravity_image* img) {

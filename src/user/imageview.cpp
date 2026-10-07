@@ -39,7 +39,7 @@ static void show(int idx) {
     cur = idx;
 
     if (have_img) { gravity_image_free(&img); have_img = 0; }
-    if (gravity_image_load(&img, items[cur]) == 0) have_img = 1;
+    if (gravity_image_load_mapped(&img, items[cur]) == 0) have_img = 1;
     printf("imageview: %s (%d/%d)\n", items[cur], cur + 1, nimages);
 }
 
