@@ -27,6 +27,8 @@
 #include "kernel/core/env.h"
 #include "kernel/core/block.h"
 #include "kernel/dev/memblock.h"
+#include "kernel/dev/modules.h"
+#include "kernel/dev/ext2.h"
 #include "fs/ramfs.h"
 #include "fs/overlay.h"
 
@@ -225,6 +227,23 @@ extern "C" void kmain(void) {
     Overlay::init(RamFS::instance(), Tar::vfs_instance());
     VFS::mount("/", Overlay::instance());
     kprint("[VFS] Mounted / (overlay: ramfs over tarfs).\n");
+
+    // 3. The read-only disk: a Limine module (disk.img) handed to a RAM disk,
+    //    which copies it — so the guest can never touch the file on the ISO,
+    //    and a reboot starts from the image again. ext2 on top of it.
+    Modules::Module img;
+    if (!Modules::find(".img", &img) || img.size == 0) {
+        kprint("[Ext2] no disk image module\n");
+    } else {
+        uint64_t sectors = (img.size + Block::SECTOR - 1) / Block::SECTOR;
+        Block::Device* disk = MemBlock::create("disk0", sectors, img.data, img.size);
+        VFS::Filesystem* ext2 = (disk != nullptr) ? Ext2::mount(disk) : nullptr;
+        if (ext2 == nullptr) {
+            kprint("[Ext2] the disk image is not ext2\n");
+        } else if (!VFS::mount("/disk", ext2)) {
+            kprint("[Ext2] no room in the mount table\n");
+        }
+    }
 
     // --- Console font: swap the embedded 8x8 for the PSF2 from the
     // tarfs (never fatal; falls back silently on any failure). On a

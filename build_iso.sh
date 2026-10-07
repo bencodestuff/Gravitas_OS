@@ -36,6 +36,10 @@ python3 tools/mksyms.py tar_root/symbols.bin bin/gravitas.elf bin/*.elf bin/test
 
 tar --format=ustar -cf iso_root/files.tar -C tar_root .
 
+# 2c. The read-only ext2 image the kernel mounts at /disk (tools/mkext2.py).
+#     A second Limine module, alongside the tar.
+python3 tools/mkext2.py
+
 # 3. Copy the Config
 cp limine.conf iso_root/
 

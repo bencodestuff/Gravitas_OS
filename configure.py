@@ -35,7 +35,7 @@ TEST_PROGRAMS = {
     "popuptest", "proctest", "rawwin", "sleeper", "smash",
     "stackoverflow", "surfacetest", "surfhelper", "timertest", "stdiotest",
     "shmtest", "shmhelper",
-    "hang", "posixtest", "overlaytest",
+    "hang", "posixtest", "overlaytest", "ext2test",
 }
 
 # Flags

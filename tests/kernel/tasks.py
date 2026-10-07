@@ -97,6 +97,15 @@ def overlay_root(g):
 
 
 @test
+def ext2_disk(g):
+    # A real on-disk filesystem (ext2, made on the host) mounted read-only from
+    # a RAM disk: metadata out of the inodes, the directory walk, and a file big
+    # enough to need an indirect block.
+    g.shell("run ext2test.elf")
+    g.wait_for("ext2test: all checks pass")
+
+
+@test
 def shared_memory(g):
     # File mappings (zero-copy, out of the immutable image) and a shared region
     # that two tasks read and write through.

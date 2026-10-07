@@ -404,9 +404,13 @@ def ide_explorer(g):
     g.click_title(w)
 
     n = g.count(r"wm: window #")
-    # The tree starts at "/": bin/ fonts/ lua/ Pictures/ tmp/ apps hello.txt.
+    # The tree lists "/" in the filer's order — directories first, then
+    # case-insensitively by name — and the test clicks by row number, so this
+    # depends on the root's contents:
+    #   bin/ disk/ fonts/ lua/ Pictures/ tmp/  apps env hello.txt symbols.bin
+    # A new entry in "/" (a mount point, say) moves every row after it.
     row = lambda i: w["y"] + 2 + i * 20 + 10
-    g.click(w["x"] + 100, row(2))         # lua/ — a directory opens on one click
+    g.click(w["x"] + 100, row(3))         # lua/ — a directory opens on one click
     g.click(w["x"] + 100, row(1))         # hello.lua — select
     g.click(w["x"] + 100, row(1))         # ... and open
 

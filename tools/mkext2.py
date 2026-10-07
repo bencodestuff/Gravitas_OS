@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Build the ext2 image the kernel mounts read-only at /disk.
+
+Made on the host with mke2fs, so the guest gets a real filesystem made by the
+same tools a user would use, and we do not reimplement ext2 *creation* — only
+reading, which is the part the kernel actually needs.
+
+The contents are fixed here rather than in files/ so the image is reproducible
+and a test can assert on it byte for byte, including a file deliberately larger
+than the twelve direct block pointers (12 KB at 1 KB blocks): reading it
+exercises the indirect path, which is the part of ext2 most likely to be
+quietly wrong.
+
+    hello.txt      one line
+    sub/nested.txt a file reached through a directory
+    big.bin        20000 bytes of a pattern derived from the offset
+
+The mount is read-only, and the RAM disk copies the image, so the guest cannot
+change any of this — which is what makes asserting on it sane.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(ROOT, "iso_root", "disk.img")
+
+BLOCKS = 4096        # 1 KB blocks -> a 4 MB image
+BIG_SIZE = 20000     # > 12 KB, so the direct pointers are not enough
+
+
+def big_byte(i):
+    """Byte i of big.bin: printable, and a function of the offset so the guest
+    can check every one without carrying the file around."""
+    return 33 + (i % 94)
+
+
+def main():
+    stage = tempfile.mkdtemp(prefix="gravitas-ext2-")
+    try:
+        with open(os.path.join(stage, "hello.txt"), "w") as f:
+            f.write("Hello from the ext2 disk\n")
+        os.chmod(os.path.join(stage, "hello.txt"), 0o644)
+
+        os.mkdir(os.path.join(stage, "sub"))
+        os.chmod(os.path.join(stage, "sub"), 0o755)
+        with open(os.path.join(stage, "sub", "nested.txt"), "w") as f:
+            f.write("A nested file.\n")
+        os.chmod(os.path.join(stage, "sub", "nested.txt"), 0o644)
+
+        with open(os.path.join(stage, "big.bin"), "w") as f:
+            f.write("".join(chr(big_byte(i)) for i in range(BIG_SIZE)))
+        os.chmod(os.path.join(stage, "big.bin"), 0o644)
+
+        os.makedirs(os.path.dirname(OUT), exist_ok=True)
+        if os.path.exists(OUT):
+            os.unlink(OUT)
+
+        # ext2, no journal; dir_index off so directories stay a linear list
+        # (the reader does not walk an htree), and a small inode count.
+        subprocess.check_call([
+            "mke2fs", "-q", "-t", "ext2", "-b", "1024",
+            "-O", "^dir_index,^resize_inode",
+            "-N", "128",
+            "-d", stage,
+            "-F", "-L", "gravitas",
+            OUT, str(BLOCKS),
+        ])
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+    print("ext2 image: %s (%d KB)" % (os.path.relpath(OUT, ROOT), BLOCKS))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

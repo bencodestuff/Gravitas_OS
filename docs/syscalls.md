@@ -93,6 +93,16 @@ front of it, optionally seeded from a host-made image, which is how a filesystem
 can be written and tested before any driver exists. It passes its own
 read/write/bounds self-test at boot.
 
+There is one disk image, and it is read-only end to end. `disk.img` is made on
+the host with `mke2fs` (`tools/mkext2.py`), handed over as a Limine module
+(alongside `files.tar` — see `src/kernel/dev/modules.h`), copied by a RAM disk,
+and mounted as **ext2** at `/disk` (`src/kernel/dev/ext2.cpp`). The guest cannot
+touch the file, and the mount has no writer, so a `write` there fails at the VFS
+with `EROFS` — which is what a read-only filesystem should do. The reader covers
+the superblock, group descriptors, inode tables, directory records and the
+direct/indirect block pointers; it does not model symlinks, extents, extended
+attributes or 64-bit filesystems, and refuses a filesystem that would need them.
+
 ## Message types
 
 `SEND`/`RECV` carry a free-form `type`; the kernel only reserves the values

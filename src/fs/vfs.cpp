@@ -431,6 +431,11 @@ int open_fd(const char* path, int flags) {
     Filesystem* fs = resolve(effective, rel, sizeof(rel));
     if (fs == nullptr) return -Errno::ENOENT;
 
+    // A filesystem with no write at all is read-only, so a request that would
+    // need one is refused here rather than handed an fd that cannot deliver.
+    if ((flags & (O_WRONLY | O_RDWR | O_CREATE | O_TRUNC)) && fs->write == nullptr)
+        return -Errno::EROFS;
+
     Node* node = node_walk(fs, rel);
     if (node == nullptr) {
         if (!(flags & O_CREATE)) return -Errno::ENOENT;

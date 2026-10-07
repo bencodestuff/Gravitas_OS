@@ -21,6 +21,11 @@ def boot_identity(g):
     g.wait_for(r"\[Block\] sectors: [0-9]+")
     g.wait_for(r"\[Block\] self-test ok")
 
+    # The read-only ext2 image: a real on-disk filesystem, mounted from a RAM
+    # disk seeded with the Limine module.
+    g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
+               r"[0-9]+ group \(read-only\)")
+
 
 @test
 def wall_clock(g):

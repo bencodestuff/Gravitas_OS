@@ -1,18 +1,8 @@
-#include <limine.h>
 #include "fs/tar.h"
 #include "fs/vfs.h"
+#include "kernel/dev/modules.h"
 #include "kernel/core/vmm.h"
 #include "kernel/gfx/framebuffer.h"
-
-// The tar image arrives as a Limine module (see build_iso.sh).
-__attribute__((used, section(".requests")))
-volatile struct limine_module_request module_request = {
-    .id = LIMINE_MODULE_REQUEST,
-    .revision = 0,
-    .response = nullptr,
-    .internal_module_count = 0,
-    .internal_modules = nullptr,
-};
 
 extern "C" void kprint_uint(uint64_t value);
 
@@ -49,16 +39,6 @@ namespace Tar {
     static bool str_eq(const char* a, const char* b) {
         while (*a && *b) { if (*a != *b) return false; a++; b++; }
         return *a == *b;
-    }
-
-    static bool str_ends_with(const char* s, const char* suffix) {
-        const char* p = s;
-        while (*p) p++;
-        const char* q = suffix;
-        while (*q) q++;
-        if (q - suffix > p - s) return false;
-        while (q > suffix) { if (*--p != *--q) return false; }
-        return true;
     }
 
     static uint64_t strlen_(const char* s) {
@@ -121,30 +101,24 @@ namespace Tar {
     }
 
     void init() {
-        if (module_request.response == nullptr) {
-            kprint("[Tar] No modules loaded.\n");
+        Modules::Module m;
+        if (!Modules::find(".tar", &m)) {
+            kprint("[Tar] No .tar module found!\n");
             return;
         }
 
-        for (uint64_t i = 0; i < module_request.response->module_count; i++) {
-            struct limine_file* file = module_request.response->modules[i];
-            if (file->path != nullptr && str_ends_with(file->path, ".tar")) {
-                archive_base = (uint8_t*)file->address;
+        archive_base = (uint8_t*)m.data;
 
-                // Count entries for the boot log (and sanity-check the walk).
-                entry_count = 0;
-                for (uint8_t* e = member_at(archive_base); e; e = member_at(next_entry(e)))
-                    entry_count++;
+        // Count entries for the boot log (and sanity-check the walk).
+        entry_count = 0;
+        for (uint8_t* e = member_at(archive_base); e; e = member_at(next_entry(e)))
+            entry_count++;
 
-                kprint("[Tar] Mounted ");
-                kprint(file->path);
-                kprint(" (");
-                kprint_uint(entry_count);
-                kprint(" entries)\n");
-                return;
-            }
-        }
-        kprint("[Tar] No .tar module found!\n");
+        kprint("[Tar] Mounted ");
+        kprint(m.path);
+        kprint(" (");
+        kprint_uint(entry_count);
+        kprint(" entries)\n");
     }
 
     bool is_mounted() {
