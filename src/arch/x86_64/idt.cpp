@@ -94,7 +94,14 @@ namespace IDT {
                 // or switches tasks — the next interrupt on the same IST
                 // would stomp the saved context of the task we switched away
                 // from (this exact bug cost us a day).
-                uint8_t ist = 0;
+                //
+                // The one exception is the double fault (vector 8), which gets
+                // IST 1 (the stack the GDT already reserves): a #DF usually
+                // *means* the current stack is unusable, so pushing its frame
+                // there gives a dump full of garbage — RIP=0x8, RSP=0x10 —
+                // instead of the state that caused it. Its handler halts and
+                // never returns, so the shared-stack hazard above cannot bite.
+                uint8_t ist = (i == 8) ? 1 : 0;
                 set_gate(i, (uint64_t)isr_stub_table[i], ist, 0x8E);
         }
 

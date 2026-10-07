@@ -13,6 +13,9 @@ namespace Fault {
 
 // --- The last fault, for userland introspection ---
 static Record last = {};
+// ...and the one before it: a double fault's own frame says little (its cause
+// is usually the stack it is pushed on), so its predecessor is the useful one.
+static Record prev = {};
 
 bool last_fault(Record* out) {
     if (!last.valid || out == nullptr) return false;
@@ -21,6 +24,9 @@ bool last_fault(Record* out) {
 }
 
 static void record_fault(IDT::Registers* regs, uint64_t cr2) {
+    // Keep the one before this: a double fault is a *consequence*, and its own
+    // frame says little, so the fault that led to it is what to look at.
+    if (last.valid) prev = last;
     last.valid = 1;
     last.task_id = Sched::current_task_id();
     const char* name = Sched::current_task_name();
@@ -100,6 +106,21 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
     kprint(" ");
     kprint(vector_name(regs->interrupt_number));
     kprint("\n");
+
+    if (regs->interrupt_number == 8 && prev.valid) {
+        // What led here: a double fault is a fault *while* handling one, and its
+        // own frame (now on the IST stack, at least) describes the handler, not
+        // the cause.
+        kprint("[fault] the fault before it: vector ");
+        kprint_uint(prev.vector);
+        kprint(" ");
+        kprint(vector_name(prev.vector));
+        kprint(" at RIP=");
+        kprint_hex(prev.rip);
+        kprint(" CS=");
+        kprint_hex(prev.cs);
+        kprint("\n");
+    }
 
     kprint("[fault] RIP=");
     kprint_hex(regs->rip);
