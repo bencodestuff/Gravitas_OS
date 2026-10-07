@@ -22,6 +22,22 @@ __BEGIN_DECLS
 #define GRAVITY_EDITOR_SB 6 /* scrollbar strip on the right, in pixels */
 #define GRAVITY_EDITOR_CW 8 /* glyph cell width — the PSF2 console font */
 
+/* Undo: a log of changes, not snapshots of the buffer (which can reach 4MB).
+   Each step keeps the text it removed and the text it inserted, so undoing and
+   redoing are the same operation with a different result for the caret. A run
+   of typing coalesces into one step, and the log drops its oldest steps when it
+   runs out of room or holds too much text. */
+#define GRAVITY_EDITOR_UNDO       64
+#define GRAVITY_EDITOR_UNDO_BYTES 65536
+
+struct gravity_edit_op {
+    int   at;           /* where it happened */
+    int   del_len;      /* bytes removed */
+    int   ins_len;      /* bytes inserted */
+    char* del;          /* the removed bytes (malloc'd, or null) */
+    char* ins;          /* the inserted bytes */
+};
+
 struct gravity_editor {
     struct gravity_buffer text;
     char  path[160];
@@ -37,6 +53,12 @@ struct gravity_editor {
     int   rev;             /* bumped on every edit (a host change counter) */
     int   sb_drag, mouse_held; /* pointer state, so a drag survives leaving */
     char  msg[96];         /* the last action's message, for the host to show */
+
+    /* The undo log: ops[0..nops) recorded, of which ops[0..op_pos) are applied
+       (the rest have been undone and can be redone). */
+    struct gravity_edit_op ops[GRAVITY_EDITOR_UNDO];
+    int   nops, op_pos, op_bytes;
+    int   saved_pos;       /* op_pos when the file was last written */
 };
 
 /* Bind the widget to a region and load 'path'. A missing file is an empty
@@ -66,12 +88,19 @@ void gravity_editor_set_msg(struct gravity_editor* e, const char* s);
 /* "line:col *" for the host's status line. */
 void gravity_editor_status(const struct gravity_editor* e, char* out, int max);
 
-/* An editing key: movement, selection, clipboard, text. Returns 1 if it was
-   consumed. Ctrl+S/Q and the host's own chords are deliberately not handled
+/* An editing key: movement, selection, clipboard, text, undo. Returns 1 if it
+   was consumed. Ctrl+S/Q and the host's own chords are deliberately not handled
    here — saving and quitting are policy. */
 int  gravity_editor_key(struct gravity_editor* e, long key, int mods);
 void gravity_editor_mouse(struct gravity_editor* e, int mx, int my, int held);
 void gravity_editor_scroll(struct gravity_editor* e, int lines);
+
+/* Step back (1) or forward (0) through the change log. Return 1 if the buffer
+   changed. Ctrl+Z and Ctrl+Shift+Z / Ctrl+Y reach these through the keys. */
+int  gravity_editor_undo(struct gravity_editor* e);
+int  gravity_editor_redo(struct gravity_editor* e);
+int  gravity_editor_can_undo(const struct gravity_editor* e);
+int  gravity_editor_can_redo(const struct gravity_editor* e);
 
 /* Paint the viewport and its scrollbar into 'c'. */
 void gravity_editor_draw(struct gravity_editor* e, struct gravity_canvas* c);

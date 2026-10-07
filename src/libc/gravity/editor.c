@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // gravity_editor — see editor.h. This is what edit.elf used to be, with the
 // window, the status line and the save/quit policy left to the host, so the IDE
@@ -69,48 +70,176 @@ static int has_sel(const struct gravity_editor* e) {
 
 /* --- editing --- */
 
+static void edited(struct gravity_editor* e); // defined below the log
+
+/* --- the undo log --- */
+
+static void op_free(struct gravity_edit_op* o) {
+    if (o->del) free(o->del);
+    if (o->ins) free(o->ins);
+    o->del = 0;
+    o->ins = 0;
+}
+
+static void undo_reset(struct gravity_editor* e) {
+    for (int i = 0; i < e->nops; i++) op_free(&e->ops[i]);
+    e->nops = 0;
+    e->op_pos = 0;
+    e->op_bytes = 0;
+    e->saved_pos = 0;
+}
+
+/* Record one change. The removed bytes must be passed before they are erased;
+   the inserted ones are already in the buffer but are kept here so redo does
+   not have to guess them. */
+static void op_push(struct gravity_editor* e, int at, const char* del,
+                    int del_len, const char* ins, int ins_len) {
+    // A new change drops whatever had been undone.
+    for (int i = e->op_pos; i < e->nops; i++) op_free(&e->ops[i]);
+    e->nops = e->op_pos;
+
+    // Typing: one byte appended where the last insert ended is one step, not
+    // one per keystroke.
+    if (del_len == 0 && ins_len == 1 && e->nops > 0) {
+        struct gravity_edit_op* t = &e->ops[e->nops - 1];
+        if (t->del_len == 0 && t->ins_len > 0 && t->at + t->ins_len == at) {
+            char* grown = (char*)malloc((unsigned long)t->ins_len + 1);
+            if (grown != 0) {
+                for (int i = 0; i < t->ins_len; i++) grown[i] = t->ins[i];
+                grown[t->ins_len] = ins[0];
+                free(t->ins);
+                t->ins = grown;
+                t->ins_len++;
+                e->op_bytes++;
+                e->op_pos = e->nops;
+                return;
+            }
+        }
+    }
+
+    // Room: drop the oldest steps when the log is full or holds too much text.
+    while (e->nops >= GRAVITY_EDITOR_UNDO ||
+           e->op_bytes + del_len + ins_len > GRAVITY_EDITOR_UNDO_BYTES) {
+        if (e->nops == 0) break;
+        e->op_bytes -= e->ops[0].del_len + e->ops[0].ins_len;
+        op_free(&e->ops[0]);
+        for (int i = 0; i < e->nops - 1; i++) e->ops[i] = e->ops[i + 1];
+        e->nops--;
+        // Keep "saved" pointing at the same step as the log shifts.
+        if (e->op_pos > 0) e->op_pos--;
+        if (e->saved_pos > 0) e->saved_pos--;
+    }
+
+    struct gravity_edit_op* o = &e->ops[e->nops];
+    o->at = at;
+    o->del_len = del_len;
+    o->ins_len = ins_len;
+    o->del = 0;
+    o->ins = 0;
+    if (del_len > 0) {
+        o->del = (char*)malloc((unsigned long)del_len);
+        if (o->del == 0) return; // out of memory: forget this step
+        for (int i = 0; i < del_len; i++) o->del[i] = del[i];
+    }
+    if (ins_len > 0) {
+        o->ins = (char*)malloc((unsigned long)ins_len);
+        if (o->ins == 0) {
+            free(o->del);
+            o->del = 0;
+            return;
+        }
+        for (int i = 0; i < ins_len; i++) o->ins[i] = ins[i];
+    }
+    e->op_bytes += del_len + ins_len;
+    e->nops++;
+    e->op_pos = e->nops;
+}
+
+/* One step. The two directions are mirror images: redo takes the old text out
+   and puts the new text in; undo does the reverse. Only the caret's resting
+   place differs. */
+static void op_apply(struct gravity_editor* e, const struct gravity_edit_op* o,
+                     int forward) {
+    if (forward) {
+        if (o->del_len > 0) gravity_buffer_erase(&e->text, o->at, o->del_len);
+        if (o->ins_len > 0) gravity_buffer_insert(&e->text, o->at, o->ins, o->ins_len);
+        e->cursor = o->at + o->ins_len;
+    } else {
+        if (o->ins_len > 0) gravity_buffer_erase(&e->text, o->at, o->ins_len);
+        if (o->del_len > 0) gravity_buffer_insert(&e->text, o->at, o->del, o->del_len);
+        e->cursor = o->at + o->del_len;
+    }
+    e->sel = -1;
+}
+
+int gravity_editor_undo(struct gravity_editor* e) {
+    if (e->op_pos == 0) return 0;
+    op_apply(e, &e->ops[--e->op_pos], 0);
+    edited(e);
+    return 1;
+}
+
+int gravity_editor_redo(struct gravity_editor* e) {
+    if (e->op_pos >= e->nops) return 0;
+    op_apply(e, &e->ops[e->op_pos++], 1);
+    edited(e);
+    return 1;
+}
+
+int gravity_editor_can_undo(const struct gravity_editor* e) { return e->op_pos > 0; }
+int gravity_editor_can_redo(const struct gravity_editor* e) { return e->op_pos < e->nops; }
+
 static void edited(struct gravity_editor* e) {
-    e->modified = 1;
+    // The file is "modified" when the log is not sitting at the saved step, so
+    // undoing back to the last save clears the marker.
+    e->modified = (e->op_pos != e->saved_pos);
     e->rev++;
     e->goal_col = -1;
     e->msg[0] = '\0'; // drop a stale "saved"/error line once typing resumes
     ensure_visible(e);
 }
 
-static void insert_text(struct gravity_editor* e, const char* s, int n) {
-    if (gravity_buffer_insert(&e->text, e->cursor, s, n) != 0) {
+/* The one place the buffer changes: record it, apply it, and let the caret
+   follow. Every edit goes through here so the undo log cannot miss one. */
+static void apply(struct gravity_editor* e, int at, const char* del, int del_len,
+                  const char* ins, int ins_len) {
+    op_push(e, at, del, del_len, ins, ins_len);
+    if (del_len > 0) gravity_buffer_erase(&e->text, at, del_len);
+    if (ins_len > 0 && gravity_buffer_insert(&e->text, at, ins, ins_len) != 0) {
         set_msg(e, "out of memory");
+        e->cursor = at;
+        edited(e);
         return;
     }
-    e->cursor += n;
+    e->cursor = at + ins_len;
     edited(e);
+}
+
+static void insert_text(struct gravity_editor* e, const char* s, int n) {
+    apply(e, e->cursor, 0, 0, s, n);
 }
 
 /* Insert 's' at the caret, replacing the selection if there is one. */
 static void replace_sel(struct gravity_editor* e, const char* s, int n) {
     if (has_sel(e)) {
         int lo = sel_lo(e);
-        gravity_buffer_erase(&e->text, lo, sel_hi(e) - lo);
-        e->cursor = lo;
+        apply(e, lo, e->text.buf + lo, sel_hi(e) - lo, s, n);
         e->sel = -1;
+        return;
     }
-    if (n > 0) { insert_text(e, s, n); return; }
-    edited(e);
+    insert_text(e, s, n);
 }
 
 static void backspace(struct gravity_editor* e) {
     if (has_sel(e)) { replace_sel(e, 0, 0); return; }
     if (e->cursor <= 0) return;
-    gravity_buffer_erase(&e->text, e->cursor - 1, 1);
-    e->cursor--;
-    edited(e);
+    apply(e, e->cursor - 1, e->text.buf + e->cursor - 1, 1, 0, 0);
 }
 
 static void delete_forward(struct gravity_editor* e) {
     if (has_sel(e)) { replace_sel(e, 0, 0); return; }
     if (e->cursor >= e->text.len) return;
-    gravity_buffer_erase(&e->text, e->cursor, 1);
-    edited(e);
+    apply(e, e->cursor, e->text.buf + e->cursor, 1, 0, 0);
 }
 
 static void insert_tab(struct gravity_editor* e) {
@@ -142,10 +271,8 @@ static void cut_sel(struct gravity_editor* e) {
         set_msg(e, "cut failed");
         return;
     }
-    gravity_buffer_erase(&e->text, lo, n);
-    e->cursor = lo;
+    apply(e, lo, e->text.buf + lo, n, 0, 0);
     e->sel = -1;
-    edited(e);
     snprintf(e->msg, sizeof(e->msg), "cut %d bytes", n);
 }
 
@@ -200,6 +327,7 @@ void gravity_editor_reload(struct gravity_editor* e) {
     e->cursor = 0; e->top = 0; e->left = 0; e->goal_col = -1;
     e->sel = -1;
     e->modified = 0;
+    undo_reset(e);
 
     int fd = grv_open(e->path, GRV_O_RDONLY);
     if (fd < 0) {
@@ -230,7 +358,9 @@ int gravity_editor_save(struct gravity_editor* e) {
         set_msg(e, "short write");
         return -1;
     }
+    // Undoing back to here is "not modified" again.
     e->modified = 0;
+    e->saved_pos = e->op_pos;
     snprintf(e->msg, sizeof(e->msg), "saved %d bytes", e->text.len);
     return (int)e->text.len;
 }
@@ -346,14 +476,18 @@ void gravity_editor_draw(struct gravity_editor* e, struct gravity_canvas* c) {
 int gravity_editor_key(struct gravity_editor* e, long v, int mods) {
     int shift = (mods & GRV_MOD_SHIFT) != 0;
 
-    // Ctrl+Shift+<letter>: the clipboard chords. The kernel leaves the letter
-    // intact (and uppercase) when Shift is held, so this cannot be confused
-    // with Ctrl+C, which stays the interrupt key.
+    // Ctrl+Shift+<letter>: the clipboard chords, and redo. The kernel leaves the
+    // letter intact (and uppercase) when Shift is held, so these cannot be
+    // confused with Ctrl+C, which stays the interrupt key.
     if ((mods & GRV_MOD_CTRL) && shift) {
         if (v == 'C') { copy_sel(e); return 1; }
         if (v == 'X') { cut_sel(e); return 1; }
         if (v == 'V') { paste(e); return 1; }
+        if (v == 'Z') { gravity_editor_redo(e); return 1; }
     }
+
+    if (v == CTRL('z')) { gravity_editor_undo(e); return 1; }
+    if (v == CTRL('y')) { gravity_editor_redo(e); return 1; }
 
     if (v == CTRL('a') || v == GRV_KEY_HOME) {
         anchor_for(e, shift);
@@ -440,6 +574,11 @@ int gravity_editor_init(struct gravity_editor* e, const char* path,
     e->cursor = 0; e->sel = -1; e->top = 0; e->left = 0; e->goal_col = -1;
     e->modified = 0; e->rev = 0; e->sb_drag = 0; e->mouse_held = 0;
     e->msg[0] = '\0';
+    e->nops = 0; e->op_pos = 0; e->op_bytes = 0; e->saved_pos = 0;
+    for (int k = 0; k < GRAVITY_EDITOR_UNDO; k++) {
+        e->ops[k].del = 0;
+        e->ops[k].ins = 0;
+    }
 
     int i = 0;
     while (path && path[i] && i < (int)sizeof(e->path) - 1) { e->path[i] = path[i]; i++; }
@@ -451,6 +590,7 @@ int gravity_editor_init(struct gravity_editor* e, const char* path,
 }
 
 void gravity_editor_free(struct gravity_editor* e) {
+    undo_reset(e);
     gravity_buffer_free(&e->text);
 }
 

@@ -88,6 +88,38 @@ def editor_selection(g):
 
 
 @test
+def editor_undo(g):
+    # Ctrl+Z steps back through the change log, Ctrl+Shift+Z forward again, and
+    # undoing back to the last save clears the modified marker.
+    g.shell("bg edit.elf /undotest.txt")
+    g.wait_for(r"window #[0-9]+ 'edit")
+    g.wait_for(r"wm: title #[0-9]+ 'edit: undotest\.txt'")
+    w = g.await_window("edit")
+
+    n = g.count("wm: focus task")
+    g.click_title(w)
+    g.wait_more("wm: focus task", n + 1)
+
+    g.type("hello"); g.key("ret")     # one coalesced step
+    g.ctrl("z")                       # undo it: back to an empty file
+    g.ctrl("s")
+    g.wait_for(r"edit: saved /undotest\.txt \(0 bytes\)")
+
+    # The redo chord is three keys, so wait for its effect (the title turning
+    # modified again) before saving — otherwise the save overtakes it.
+    marked = g.count(r"edit: undotest\.txt \*")
+    g.chord("ctrl", "shift", "z")
+    g.wait_more(r"edit: undotest\.txt \*", marked + 1)
+    g.ctrl("s")
+    g.wait_for(r"edit: saved /undotest\.txt \(6 bytes\)")
+    g.ctrl("q")
+    g.wait_window_gone("edit")
+
+    g.shell("cat /undotest.txt")
+    g.wait_for(r"^hello$")
+
+
+@test
 def launcher_menu(g):
     before = os.path.join(g.art, "menu_before.ppm")
     after = os.path.join(g.art, "menu_after.ppm")
