@@ -135,6 +135,12 @@ value with a different meaning.
 | 47 | `RENAME` | `from, to` | 0 or −1 (both sides must be on the same filesystem) |
 | 48 | `TIME` | — | wall-clock seconds since the Unix epoch (RTC-anchored) |
 | 49 | `SURFACE_RESIZE` | `id, w, h, out*` | 0 or −1 (owner only; the buffer is reallocated, so the caller must re-bind to the new `address`) |
+| 50 | `MAP_FILE` | `path, out*` | 0 or −1; fills `{address, size}` with a read-only, zero-copy mapping |
+| 51 | `MUNMAP` | `address` | 0 or −1 (the address a mapping call returned) |
+| 52 | `SHM_CREATE` | `size` | region id (> 0) or −1 |
+| 53 | `SHM_GRANT` | `id, task` | 0 or −1 (owner only) |
+| 54 | `SHM_MAP` | `id, out*` | 0 or −1; fills `{address, size}` |
+| 55 | `SHM_CLOSE` | `id` | 0 or −1 (owner only) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -255,6 +261,31 @@ struct grv_fault_record {
     unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
 };
 ```
+
+## Memory mappings
+
+Surfaces are one kind of shared memory; these are the other two. Both map frames
+into a task's address space that the task does **not** own, which is why the
+kernel marks those leaves with a software bit (`PTE_SHARED`, bit 9): the
+address-space teardown clears the mapping and leaves the frames alone, so
+whoever owns them frees them.
+
+- **A file mapping** (`MAP_FILE`) is a read-only, zero-copy view of a file. It
+  works when the backend can promise the bytes stay put: a tarfs member is a
+  slice of the immutable image, so the mapping is just its physical frames —
+  nothing is copied, and nothing can change under the reader. The overlay
+  forwards it to the lower layer, and refuses when the file has been copied up
+  (a ramfs buffer can be reallocated). A file rarely starts on a page boundary,
+  so the returned address points at its real first byte inside the mapping.
+- **A shared region** (`SHM_*`) is anonymous pages one task creates and others
+  attach. The id is a handle, but knowing it is not enough: the owner *grants*
+  the region to a task (`SHM_GRANT`), so a region is handed over deliberately.
+  It is zeroed on creation and reference counted, so its frames outlive the
+  owner if another task still has it attached.
+
+This is what four-word messages cannot do: a producer and a consumer share a
+buffer instead of copying through the mailbox. `MUNMAP` drops either kind, and a
+task's mappings and handles are released when it dies.
 
 ## Display authority and input
 
