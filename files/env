@@ -1,0 +1,10 @@
+# The environment every program starts with. The kernel reads this at boot
+# (src/kernel/core/env.cpp) and copies it onto each new task's stack, where crt0
+# finds it and getenv() reads it.
+#
+# One NAME=VALUE per line. Blank lines and '#' comments are ignored.
+#
+# LUA_PATH is what Lua searches for modules, so this is where a .lua file can be
+# put and then `require`d by name. Lua also reads LUA_INIT (a script to run at
+# startup) from the environment if it is set here.
+LUA_PATH=/lua/?.lua;/lua/?/init.lua

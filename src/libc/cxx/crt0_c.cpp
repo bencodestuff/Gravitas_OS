@@ -17,10 +17,14 @@ typedef void (*ctor_t)(void);
 extern "C" {
     extern ctor_t __init_array_start[];
     extern ctor_t __init_array_end[];
+    char** environ = 0;
 }
 
 extern "C" __attribute__((noinline))
 void _start(uint64_t argc, char** argv) {
+    // As in crt0.cpp: the environment is the block right after argv.
+    environ = argv + argc + 1;
+
     for (ctor_t* c = __init_array_start; c < __init_array_end; c++) {
         (*c)();
     }

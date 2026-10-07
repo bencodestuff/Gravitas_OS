@@ -182,7 +182,13 @@ int main(int argc, char** argv) {
     check(strcmp(strerror(ENOENT), "No such file or directory") == 0, "strerror ENOENT");
     check(strcmp(strerror(EROFS), "Read-only filesystem") == 0, "strerror EROFS");
     check(strerror(9999) != 0 && strerror(9999)[0] != '\0', "strerror unknown readable");
-    check(getenv("PATH") == 0, "getenv miss -> NULL (no environment)");
+    // The environment comes from /env via the kernel, laid out after argv.
+    check(getenv("LUA_PATH") != 0, "getenv finds a variable from /env");
+    check(getenv("LUA_PATH") != 0 &&
+          strcmp(getenv("LUA_PATH"), "/lua/?.lua;/lua/?/init.lua") == 0,
+          "getenv returns the value, not the name");
+    check(getenv("NO_SUCH_VARIABLE") == 0, "getenv miss -> NULL");
+    check(getenv("") == 0, "getenv on an empty name -> NULL");
     check(setlocale(LC_ALL, NULL) != 0, "setlocale query");
     check(setlocale(LC_ALL, "C") != 0, "setlocale C");
     check(setlocale(LC_ALL, "POSIX") != 0, "setlocale POSIX");

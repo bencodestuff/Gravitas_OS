@@ -68,6 +68,16 @@ write to an image file is copied up first (or shadowed by `O_TRUNC`), the
 listing is the union of both layers, and deleting an image file leaves a
 whiteout marker (`.wh.<name>`) in the upper rather than touching the image.
 
+## Environment
+
+Every program starts with an environment: the kernel reads `/env` at boot
+(`NAME=VALUE` per line) and copies it onto each new task's stack, right after
+`argv` — the System V layout, so `crt0` points `environ` at `argv + argc + 1`
+and `getenv` just walks it. It is a file rather than a kernel constant, so what a
+program starts with is something you can read and change; `LUA_PATH` (where Lua
+looks for modules) is the first thing to use it. There is no `setenv`: nothing
+writes the block after the kernel builds it.
+
 ## Message types
 
 `SEND`/`RECV` carry a free-form `type`; the kernel only reserves the values

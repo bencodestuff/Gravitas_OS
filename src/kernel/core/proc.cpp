@@ -10,6 +10,7 @@
 #include "kernel/core/heap.h"
 #include "kernel/core/pmm.h"
 #include "kernel/core/vmm.h"
+#include "kernel/core/env.h"
 #include "kernel/core/timer.h"
 #include "kernel/gfx/compositor.h"
 #include "fs/vfs.h"
@@ -262,23 +263,37 @@ namespace Sched {
             VMM::map_page(PMM::alloc_page(), stack_base + (p + 1) * 4096, 0x07); // P|W|U
         if (switched) VMM::switch_pml4(old_cr3);
 
-        // --- Build the initial user stack (System V argv layout) ---
-        // [rsp]     = argc
-        // [rsp+8..] = argv[0..argc-1], argv[argc] = NULL
-        // higher    = the argv string bytes themselves
+        // --- Build the initial user stack (System V layout) ---
+        // [rsp]      = argc
+        // [rsp+8..]  = argv[0..argc-1], then NULL
+        // then       = envp[0..envc-1], then NULL
+        // higher     = the argv and env string bytes themselves
+        //
+        // crt0 finds the environment as argv + argc + 1, which is why the two
+        // arrays are laid out together rather than pointed at separately.
         static uint64_t str_addrs[8];
+        static uint64_t env_addrs[Env::MAX_HANDOFF];
+        int envc = Env::count();
+        if (envc > Env::MAX_HANDOFF) envc = Env::MAX_HANDOFF;
+
         uint64_t total_len = 0;
         for (int i = 0; i < argc; i++) {
             const char* s = argv[i];
             while (*s) { total_len++; s++; }
             total_len++; // NUL
         }
+        for (int i = 0; i < envc; i++) {
+            const char* s = Env::at(i);
+            while (*s) { total_len++; s++; }
+            total_len++;
+        }
         uint64_t stack_top_va = stack_base + (USER_STACK_PAGES + 1) * 4096;
         uint64_t strings_start = (stack_top_va - total_len) & ~(uint64_t)15;
-        // Align the argv array down so the initial RSP is 16n+8: the SysV
+        // Align the pointer array down so the initial RSP is 16n+8: the SysV
         // convention a called function expects after its return address is
         // pushed. SSE spills need that alignment.
-        uint64_t array_start = (strings_start - ((argc + 1) * 8)) & ~(uint64_t)15;
+        uint64_t nptrs = (uint64_t)(argc + 1) + (uint64_t)(envc + 1);
+        uint64_t array_start = (strings_start - nptrs * 8) & ~(uint64_t)15;
         uint64_t new_rsp = array_start - 8;
 
         char* dst = (char*)strings_start;
@@ -288,8 +303,17 @@ namespace Sched {
             while (*s) *dst++ = *s++;
             *dst++ = '\0';
         }
-        for (int i = 0; i < argc; i++) ((uint64_t*)array_start)[i] = str_addrs[i];
-        ((uint64_t*)array_start)[argc] = 0; // argv[argc] = NULL
+        for (int i = 0; i < envc; i++) {
+            env_addrs[i] = (uint64_t)dst;
+            const char* s = Env::at(i);
+            while (*s) *dst++ = *s++;
+            *dst++ = '\0';
+        }
+        uint64_t* ap = (uint64_t*)array_start;
+        for (int i = 0; i < argc; i++) ap[i] = str_addrs[i];
+        ap[argc] = 0;                                       // argv[argc] = NULL
+        for (int i = 0; i < envc; i++) ap[argc + 1 + i] = env_addrs[i];
+        ap[argc + 1 + envc] = 0;                            // envp[envc] = NULL
         *(uint64_t*)new_rsp = (uint64_t)argc;
 
         new_task->user_rip = rip;

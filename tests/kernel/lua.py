@@ -59,6 +59,16 @@ def lua_writes_the_root(g):
 
 
 @test
+def lua_environment(g):
+    # The environment comes from /env through the kernel, and Lua reads
+    # LUA_PATH from it — so the value a program starts with is visible.
+    g.shell("run lua.elf -e print(os.getenv('LUA_PATH'))")
+    g.wait_for(r"^/lua/\?\.lua;/lua/\?/init\.lua$")
+    g.shell("run lua.elf -e print(os.getenv('NOT_SET_ANYWHERE'))")
+    g.wait_for(r"^nil$")
+
+
+@test
 def lua_repl(g):
     # The interactive interpreter: banner, a typed expression, then Ctrl+C
     # (the foreground-job interrupt) ends it and the shell comes back.

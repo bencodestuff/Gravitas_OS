@@ -24,6 +24,7 @@
 #include "fs/tar.h"
 #include "fs/vfs.h"
 #include "kernel/core/symbols.h"
+#include "kernel/core/env.h"
 #include "fs/ramfs.h"
 #include "fs/overlay.h"
 
@@ -265,6 +266,17 @@ extern "C" void kmain(void) {
                 kprint3("[Symbols] self-check: ", self, "\n");
         } else {
             kprint("[Symbols] no table (faults will print bare addresses)\n");
+        }
+    }
+
+    // The environment every program starts with: a file, read once, copied onto
+    // each new task's stack (see kernel/core/env.h).
+    {
+        static char envfile[1024];
+        uint64_t envlen = 0;
+        if (VFS::read_full("/env", envfile, sizeof(envfile), &envlen) && envlen > 0) {
+            Env::set(envfile, envlen);
+            kprint_lus("[Env] variables: ", (uint64_t)Env::count(), "\n");
         }
     }
 
