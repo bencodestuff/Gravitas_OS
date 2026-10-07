@@ -136,6 +136,42 @@ int main(int argc, char** argv) {
     grv_close(fd);
     check(grv_unlink(reuse) == 0, "unlink the reuse file");
 
+    // --- the ramfs has a ceiling, and says ENOSPC at it ---
+    // The backing store is the kernel heap: without a cap, a runaway writer
+    // takes the whole thing and there is no error to report.
+    const char* big = "/tmp/big.bin";
+    grv_unlink(big);
+    fd = grv_open(big, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "open for the size-cap test");
+    static char chunk[4096];
+    for (int i = 0; i < 4096; i++) chunk[i] = (char)(i & 0x7F);
+
+    long total = 0;
+    int capped = 0;
+    for (int i = 0; i < 4096 && !capped; i++) { // up to 16MB of attempts
+        errno = 0;
+        long w = grv_write_fd(fd, chunk, sizeof(chunk));
+        if (w < 0) { capped = (errno == ENOSPC); break; }
+        total += w;
+    }
+    check(capped, "writing past the ramfs cap -> ENOSPC");
+    check(total == (1 << 20), "the cap is per file, and the file reached it");
+    grv_close(fd);
+
+    // ...and the room comes back when the file goes.
+    const char* big2 = "/tmp/big2.bin";
+    grv_unlink(big2);
+    fd = grv_open(big2, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    long again = 0;
+    for (int i = 0; i < 256; i++) {
+        long w = grv_write_fd(fd, chunk, sizeof(chunk));
+        if (w < 0) break;
+        again += w;
+    }
+    check(again == (1 << 20), "unlinking a big file frees its room");
+    grv_close(fd);
+    check(grv_unlink(big) == 0 && grv_unlink(big2) == 0, "clean up the big files");
+
     if (fails == 0) { printf("filetest: all checks pass\n"); return 0; }
     printf("filetest: %d check(s) failed\n", fails);
     return 1;

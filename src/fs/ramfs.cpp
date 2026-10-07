@@ -23,6 +23,33 @@ struct Node {
 
 static Node* root = nullptr;
 
+// A ceiling on file data, because the backing store is the kernel heap: a
+// runaway writer would otherwise eat all 32MB of it and there would be no
+// ENOSPC to report. Per file, and across the filesystem.
+constexpr uint64_t MAX_FILE_BYTES  = 1ull << 20; // 1 MB
+constexpr uint64_t MAX_TOTAL_BYTES = 8ull << 20; // 8 MB
+static uint64_t ram_bytes = 0;                   // held by file data right now
+
+// Give a file a buffer of at least 'need' bytes, growing in pages. False when
+// that would pass a cap (the caller then reports ENOSPC by writing less).
+static bool reserve(Node* n, uint64_t need) {
+    if (need <= n->capacity) return true;
+    if (need > MAX_FILE_BYTES) return false;
+
+    uint64_t newcap = (need + 4095) & ~(uint64_t)4095;
+    // What is already held, less this file's old buffer, plus the new one.
+    if (ram_bytes - n->capacity + newcap > MAX_TOTAL_BYTES) return false;
+
+    uint8_t* nd = new uint8_t[newcap];
+    if (nd == nullptr) return false;
+    for (uint64_t i = 0; i < n->size; i++) nd[i] = n->data[i];
+    delete[] n->data;
+    n->data = nd;
+    ram_bytes += newcap - n->capacity;
+    n->capacity = newcap;
+    return true;
+}
+
 // --- node helpers ---
 static Node* new_node(const char* name, bool is_dir) {
     Node* n = new Node;
@@ -44,7 +71,10 @@ static Node* new_node(const char* name, bool is_dir) {
 // away, the bytes a reader is using do not.
 static void node_unref(Node* n) {
     if (--n->refs > 0) return;
-    if (n->data) delete[] n->data;
+    if (n->data) {
+        ram_bytes -= n->capacity;
+        delete[] n->data;
+    }
     delete n;
 }
 
@@ -124,15 +154,11 @@ static uint64_t ramfs_write(void* priv, void* handle, const void* buf,
     Node* n = (Node*)handle;
     uint64_t end = offset + count;
 
-    // Grow the backing buffer if needed (kernel heap)
-    if (end > n->capacity) {
-        uint64_t newcap = (end + 4095) & ~(uint64_t)4095;
-        uint8_t* nd = new uint8_t[newcap];
-        for (uint64_t i = 0; i < n->size; i++) nd[i] = n->data[i];
-        delete[] n->data;
-        n->data = nd;
-        n->capacity = newcap;
-    }
+    // No room: report nothing written, which the VFS turns into ENOSPC. (Not a
+    // partial write: the caps are page-sized, and a short write that silently
+    // loses bytes is worse than a refusal.)
+    if (end > MAX_FILE_BYTES || !reserve(n, end)) return 0;
+
     const uint8_t* src = (const uint8_t*)buf;
     for (uint64_t i = 0; i < count; i++) n->data[offset + i] = src[i];
     if (end > n->size) n->size = end;
@@ -179,13 +205,8 @@ static int ramfs_truncate(void* priv, void* handle, uint64_t size) {
     (void)priv;
     Node* n = (Node*)handle;
     if (size > n->capacity) {
-        uint64_t newcap = (size + 4095) & ~(uint64_t)4095;
-        uint8_t* nd = new uint8_t[newcap];
-        for (uint64_t i = 0; i < n->size; i++) nd[i] = n->data[i];
-        for (uint64_t i = n->size; i < size; i++) nd[i] = 0; // zero-fill growth
-        delete[] n->data;
-        n->data = nd;
-        n->capacity = newcap;
+        if (!reserve(n, size)) return -1; // past a cap
+        for (uint64_t i = n->size; i < size; i++) n->data[i] = 0; // zero-fill
     } else if (size > n->size) {
         for (uint64_t i = n->size; i < size; i++) n->data[i] = 0;
     }
@@ -287,6 +308,7 @@ static VFS::Filesystem fs = {
     .truncate = ramfs_truncate,
     .unlink   = ramfs_unlink,
     .rename   = ramfs_rename,
+    .map      = nullptr, // its bytes can be reallocated, so nothing may map it
 };
 
 VFS::Filesystem* instance() {

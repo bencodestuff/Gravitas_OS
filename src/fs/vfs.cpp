@@ -376,6 +376,9 @@ long write_fd(int fd, const void* buf, uint64_t count) {
     if (h == nullptr) return -Errno::EBADF;
     if (h->fs->write == nullptr) return -Errno::EROFS;
     uint64_t n = h->fs->write(h->fs->priv, h->fs_handle, buf, count, h->offset);
+    // A backend that writes nothing for a real request has run out of room
+    // (a read-only backend never gets here: it has no write at all).
+    if (n == 0 && count > 0) return -Errno::ENOSPC;
     h->offset += n;
     // The handle's size was captured at open; a write that extends the file
     // has to update it, or a later read (or lseek END) on the same fd would
@@ -455,8 +458,9 @@ int ftruncate_fd(int fd, uint64_t size) {
     if (h == nullptr) return -Errno::EBADF;
     if (h->fs->truncate == nullptr) return -Errno::EROFS;
     int r = h->fs->truncate(h->fs->priv, h->fs_handle, size);
-    if (r == 0) h->size = size;
-    return r == 0 ? 0 : -Errno::EIO;
+    if (r != 0) return -Errno::ENOSPC; // the only reason a truncate fails here
+    h->size = size;
+    return 0;
 }
 
 int stat_path(const char* path, uint64_t* out_size, bool* out_is_dir) {
