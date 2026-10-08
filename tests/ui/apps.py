@@ -455,19 +455,30 @@ def window_resize(g):
     # no message and so gets no answer.
     g.wait_more(r"wm: resize #\d+ \d+x\d+", finals + 1)
 
-    req = ack = None
-    for m in re.finditer(r"wm: resize #(\d+) (\d+)x(\d+)", g.log()):
-        req = m
-    for m in re.finditer(r"wm: resized #(\d+) (\d+)x(\d+)", g.log()):
-        ack = m
-    if not req or not ack:
+    # The two lines mean different things: `resize` is the window's size at that
+    # moment (a state readout) and `resized` is what the client took. They
+    # describe the same state, so they must agree — but the drag asks in
+    # 8-pixel steps, so an answer is always in flight at the moment of release.
+    # Wait for the log to agree instead of sampling mid-drag.
+    req = ans = None
+    end = time.time() + 10
+    while time.time() < end:
+        for m in re.finditer(r"wm: resize #\d+ (\d+)x(\d+)", g.log()):
+            req = (int(m.group(1)), int(m.group(2)))
+        for m in re.finditer(r"wm: resized #\d+ (\d+)x(\d+)", g.log()):
+            ans = (int(m.group(1)), int(m.group(2)))
+        if req and ans and req == ans:
+            break
+        time.sleep(0.05)
+
+    if not req or not ans:
         g.fail("no resize request/answer pair in the log")
-    nw, nh = int(req.group(2)), int(req.group(3))
-    if (nw, nh) != (int(ack.group(2)), int(ack.group(3))):
-        g.fail("the client answered a different size: %s vs %s"
-               % (req.group(0), ack.group(0)))
-    if nw >= w["w"] or nh >= w["h"]:
-        g.fail("the drag did not shrink the window: %s" % req.group(0))
+    if req != ans:
+        g.fail("the client never agreed with the window's size: %dx%d vs %dx%d"
+               % (req[0], req[1], ans[0], ans[1]))
+    if req[0] >= w["w"] or req[1] >= w["h"]:
+        g.fail("the drag did not shrink the window: %dx%d" % req)
+    nw, nh = req
 
     # The window really is that size: its bottom pane is painted, and the strip
     # it no longer covers shows the desktop instead.
