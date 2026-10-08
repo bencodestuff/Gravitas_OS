@@ -551,6 +551,29 @@ static void sys_mkdir(IDT::Registers* regs) {
     regs->rax = (uint64_t)VFS::mkdir((const char*)regs->rdi);
 }
 
+static void sys_statfs(IDT::Registers* regs) {
+    // Mirrors struct grv_statfs in grv/syscall.h.
+    struct StatFsPkt {
+        uint64_t total;
+        uint64_t free;
+        uint64_t writable;
+        char     type[16];
+    };
+    VFS::StatFs st;
+    int r = VFS::statfs_path((const char*)regs->rdi, &st);
+    if (r == 0 && regs->rsi) {
+        StatFsPkt* out = (StatFsPkt*)regs->rsi;
+        out->total = st.total;
+        out->free = st.free;
+        out->writable = st.writable ? 1 : 0;
+        const char* t = st.type ? st.type : "";
+        uint64_t i = 0;
+        while (i + 1 < sizeof(out->type) && t[i]) { out->type[i] = t[i]; i++; }
+        out->type[i] = '\0';
+    }
+    regs->rax = (uint64_t)r;
+}
+
 static void sys_unlink(IDT::Registers* regs) {
     regs->rax = (uint64_t)VFS::unlink((const char*)regs->rdi);
 }
@@ -783,6 +806,7 @@ static const SyscallFn syscall_table[] = {
     /* 55 SHM_CLOSE       */ sys_shm_close,
     /* 56 POWEROFF        */ sys_poweroff,
     /* 57 REBOOT          */ sys_reboot,
+    /* 58 STATFS          */ sys_statfs,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

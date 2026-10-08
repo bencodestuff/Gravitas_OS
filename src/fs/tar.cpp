@@ -226,6 +226,7 @@ namespace Tar {
     static bool tar_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
     static uint64_t tar_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
     static void tar_release(void* priv, VFS::Node* node);
+    static int tar_statfs(void* priv, VFS::StatFs* out);
     static int tar_map(void* priv, VFS::Node* node, uint64_t* out_phys, uint64_t* out_size);
 
     static VFS::Filesystem tarfs = {
@@ -241,6 +242,7 @@ namespace Tar {
         .unlink   = nullptr,   // read-only
         .rename   = nullptr,   // read-only
         .release  = tar_release,
+        .statfs   = tar_statfs,
         .map      = tar_map,   // zero-copy: the image is immutable
     };
 
@@ -348,6 +350,14 @@ namespace Tar {
         (void)priv;
         delete (TarNode*)node->priv;
         delete node;
+    }
+
+    // An image is not a medium with free space: it is read-only, full stop.
+    static int tar_statfs(void* priv, VFS::StatFs* out) {
+        (void)priv;
+        out->writable = false;
+        out->free = 0;
+        return 0;
     }
 
     // tarfs members are slices of the immutable image, so a mapping is just the

@@ -686,6 +686,36 @@ int stat_path(const char* path, Stat* out) {
     return 0;
 }
 
+// --- How much room the filesystem holding a path has ---
+int statfs_path(const char* path, StatFs* out) {
+    if (out == nullptr) return -Errno::EINVAL;
+
+    char fixed[PATH_MAX];
+    const char* effective = nullptr;
+    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+
+    char rel[PATH_MAX];
+    int err = 0;
+    Filesystem* fs = resolve(effective, rel, sizeof(rel), &err);
+    if (fs == nullptr) return -err;
+
+    // The path has to name something, as it does for stat: answering with the
+    // filesystem a *missing* path would have lived on is worse than saying so.
+    Node* n = node_walk(fs, rel);
+    if (n == nullptr) return -Errno::ENOENT;
+    fs->release(fs->priv, n);
+
+    out->total = 0;
+    out->free = 0;
+    out->writable = (fs->write != nullptr);
+    out->type = fs->fs_type;
+
+    // A backend that can say more, says it. One that cannot leaves the defaults
+    // above, which are honest: unknown total, nothing free unless it can write.
+    if (fs->statfs != nullptr) fs->statfs(fs->priv, out);
+    return 0;
+}
+
 // --- A file's bytes, for a zero-copy mapping (see vfs.h) ---
 int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size) {
     char fixed[PATH_MAX];

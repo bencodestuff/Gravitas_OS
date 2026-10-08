@@ -115,6 +115,7 @@ struct Fs {
     uint32_t inodes_per_group;
     uint32_t inode_size;
     uint32_t inodes_count;
+    uint32_t blocks_count;
     uint32_t groups;
 };
 
@@ -141,6 +142,7 @@ static bool e2_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry
 static uint64_t e2_read(void* priv, VFS::Node* node, void* buf,
                         uint64_t count, uint64_t offset);
 static void e2_release(void* priv, VFS::Node* node);
+static int e2_statfs(void* priv, VFS::StatFs* out);
 
 static VFS::Filesystem inst = {
     .fs_type  = "ext2",
@@ -155,6 +157,7 @@ static VFS::Filesystem inst = {
     .unlink   = nullptr,
     .rename   = nullptr,
     .release  = e2_release,
+    .statfs   = e2_statfs,
     .map      = nullptr,    // the RAM disk could, but nothing promised it
 };
 
@@ -390,6 +393,17 @@ static void e2_release(void* priv, VFS::Node* node) {
     delete node;
 }
 
+// The medium's size is in the superblock, and it is worth reporting: it is the
+// one thing here that came off the disk rather than out of the kernel. Nothing
+// is free, though — the mount has no writer.
+static int e2_statfs(void* priv, VFS::StatFs* out) {
+    Fs* f = (Fs*)priv;
+    out->total = (uint64_t)f->blocks_count * f->block_size;
+    out->free = 0;
+    out->writable = false;
+    return 0;
+}
+
 // --- mount ---
 
 VFS::Filesystem* mount(Block::Device* dev) {
@@ -404,6 +418,7 @@ VFS::Filesystem* mount(Block::Device* dev) {
     f->inodes_per_group = 0;
     f->inode_size = 0;
     f->inodes_count = 0;
+    f->blocks_count = 0;
     f->groups = 0;
 
     // The superblock is always at byte 1024 — before the block size is known,
@@ -430,6 +445,7 @@ VFS::Filesystem* mount(Block::Device* dev) {
     f->blocks_per_group = sb.blocks_per_group;
     f->inodes_per_group = sb.inodes_per_group;
     f->inodes_count = sb.inodes_count;
+    f->blocks_count = sb.blocks_count;
     f->inode_size = (sb.rev_level >= 1 && sb.inode_size >= sizeof(Inode))
                         ? sb.inode_size : sizeof(Inode);
     f->groups = (sb.blocks_count + sb.blocks_per_group - 1) / sb.blocks_per_group;

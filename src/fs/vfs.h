@@ -82,6 +82,14 @@ struct Stat {
     uint64_t mtime;   // seconds since the epoch; 0 = unknown
 };
 
+// How much room a filesystem has.
+struct StatFs {
+    uint64_t total;      // bytes the medium holds; 0 = unknown
+    uint64_t free;       // bytes that can still be written
+    bool     writable;   // false when nothing can be written here at all
+    const char* type;    // the backend's name (its fs_type)
+};
+
 // --- Filesystem backend interface ---
 struct Filesystem {
     const char* fs_type;          // "ramfs", "tarfs", "ext2" — logging only
@@ -124,6 +132,13 @@ struct Filesystem {
 
     // Dispose a node and whatever the backend holds for it.
     void (*release)(void* priv, Node* node);
+
+    // How much room this filesystem has: 'total' is the medium, 'free' is what
+    // can still be written (so a read-only filesystem reports 0, whatever the
+    // medium holds), and 'writable' says whether anything can be written at all.
+    // nullptr when the backend cannot say, and then the VFS reports what it can
+    // infer. Returns 0 or -1.
+    int (*statfs)(void* priv, StatFs* out);
 
     // The physical address and length of a file's bytes, for a zero-copy
     // mapping. Only a backend whose bytes cannot move can promise that (an
@@ -219,6 +234,10 @@ int ftruncate_fd(int fd, uint64_t size);
 
 // Look up a path's metadata without opening it. Returns 0, or -ENOENT.
 int stat_path(const char* path, Stat* out);
+
+// How much room the filesystem holding 'path' has. A lookup, like stat: the
+// search path applies. Returns 0, or -errno.
+int statfs_path(const char* path, StatFs* out);
 
 // The physical address and length of a file's bytes, for a zero-copy mapping.
 // A lookup, like stat/open (the search path applies). Returns 0, or -errno

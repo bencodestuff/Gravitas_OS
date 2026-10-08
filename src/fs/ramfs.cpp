@@ -125,6 +125,7 @@ static int ram_create(void* priv, VFS::Node* dir, const char* name, VFS::FileTyp
 static int ram_unlink(void* priv, VFS::Node* dir, const char* name);
 static int ram_rename(void* priv, VFS::Node* from_dir, const char* from, VFS::Node* to_dir, const char* to);
 static void ram_release(void* priv, VFS::Node* node);
+static int ram_statfs(void* priv, VFS::StatFs* out);
 
 static VFS::Filesystem fs = {
     .fs_type  = "ramfs",
@@ -139,6 +140,7 @@ static VFS::Filesystem fs = {
     .unlink   = ram_unlink,
     .rename   = ram_rename,
     .release  = ram_release,
+    .statfs   = ram_statfs,
     .map      = nullptr, // its bytes can be reallocated, so nothing may map it
 };
 
@@ -298,6 +300,16 @@ static void ram_release(void* priv, VFS::Node* node) {
     (void)priv;
     if (node->priv) node_unref((RamNode*)node->priv);
     delete node;
+}
+
+// The only thing that knows the heap caps, so the only thing that can report
+// them. This is what makes ENOSPC predictable rather than a surprise.
+static int ram_statfs(void* priv, VFS::StatFs* out) {
+    (void)priv;
+    out->total = MAX_TOTAL_BYTES;
+    out->free = MAX_TOTAL_BYTES - ram_bytes;
+    out->writable = true;
+    return 0;
 }
 
 VFS::Filesystem* instance() {

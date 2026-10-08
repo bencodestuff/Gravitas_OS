@@ -102,6 +102,7 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_SHM_CLOSE      55
 #define GRV_SYSCALL_POWEROFF       56
 #define GRV_SYSCALL_REBOOT         57
+#define GRV_SYSCALL_STATFS         58
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -261,6 +262,21 @@ struct grv_stat {
 /* Metadata for a path. Returns 0 and fills *out, or -1 with errno. */
 static inline int grv_stat(const char* path, struct grv_stat* out) {
     return (int)grv_err(syscall2(GRV_SYSCALL_STAT, (long)path, (long)out));
+}
+
+/* How much room the filesystem holding 'path' has. 'total' is what the medium
+   holds (0 = unknown), 'free' is what can still be written — 0 on a read-only
+   filesystem, whatever the medium holds — and 'writable' says whether anything
+   can be written at all. 'type' is the backend's name. */
+struct grv_statfs {
+    unsigned long total;
+    unsigned long free;
+    long          writable;
+    char          type[16];
+};
+
+static inline int grv_statfs(const char* path, struct grv_statfs* out) {
+    return (int)grv_err(syscall2(GRV_SYSCALL_STATFS, (long)path, (long)out));
 }
 
 /* Create a directory / remove a file, by path. 0, or -1 with errno

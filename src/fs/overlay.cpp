@@ -41,6 +41,7 @@ static int ov_unlink(void* priv, VFS::Node* dir, const char* name);
 static int ov_rename(void* priv, VFS::Node* from_dir, const char* from, VFS::Node* to_dir, const char* to);
 static void ov_release(void* priv, VFS::Node* node);
 static int ov_map(void* priv, VFS::Node* node, uint64_t* out_phys, uint64_t* out_size);
+static int ov_statfs(void* priv, VFS::StatFs* out);
 
 static VFS::Filesystem fs = {
     .fs_type  = "overlay",
@@ -55,6 +56,7 @@ static VFS::Filesystem fs = {
     .unlink   = ov_unlink,
     .rename   = ov_rename,
     .release  = ov_release,
+    .statfs   = ov_statfs,
     .map      = ov_map,
 };
 
@@ -366,6 +368,18 @@ static int ov_map(void* priv, VFS::Node* node, uint64_t* out_phys,
     if (on->upper) return -1;
     if (on->lower == nullptr || on->lower->fs->map == nullptr) return -1;
     return on->lower->fs->map(on->lower->fs->priv, on->lower, out_phys, out_size);
+}
+
+// The overlay's room is the upper layer's room: that is where a write lands.
+// (The lower is read-only, so its size would be a number nothing can spend.)
+static int ov_statfs(void* priv, VFS::StatFs* out) {
+    (void)priv;
+    out->writable = (upper_fs != nullptr && upper_fs->write != nullptr);
+    out->free = 0;
+    out->total = 0;
+    if (upper_fs != nullptr && upper_fs->statfs != nullptr)
+        upper_fs->statfs(upper_fs->priv, out);
+    return 0;
 }
 
 void init(VFS::Filesystem* upper, VFS::Filesystem* lower) {

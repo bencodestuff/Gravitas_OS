@@ -178,6 +178,18 @@ def file_commands(g):
     g.wait_for(r"^  PID STATE")
     g.wait_for(r"^\s+\d+ running\s+-\s+ps\.elf$")
 
+    # df asks the filesystem how much room there is. The read-only mount reports
+    # nothing free, and the overlay reports the ramfs cap it writes into — the
+    # number that is otherwise invisible until a write is refused.
+    run("df /disk")
+    g.wait_for(r"^/disk\s+ext2\s+\d+K\s+0K\s+\(read-only\)$")
+    run("df /")
+    g.wait_for(r"^/\s+overlay\s+\d+K\s+\d+K\s*$")
+    # A path that does not exist is an error, not the filesystem it would have
+    # lived on.
+    run("df /no/such/path")
+    g.wait_for(r"df: /no/such/path: No such file")
+
 
 @test
 def shared_memory(g):
