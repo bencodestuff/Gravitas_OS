@@ -21,6 +21,7 @@ char* strerror(int err) {
     case EMFILE:  return (char*)"Too many open files";
     case ENOSPC:  return (char*)"No space left on device";
     case EROFS:   return (char*)"Read-only filesystem";
+    case ENAMETOOLONG: return (char*)"File name too long";
     case ENOSYS:  return (char*)"Function not implemented";
     default:      return (char*)"Unknown error";
     }

@@ -585,8 +585,20 @@ int mkdir(const char* path) {
     Filesystem* fs = resolve(path, rel, sizeof(rel), &err);
     if (fs == nullptr) return -err;
     if (fs->create == nullptr) return -Errno::EROFS;
-    Node* made = node_create(fs, rel, FT_DIR);
-    if (made == nullptr) return -Errno::EIO;
+
+    // The parent has to exist. `mkdir a/b` must not invent `a`: a typo would
+    // create a tree, and a tree is not what one directory means. (`-p` is the
+    // userland loop over the prefixes that POSIX says it is.)
+    char parent[PATH_MAX], name[NAME_MAX];
+    if (!node_split(rel, parent, name)) return -Errno::EINVAL;
+    Node* dir = node_walk(fs, parent);
+    if (dir == nullptr) return -Errno::ENOENT;
+    if (dir->type != FT_DIR) { fs->release(fs->priv, dir); return -Errno::ENOTDIR; }
+
+    Node* made = nullptr;
+    int r = fs->create(fs->priv, dir, name, FT_DIR, &made);
+    fs->release(fs->priv, dir);
+    if (r != 0) return -Errno::EEXIST;
     fs->release(fs->priv, made);
     return 0;
 }

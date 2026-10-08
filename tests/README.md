@@ -56,6 +56,15 @@ The rules that keep it from being flaky:
     in the whole log, so waiting for a string that is already there returns
     immediately. `n = g.count(pat); ...; g.wait_more(pat, n + 1)` is the safe
     shape.
+  * **One line of output is not the whole output.** A listing is printed a line
+    at a time, so waiting for `c.txt` says nothing about `deep/` arriving later
+    in the same listing. Wait for the *program* to finish before asserting on
+    what it printed, or anchor on the exact line being asserted.
+  * **A marker must belong to your command.** `[shell] program finished` is
+    printed for *any* program the shell runs, including a background task an
+    earlier test left behind — so waiting for it can return before your command
+    has run. Wait for the marker that names your program
+    (`Task 'ls.elf' exited`), counted before you type.
   * **A shell hosted by a terminal prints into its window, not the log.** Those
     tests have to sync on something else — a spawn, an exit, or a repaint.
   * The harness types at a paced rate, because the guest's PS/2 controller drops

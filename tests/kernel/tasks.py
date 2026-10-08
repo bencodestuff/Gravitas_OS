@@ -115,6 +115,71 @@ def path_limits(g):
 
 
 @test
+def file_commands(g):
+    # The userland file commands, driven the way a person would. This is the only
+    # place mkdir's "the parent must exist", cp's chunked copy and rm -r's walk
+    # are actually used.
+    #
+    # Every step waits for the program to *finish* rather than for one line of
+    # its output: a listing is printed a line at a time, so waiting for one of
+    # its lines says nothing about the rest. And the wait is anchored on that
+    # program's own exit, not on the shell's generic "program finished" — a
+    # background task from an earlier test can print that one late, and the wait
+    # would then return before this command had run at all.
+    def run(line):
+        prog = line.split()[0]
+        pat = r"Task '%s\.elf' exited" % prog
+        n = g.count(pat)
+        g.shell(line)
+        g.wait_more(pat, n + 1)
+
+    run("mkdir -p /tmp/fc/deep")
+    run("touch /tmp/fc/a.txt")
+    # The source is on the read-only ext2 mount, so no other test can have
+    # changed it. (/hello.txt in the image *is* written by overlay_root, which
+    # overwrites an image file on purpose and leaves it overwritten.)
+    run("cp /disk/hello.txt /tmp/fc/b.txt")
+    run("cat /tmp/fc/b.txt")
+    g.wait_for("Hello from the ext2 disk")
+
+    # The listing after the copy: the file cp made, the one touch made, and the
+    # directory mkdir -p made.
+    run("ls /tmp/fc")
+    g.wait_for(r"^deep/$")          # the slash exists only in a listing
+    if not g.count(r"^b\.txt$"):
+        g.fail("cp produced nothing to list")
+
+    # mv renames: the new name shows up, the old one is gone from every listing.
+    run("mv /tmp/fc/b.txt /tmp/fc/c.txt")
+    run("ls /tmp/fc")
+    g.wait_for(r"^c\.txt$")
+
+    # rm takes the file, rm -r takes the directory.
+    c = g.count(r"^c\.txt$")
+    d = g.count(r"^deep/$")
+    run("rm /tmp/fc/c.txt")
+    run("rm -r /tmp/fc/deep")
+    run("ls /tmp/fc")
+    after_c = g.count(r"^c\.txt$")
+    after_d = g.count(r"^deep/$")
+    if after_c != c:
+        g.fail("rm left the file in the listing (%d, was %d)" % (after_c, c))
+    if after_d != d:
+        g.fail("rm -r left the directory in the listing (%d, was %d)" % (after_d, d))
+
+    # mkdir without -p refuses a missing parent instead of inventing it, which is
+    # the whole reason -p is a loop in the program rather than a mode in the
+    # kernel.
+    run("mkdir /tmp/fc/nope/deep")
+    g.wait_for(r"mkdir: /tmp/fc/nope/deep: No such file")
+
+    # ps reads the task list: the header, and itself running.
+    run("ps")
+    g.wait_for(r"^  PID STATE")
+    g.wait_for(r"^\s+\d+ running\s+-\s+ps\.elf$")
+
+
+@test
 def shared_memory(g):
     # File mappings (zero-copy, out of the immutable image) and a shared region
     # that two tasks read and write through.
