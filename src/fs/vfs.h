@@ -43,6 +43,8 @@ constexpr int O_WRONLY   = 1;
 constexpr int O_RDWR     = 2;
 constexpr int O_CREATE   = 4;     // create if missing
 constexpr int O_TRUNC    = 8;     // truncate to 0 on open
+constexpr int O_APPEND   = 0x10;  // every write lands at the current end
+constexpr int O_EXCL     = 0x20;  // with O_CREATE: fail if it already exists
 
 enum FileType : uint8_t {
     FT_FILE = 0,
@@ -174,6 +176,7 @@ struct FileHandle {
     uint32_t refs       = 0;      // fd slots naming this handle
     Node*    node       = nullptr;// File: the node (one reference while refs > 0)
     uint64_t offset     = 0;      // File: read/write position
+    bool     append     = false;  // File: writes always land at the current end
     Pipe*    pipe       = nullptr;// Pipe: the shared buffer
     bool     pipe_write = false;  // Pipe: true = the write end
 };
@@ -277,6 +280,11 @@ int ftruncate_fd(int fd, uint64_t size);
 
 // Look up a path's metadata without opening it. Returns 0, or -ENOENT.
 int stat_path(const char* path, Stat* out);
+
+// The metadata of an open file, by fd — the same fields as stat_path, from the
+// node the descriptor already holds. Returns 0, or -errno (EBADF; EINVAL for a
+// console or a pipe, which are not files with a path).
+int fstat_fd(int fd, Stat* out);
 
 // How much room the filesystem holding 'path' has. A lookup, like stat: the
 // search path applies. Returns 0, or -errno.

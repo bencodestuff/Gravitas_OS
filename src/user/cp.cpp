@@ -10,7 +10,7 @@
 // The destination is opened truncating, which is the hazard: `cp a a` would
 // empty the source before reading it. Refusing the identical argument catches
 // the case people actually type; two different names for one file would need an
-// fstat-style identity check this system does not have yet.
+// inode identity check (fstat now offers the pieces), which cp does not do yet.
 
 int main(int argc, char** argv) {
     if (argc != 3) {

@@ -11,10 +11,11 @@
 #define O_CREAT  GRV_O_CREATE
 #define O_TRUNC  GRV_O_TRUNC
 
-/* Accepted for source compatibility; not implemented. fopen("a") emulates
-   append by seeking to the end, and there is no exclusive-create. */
-#define O_APPEND 0x100
-#define O_EXCL   0x200
+/* The kernel's VFS flags: O_APPEND makes every write land at the current end
+   (fopen("a") passes it), and O_EXCL with O_CREAT refuses to open an existing
+   file (fopen's "x"). */
+#define O_APPEND GRV_O_APPEND
+#define O_EXCL   GRV_O_EXCL
 
 __BEGIN_DECLS
 

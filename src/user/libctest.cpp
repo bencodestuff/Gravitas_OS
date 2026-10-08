@@ -162,6 +162,9 @@ int main(int argc, char** argv) {
     check(grv_stat("/no/such/file", &st) == -1 && errno == ENOENT,
           "stat missing -> ENOENT");
     errno = 0;
+    check(grv_fstat(99, &st) == -1 && errno == EBADF,
+          "fstat bad fd -> EBADF");
+    errno = 0;
     check(grv_read_fd(99, buf, 4) == -1 && errno == EBADF,
           "read bad fd -> EBADF");
     errno = 0;

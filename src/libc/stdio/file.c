@@ -151,29 +151,33 @@ static size_t stream_read(FILE* f, unsigned char* dst, size_t want) {
 
 // --- open / close ------------------------------------------------------
 
-// Parse a mode string. 'b' is accepted and ignored; 'x' (exclusive) is ignored
-// because O_EXCL does not exist yet — fopen("wx") behaves like "w".
-static int parse_mode(const char* mode, int* oflags, unsigned* pflags, int* append) {
+// Parse a mode string. 'b' is accepted and ignored. 'x' (exclusive) becomes
+// O_EXCL, so fopen("wx") fails with EEXIST rather than truncating a file that
+// is already there; 'a' becomes O_APPEND, so every write lands at the end
+// rather than only the first.
+static int parse_mode(const char* mode, int* oflags, unsigned* pflags) {
     if (mode == 0 || mode[0] == '\0') return -1;
 
-    int plus = 0;
-    for (const char* p = mode + 1; *p; p++)
+    int plus = 0, excl = 0;
+    for (const char* p = mode + 1; *p; p++) {
         if (*p == '+') plus = 1;
+        else if (*p == 'x') excl = 1;
+    }
+    if (excl && mode[0] == 'r') return -1;   // 'x' only means something when creating
 
-    *append = 0;
+    int x = excl ? GRV_O_EXCL : 0;
     switch (mode[0]) {
     case 'r':
         *oflags = plus ? GRV_O_RDWR : GRV_O_RDONLY;
         *pflags = FL_READ | (plus ? FL_WRITE : 0);
         return 0;
     case 'w':
-        *oflags = (plus ? GRV_O_RDWR : GRV_O_WRONLY) | GRV_O_CREATE | GRV_O_TRUNC;
+        *oflags = (plus ? GRV_O_RDWR : GRV_O_WRONLY) | GRV_O_CREATE | GRV_O_TRUNC | x;
         *pflags = FL_WRITE | (plus ? FL_READ : 0);
         return 0;
     case 'a':
-        *oflags = (plus ? GRV_O_RDWR : GRV_O_WRONLY) | GRV_O_CREATE;
+        *oflags = (plus ? GRV_O_RDWR : GRV_O_WRONLY) | GRV_O_CREATE | GRV_O_APPEND | x;
         *pflags = FL_WRITE | (plus ? FL_READ : 0);
-        *append = 1;
         return 0;
     default:
         return -1;
@@ -181,15 +185,18 @@ static int parse_mode(const char* mode, int* oflags, unsigned* pflags, int* appe
 }
 
 static FILE* open_stream(const char* path, const char* mode) {
-    int oflags, append;
+    int oflags;
     unsigned fl;
-    if (parse_mode(mode, &oflags, &fl, &append) < 0) { errno = EINVAL; return 0; }
+    if (parse_mode(mode, &oflags, &fl) < 0) { errno = EINVAL; return 0; }
 
     int fd = __stdio_open(path, oflags);
     if (fd < 0) return 0;                 // errno came from the seam
 
+    // In append mode the kernel writes at the end whatever the offset says; this
+    // seek only puts the stream's own idea of position there too, so ftell and a
+    // following read agree with the write.
     long start = 0;
-    if (append) {
+    if (oflags & GRV_O_APPEND) {
         start = __stdio_lseek(fd, 0, SEEK_END);
         if (start < 0) { __stdio_close(fd); return 0; }
     }
@@ -217,14 +224,14 @@ FILE* freopen(const char* path, const char* mode, FILE* f) {
     if (f->kind == KIND_FILE && f->which >= 0) __stdio_close(f->which);
     if (f->owns_buf) { free(f->buf); f->owns_buf = 0; }
 
-    int oflags, append;
+    int oflags;
     unsigned fl;
     int fd = -1;
     long start = 0;
-    if (parse_mode(mode, &oflags, &fl, &append) < 0) {
+    if (parse_mode(mode, &oflags, &fl) < 0) {
         errno = EINVAL;
     } else if ((fd = __stdio_open(path, oflags)) >= 0) {
-        if (append) {
+        if (oflags & GRV_O_APPEND) {
             start = __stdio_lseek(fd, 0, SEEK_END);
             if (start < 0) start = 0;
         }
@@ -417,9 +424,9 @@ int setvbuf(FILE* f, char* buf, int mode, size_t size) {
 
 // --- temporary names ---------------------------------------------------
 
-// There is no O_EXCL yet, so these are best-effort unique (a per-process
-// counter), not the race-free names the standard promises. Adequate for a
-// single-user system.
+// The name is a per-process counter, which is not unique across processes; the
+// "x" in the mode is what makes the create safe, so a name another process
+// already holds fails with EEXIST instead of being clobbered.
 static unsigned long tmp_counter = 0;
 
 char* tmpnam(char* s) {
@@ -432,5 +439,5 @@ char* tmpnam(char* s) {
 FILE* tmpfile(void) {
     char name[32];
     tmpnam(name);
-    return fopen(name, "w+");
+    return fopen(name, "w+x");
 }

@@ -43,6 +43,7 @@ struct stat {
 __BEGIN_DECLS
 
 int stat(const char* __restrict, struct stat* __restrict);
+int fstat(int, struct stat*);
 int mkdir(const char* path, mode_t mode);   /* 'mode' is ignored */
 
 __END_DECLS

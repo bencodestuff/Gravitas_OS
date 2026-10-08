@@ -2,8 +2,9 @@
 #include <grv/syscall.h>
 #include <stdlib.h>
 
-// Image decoding. The whole file is read into a heap buffer first (there is
-// no fstat), then handed to the decoder the magic bytes select.
+// Image decoding. The whole file is read into a heap buffer first — it grows as
+// it reads rather than asking for the size — then handed to the decoder the
+// magic bytes select.
 
 #define MAX_IMAGE_BYTES (32ul << 20) // 32 MB cap: a clip on runaway input
 

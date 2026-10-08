@@ -51,7 +51,7 @@ int my_errno = 0;
 
 /* --- a tiny in-memory "filesystem" ------------------------------------ */
 
-#define NFILES 3
+#define NFILES 4
 #define FCAP   8192
 
 static struct ff {
@@ -63,6 +63,7 @@ static struct ff {
     { "a.txt",  {0}, 0, 0 },
     { "b.txt",  {0}, 0, 0 },
     { "ro.txt", {0}, 0, 1 },   /* pre-existing, used for read-only tests */
+    { "c.txt",  {0}, 0, 0 },   /* reserved for the exclusive-create test */
 };
 
 static struct ff* find_file(const char* name) {
@@ -75,6 +76,7 @@ static struct ff* find_file(const char* name) {
 static struct {
     struct ff* file;
     int mayread, maywrite;
+    int append;
     long pos;
     int used;
 } opens[NOPEN];
@@ -90,6 +92,10 @@ static size_t cin_pos = 0;
 int __stdio_open(const char* path, int flags) {
     struct ff* f = find_file(path);
     if (f == 0) { errno = ENOENT; return -1; }
+    if ((flags & GRV_O_CREATE) && (flags & GRV_O_EXCL) && f->exists) {
+        errno = EEXIST;
+        return -1;
+    }
     if (!f->exists) {
         if (!(flags & GRV_O_CREATE)) { errno = ENOENT; return -1; }
         f->exists = 1;
@@ -105,6 +111,7 @@ int __stdio_open(const char* path, int flags) {
         opens[i].used = 1;
         opens[i].file = f;
         opens[i].pos = 0;
+        opens[i].append = (flags & GRV_O_APPEND) != 0;
         opens[i].maywrite = wr || rw;
         opens[i].mayread = !wr || rw;
         return i;
@@ -139,6 +146,7 @@ long __stdio_write(int fd, const void* buf, size_t n) {
     if (fd < 0 || fd >= NOPEN || !opens[fd].used) { errno = EBADF; return -1; }
     if (!opens[fd].maywrite) { errno = EACCES; return -1; }
     struct ff* f = opens[fd].file;
+    if (opens[fd].append) opens[fd].pos = f->len;   /* O_APPEND: the end, now */
     if (opens[fd].pos + (long)n > FCAP) { errno = ENOSPC; return -1; }
     memcpy(f->data + opens[fd].pos, buf, n);
     opens[fd].pos += (long)n;
@@ -277,6 +285,19 @@ chunk_done:
     ck(fgetc(f) == 'X', "append landed at end");
     fclose(f);
 
+    /* O_APPEND holds across a seek: it is the flag, not an open-time position */
+    f = fopen("a.txt", "a");
+    ck(f != 0, "fopen a again");
+    ck(fwrite("Y", 1, 1, f) == 1, "append write 2");
+    ck(fseek(f, 0, SEEK_SET) == 0, "seek inside an append stream");
+    ck(fwrite("Z", 1, 1, f) == 1, "append write after a seek");
+    fclose(f);
+    f = fopen("a.txt", "r");
+    long L2 = file_len("a.txt");
+    fseek(f, L2 - 2, SEEK_SET);
+    ck(fgetc(f) == 'Y' && fgetc(f) == 'Z', "appends still land at the end");
+    fclose(f);
+
     /* fread with size > 1 returns whole items */
     f = fopen("b.txt", "r");
     ck(fread(buf, 4, 3, f) == 3, "fread items");
@@ -312,6 +333,14 @@ chunk_done:
     /* errors: missing file */
     errno = 0;
     ck(fopen("nope.txt", "r") == 0 && errno == ENOENT, "fopen missing -> ENOENT");
+
+    /* 'x': an exclusive create refuses a file that is already there */
+    f = fopen("c.txt", "wx");
+    ck(f != 0, "fopen wx creates a missing file");
+    ck(fwrite("c", 1, 1, f) == 1, "wx write");
+    fclose(f);
+    errno = 0;
+    ck(fopen("c.txt", "wx") == 0 && errno == EEXIST, "fopen wx on existing -> EEXIST");
 
     /* fileno + freopen */
     f = fopen("a.txt", "r");

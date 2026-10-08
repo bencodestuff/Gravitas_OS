@@ -63,6 +63,12 @@ CWD first and then each program directory on the search path — `/bin`, then
 resolve against the CWD (or an absolute path) only, so a typo cannot quietly
 create or delete something under a program directory.
 
+`OPEN`'s flags are the VFS subset: `O_CREATE` creates a missing file, `O_TRUNC`
+empties one that exists, `O_APPEND` makes every write land at the current end
+(so two appenders do not overwrite each other), and `O_EXCL` with `O_CREATE`
+refuses a file that is already there — the safe create, `EEXIST` rather than a
+truncate. `O_EXCL` without `O_CREATE` has no effect.
+
 The root is an **overlay**: the tar image is the read-only lower layer and a
 ramfs is the writable upper layer over it, so the whole tree is writable. A
 write to an image file is copied up first (or shadowed by `O_TRUNC`), the
@@ -196,6 +202,7 @@ value with a different meaning.
 | 59 | `DUP` | `fd` | new descriptor (≥ 3) sharing the open file description, or −1 |
 | 60 | `DUP2` | `oldfd, newfd` | `newfd` now names `oldfd`'s description (closing what it held), or −1 |
 | 61 | `PIPE` | `fds*` | 0 and `fds = {read end, write end}`, or −1 |
+| 62 | `FSTAT` | `fd, out*` | 0/−1; the same `{size, is_dir, ino, mode, mtime}` as `STAT`, for an open descriptor |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

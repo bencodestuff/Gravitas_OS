@@ -506,9 +506,10 @@ static void sys_lseek(IDT::Registers* regs) {
     regs->rax = (uint64_t)VFS::lseek_fd((int)regs->rdi, (long)regs->rsi, (int)regs->rdx);
 }
 
-static void sys_stat(IDT::Registers* regs) {
-    // Mirrors struct grv_stat in grv/syscall.h. The host test pins that side's
-    // offsets; this pins ours to the same numbers.
+// Write a VFS::Stat into the userland packet. Mirrors struct grv_stat in
+// grv/syscall.h. The host test pins that side's offsets; this pins ours to the
+// same numbers.
+static void stat_out(uint64_t ptr, const VFS::Stat& st) {
     struct StatPkt {
         uint64_t size;
         uint64_t is_dir;
@@ -518,16 +519,27 @@ static void sys_stat(IDT::Registers* regs) {
     };
     static_assert(sizeof(StatPkt) == 40 && offsetof(StatPkt, mtime) == 32,
                   "StatPkt must match struct grv_stat in grv/syscall.h");
+    if (ptr == 0) return;
+    StatPkt* out = (StatPkt*)ptr;
+    out->size = st.size;
+    out->is_dir = (st.type == VFS::FT_DIR) ? 1 : 0;
+    out->ino = st.ino;
+    out->mode = st.mode;
+    out->mtime = st.mtime;
+}
+
+static void sys_stat(IDT::Registers* regs) {
     VFS::Stat st;
     int r = VFS::stat_path((const char*)regs->rdi, &st);
-    if (r == 0 && regs->rsi) {
-        StatPkt* out = (StatPkt*)regs->rsi;
-        out->size = st.size;
-        out->is_dir = (st.type == VFS::FT_DIR) ? 1 : 0;
-        out->ino = st.ino;
-        out->mode = st.mode;
-        out->mtime = st.mtime;
-    }
+    if (r == 0) stat_out(regs->rsi, st);
+    regs->rax = (uint64_t)r;
+}
+
+// The same record, for a descriptor the caller already holds.
+static void sys_fstat(IDT::Registers* regs) {
+    VFS::Stat st;
+    int r = VFS::fstat_fd((int)regs->rdi, &st);
+    if (r == 0) stat_out(regs->rsi, st);
     regs->rax = (uint64_t)r;
 }
 
@@ -806,6 +818,7 @@ static const SyscallFn syscall_table[] = {
     /* 59 DUP             */ sys_dup,
     /* 60 DUP2            */ sys_dup2,
     /* 61 PIPE            */ sys_pipe,
+    /* 62 FSTAT           */ sys_fstat,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

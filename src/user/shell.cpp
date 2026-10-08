@@ -260,14 +260,14 @@ static int apply_redirs(struct sh_cmd* c, int* save0, int* save1) {
     }
 
     if (c->rout) {
-        int flags = GRV_O_WRONLY | GRV_O_CREATE | (c->rout == 1 ? GRV_O_TRUNC : 0);
+        int flags = GRV_O_WRONLY | GRV_O_CREATE
+                  | (c->rout == 1 ? GRV_O_TRUNC : GRV_O_APPEND);
         int fd = grv_open(c->out_path, flags);
         if (fd < 0) {
             printf("shell: cannot open '%s' to write\n", c->out_path);
             if (*save0 >= 0) { grv_dup2(*save0, 0); grv_close(*save0); *save0 = -1; }
             return -1;
         }
-        if (c->rout == 2) grv_lseek(fd, 0, 2);   // append: start at the end (no O_APPEND)
         *save1 = grv_dup(1);
         if (*save1 < 0 || grv_dup2(fd, 1) < 0) {
             if (*save1 >= 0) { grv_close(*save1); *save1 = -1; }
@@ -402,11 +402,11 @@ static void run_pipeline(struct sh_cmd* cmds, int ncmds) {
                 save1 = grv_dup(1);
                 if (save1 < 0 || grv_dup2(pipe_w, 1) < 0) ok = false;
             } else if (c->rout) {
-                int flags = GRV_O_WRONLY | GRV_O_CREATE | (c->rout == 1 ? GRV_O_TRUNC : 0);
+                int flags = GRV_O_WRONLY | GRV_O_CREATE
+                          | (c->rout == 1 ? GRV_O_TRUNC : GRV_O_APPEND);
                 int fd = grv_open(c->out_path, flags);
                 if (fd < 0) { printf("shell: cannot open '%s' to write\n", c->out_path); ok = false; }
                 else {
-                    if (c->rout == 2) grv_lseek(fd, 0, 2);
                     save1 = grv_dup(1);
                     if (save1 < 0 || grv_dup2(fd, 1) < 0) ok = false;
                     grv_close(fd);

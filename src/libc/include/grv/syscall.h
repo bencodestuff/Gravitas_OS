@@ -106,6 +106,7 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_DUP            59
 #define GRV_SYSCALL_DUP2           60
 #define GRV_SYSCALL_PIPE           61
+#define GRV_SYSCALL_FSTAT          62
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -123,6 +124,8 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_O_RDWR   2
 #define GRV_O_CREATE 4
 #define GRV_O_TRUNC  8
+#define GRV_O_APPEND 0x10
+#define GRV_O_EXCL   0x20
 
 /* --- Convenience wrappers --- */
 
@@ -283,6 +286,13 @@ struct grv_stat {
 /* Metadata for a path. Returns 0 and fills *out, or -1 with errno. */
 static inline int grv_stat(const char* path, struct grv_stat* out) {
     return (int)grv_err(syscall2(GRV_SYSCALL_STAT, (long)path, (long)out));
+}
+
+/* Metadata for an open descriptor: the same record as grv_stat, from what the
+   fd already holds. Returns 0 and fills *out, or -1 with errno (EBADF; EINVAL
+   for a console or a pipe). */
+static inline int grv_fstat(int fd, struct grv_stat* out) {
+    return (int)grv_err(syscall2(GRV_SYSCALL_FSTAT, (long)fd, (long)out));
 }
 
 /* How much room the filesystem holding 'path' has. 'total' is what the medium

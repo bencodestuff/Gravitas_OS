@@ -59,6 +59,50 @@ int main(int argc, char** argv) {
     grv_close(fd);
     check(grv_stat(file, &st) == 0 && st.size == 0, "O_TRUNC emptied");
 
+    // --- O_APPEND: every write lands at the end ---
+    // The classic use is a log: a writer seeks to the end at open and writes
+    // there. O_APPEND does it per write, so a seek in between cannot make a
+    // later write land in the middle of the file.
+    fd = grv_open(file, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "open for append");
+    grv_write_fd(fd, "one", 3);
+    grv_close(fd);
+
+    fd = grv_open(file, GRV_O_WRONLY | GRV_O_APPEND);
+    check(fd >= 0, "open O_APPEND");
+    check(grv_write_fd(fd, "two", 3) == 3, "append write");
+    grv_lseek(fd, 0, 0);                       // a seek must not defeat the append
+    check(grv_write_fd(fd, "three", 5) == 5, "append write after a seek");
+    grv_close(fd);
+
+    check(grv_stat(file, &st) == 0 && st.size == 11, "append grew the file");
+    fd = grv_open(file, GRV_O_RDONLY);
+    n = grv_read_fd(fd, buf, sizeof(buf));
+    check(n == 11 && memcmp(buf, "onetwothree", 11) == 0, "appended contents");
+    grv_close(fd);
+
+    // --- O_EXCL: a create that refuses to clobber ---
+    errno = 0;
+    fd = grv_open(file, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_EXCL);
+    check(fd == -1 && errno == EEXIST, "O_CREATE|O_EXCL on an existing file -> EEXIST");
+    check(grv_stat(file, &st) == 0 && st.size == 11, "the refused create left it alone");
+
+    const char* excl = "/tmp/ftdir/excl.txt";
+    grv_unlink(excl);
+    fd = grv_open(excl, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_EXCL);
+    check(fd >= 0, "O_CREATE|O_EXCL creates a missing file");
+    check(grv_write_fd(fd, "x", 1) == 1, "write the exclusive create");
+    grv_close(fd);
+
+    // --- fstat: the same record, read from the descriptor ---
+    fd = grv_open(excl, GRV_O_RDONLY);
+    check(fd >= 0, "open for fstat");
+    check(grv_fstat(fd, &st) == 0 && st.size == 1 && !st.is_dir, "fstat a file");
+    errno = 0;
+    check(grv_fstat(99, &st) == -1 && errno == EBADF, "fstat bad fd -> EBADF");
+    grv_close(fd);
+    check(grv_unlink(excl) == 0, "unlink the exclusive file");
+
     check(grv_unlink(file) == 0, "unlink");
     check(grv_stat(file, &st) != 0, "stat after unlink fails");
 

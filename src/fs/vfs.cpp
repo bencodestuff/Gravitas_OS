@@ -515,6 +515,7 @@ int fd_slot_alloc(Node* node) {
         h->refs = 1;
         h->node = node;
         h->offset = 0;
+        h->append = false;
         h->pipe = nullptr;
         h->pipe_write = false;
         fds[i] = h;
@@ -559,6 +560,11 @@ int open_fd(const char* path, int flags) {
         if (fs->create == nullptr) return -Errno::EROFS;
         node = node_create(fs, rel, FT_FILE);
         if (node == nullptr) return -Errno::EIO;
+    } else if ((flags & O_CREATE) && (flags & O_EXCL)) {
+        // O_EXCL promises to create: an entry already there (file or directory)
+        // is exactly what it refuses to open.
+        fs->release(fs->priv, node);
+        return -Errno::EEXIST;
     }
     if (node->type == FT_DIR) {
         fs->release(fs->priv, node);
@@ -581,6 +587,13 @@ int open_fd(const char* path, int flags) {
     if (fd == -1) {
         fs->release(fs->priv, node); // don't leak the node
         return -Errno::EMFILE;
+    }
+    if (flags & O_APPEND) {
+        // Every write lands at the end. Start the offset there too, so an ftell
+        // right after the open reports the size without an explicit seek.
+        FileHandle* h = fds_of_current()[fd];
+        h->append = true;
+        h->offset = node->size;
     }
     return fd;
 }
@@ -689,6 +702,7 @@ long write_fd(int fd, const void* buf, uint64_t count) {
 
     Node* n = h->node;
     if (n->fs->write == nullptr) return -Errno::EROFS;
+    if (h->append) h->offset = n->size;  // O_APPEND: the end is wherever it is now
     uint64_t got = n->fs->write(n->fs->priv, n, buf, count, h->offset);
     // A backend that writes nothing for a real request has run out of room
     // (a read-only backend never gets here: it has no write at all).
@@ -939,6 +953,24 @@ int stat_path(const char* path, Stat* out) {
         out->mtime = n->mtime;
     }
     fs->release(fs->priv, n);
+    return 0;
+}
+
+// The metadata of an open file, by fd: the same fields as stat_path, read from
+// the node the descriptor already holds. A console or a pipe is not a file with
+// a path, so there is nothing to report for one.
+int fstat_fd(int fd, Stat* out) {
+    FileHandle* h = fd_slot_get(fd);
+    if (h == nullptr) return -Errno::EBADF;
+    if (h->kind != FdKind::File) return -Errno::EINVAL;
+    Node* n = h->node;
+    if (out) {
+        out->size = n->size;
+        out->type = n->type;
+        out->ino = n->ino;
+        out->mode = n->mode;
+        out->mtime = n->mtime;
+    }
     return 0;
 }
 
