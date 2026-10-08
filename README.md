@@ -55,6 +55,17 @@ ninja test-ui       # the window/desktop groups only
 | `docs/syscalls.md` | the syscall ABI and the mechanisms below it |
 | `tests/` | the test suite; see `tests/README.md` |
 
+## Boot and init
+
+The kernel starts exactly one userland program — `/bin/init.elf` — and then
+idles. Everything else is init's business, and init's business is a Lua
+manifest, `/init.lua` (source: `files/init.lua`): it names the programs to
+start and the order to start them in, and being Lua it can branch on how they
+went. To add a program to boot, append an `init.spawn("myprog.elf")` line — no
+kernel change, no rebuild. `/` is writable, so a copy at `/init.lua` in the
+overlay shadows the shipped one. The `init` table's small API is documented at
+the top of `files/init.lua`.
+
 ## Notes
 
 TODO: write this.

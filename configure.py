@@ -183,6 +183,10 @@ def main():
 
     # Userland programs: compiled into separate ELFs, NOT linked into the kernel
     user_sources = [f for f in cpp_sources if f.startswith("src/user/")]
+    # init is special: it embeds the Lua interpreter to run the boot manifest,
+    # so it links the Lua objects and gets its own rule below (a plain userelf
+    # link would not know about Lua and would fail).
+    user_sources = [f for f in user_sources if not f.endswith("/init.cpp")]
     cpp_sources = [f for f in cpp_sources if not f.startswith("src/user/")]
     # The libc builds separately (its own rules); never part of the kernel
     cpp_sources = [f for f in cpp_sources if not f.startswith("src/libc/")]
@@ -252,6 +256,16 @@ def main():
         ninja.write(f"rule lua_link\n")
         ninja.write(f"  command = {COMPILER} {' '.join(USER_CFLAGS + ['-std=c++20', '-fno-rtti', '-fno-exceptions'])} {user_link_flags} $in -o $out\n")
         ninja.write(f"  description = LINK $out\n\n")
+
+        # init.elf is a C++ program that embeds Lua, so it is compiled with the
+        # Lua include path (and without -Wall/-Wextra, which the vendored Lua
+        # headers trip over — the same reason the lua_c rule drops them).
+        init_cflags = [f for f in USER_CFLAGS if f not in ("-Wall", "-Wextra")] + [
+            "-std=c++20", "-fno-rtti", "-fno-exceptions", f"-I{LUA_SRC}",
+        ]
+        ninja.write(f"rule init_link\n")
+        ninja.write(f"  command = {COMPILER} {' '.join(init_cflags)} {user_link_flags} $in -o $out\n")
+        ninja.write(f"  description = INIT $out\n\n")
 
         ninja.write(f"rule iso\n")
         ninja.write(f"  command = ./build_iso.sh\n")
@@ -365,14 +379,25 @@ def main():
         # The objects are compiled once and linked with crt0 + the shared libc
         # objects.
         lua_objs = []
+        lua_lib_objs = []   # everything but lua.c (the standalone interpreter)
         for name in LUA_SOURCES:
             obj = f"obj/lua/{name}.o"
             ninja.write(f"build {obj}: lua_c {LUA_SRC}/{name}.c\n")
             lua_objs.append(obj)
+            if name != "lua":
+                lua_lib_objs.append(obj)
 
         ninja.write(f"build bin/lua.elf: lua_link {crt0_c_obj} {' '.join(lua_objs)} {' '.join(libc_objects)}\n")
         ninja.write(f"  base = {next_base:#x}\n")
+        next_base += 0x100000
         user_elfs.append("bin/lua.elf")
+
+        # init.elf embeds the same Lua (core + libraries, not lua.c) to run the
+        # boot manifest. It gets its own load base for the same reason as the
+        # others: a faulting RIP has to name one program's function.
+        ninja.write(f"build bin/init.elf: init_link src/user/init.cpp {crt0_obj} {' '.join(lua_lib_objs)} {' '.join(libc_objects)}\n")
+        ninja.write(f"  base = {next_base:#x}\n")
+        user_elfs.append("bin/init.elf")
 
         # The ISO needs the kernel AND every userland ELF (packed into the tar)
         ninja.write(f"build iso: iso {KERNEL_FILE} {' '.join(user_elfs)}\n")

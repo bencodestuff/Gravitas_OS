@@ -349,28 +349,18 @@ extern "C" void kmain(void) {
         }
     }
 
-    // Bring up userland: the console shell, then the window manager. The
-    // shell is created first so the WM can find and focus it by name; the
-    // WM runs in the background and owns the display (windows, focus,
-    // pointer) from boot. If it is missing, a plain console still works.
-    if (spawn_program("/bin/shell.elf", "shell") < 0)
-        kprint("[Kernel] shell.elf not found or failed to load!\n");
-
-    int wm_id = spawn_program("/bin/wm.elf", "wm.elf");
-    if (wm_id < 0) {
-        kprint("[Kernel] wm.elf not found — running a plain console.\n");
-    } else {
-        kprint_lus("[Kernel] window manager as task ", (uint64_t)wm_id, "\n");
-    }
-
-    // The terminal hosts the shell in a window; it needs a WM to place it.
-    if (wm_id >= 0) {
-        int term_id = spawn_program("/bin/term.elf", "term.elf");
-        if (term_id < 0) {
-            kprint("[Kernel] term.elf not found — console-only userland.\n");
-        } else {
-            kprint_lus("[Kernel] terminal as task ", (uint64_t)term_id, "\n");
-        }
+    // Bring up userland. The kernel starts exactly ONE program — init — and
+    // then idles; init owns boot policy from there (the manifest at
+    // /init.lua decides which programs start, in what order, and what to do if
+    // one fails). That is the same rule the rest of the tree follows: the
+    // kernel owns mechanisms, userland owns policy. Before this, the spawn
+    // order of the shell, WM and terminal was hardcoded right here.
+    if (spawn_program("/bin/init.elf", "init") < 0) {
+        // No init means nothing runs the manifest. A console shell is the one
+        // fallback that keeps the machine usable, so take it rather than dying.
+        kprint("[Kernel] init.elf not found; falling back to a console shell.\n");
+        if (spawn_program("/bin/shell.elf", "shell") < 0)
+            kprint("[Kernel] shell.elf not found either — console only.\n");
     }
 
     while (1) {

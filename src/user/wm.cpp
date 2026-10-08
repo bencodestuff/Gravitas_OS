@@ -92,16 +92,33 @@ static int mini(int a, int b) { return a < b ? a : b; }
 static int maxi(int a, int b) { return a > b ? a : b; }
 
 // Find a task by name (the console is the shell). The WM focuses it when no
-// window is focused, so keyboard input has a deterministic owner.
+// window is focused, so keyboard input has a deterministic owner. More than
+// one task can share a name — the terminal hosts a second "shell.elf" — so
+// return the LOWEST id: the one spawned first, which at boot is the console.
 static int find_task_by_name(const char* name) {
     static struct grv_taskinfo tl[32];
     int n = grv_task_list(tl, 32);
+    int best = -1;
     for (int i = 0; i < n; i++) {
         int j = 0;
         while (name[j] && tl[i].name[j] == name[j]) j++;
-        if (name[j] == 0 && tl[i].name[j] == 0) return tl[i].id;
+        if (name[j] == 0 && tl[i].name[j] == 0 &&
+            (best < 0 || tl[i].id < best))
+            best = tl[i].id;
     }
-    return -1;
+    return best;
+}
+
+// The console shell. The boot manifest spawns it by program name, and the
+// kernel names a task after the program it was asked to run — so it is
+// "shell.elf". Accept the bare "shell" too, both because an older kernel
+// named it that way and because it costs one comparison.
+static int find_console_task() {
+    int a = find_task_by_name("shell.elf");
+    int b = find_task_by_name("shell");
+    if (a < 0) return b;
+    if (b < 0) return a;
+    return a < b ? a : b;
 }
 
 static void focus_console() {
@@ -946,7 +963,7 @@ int main(int argc, char** argv) {
 
     // Keep keyboard input owned deterministically: focus the console until
     // the user clicks a window.
-    console_task = find_task_by_name("shell");
+    console_task = find_console_task();
     grv_input_focus(console_task);
     grv_wm_hotkey(GRV_MOD_ALT); // Alt chords (Alt+Tab) come to us
 
