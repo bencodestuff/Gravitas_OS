@@ -52,6 +52,8 @@ ninja test-ui       # the window/desktop groups only
 | `src/arch/` | x86_64 specific code |
 | `files/` | what gets packed into the image (`/bin`, `/fonts`, ...) |
 | `tools/` | host-side build helpers |
+| `docs/architecture.md` | how the OS is put together: the boot path and the major subsystems |
+| `docs/adding-an-app.md` | a new program: one `.cpp` and a line in `files/apps` |
 | `docs/syscalls.md` | the syscall ABI and the mechanisms below it |
 | `tests/` | the test suite; see `tests/README.md` |
 
