@@ -1,8 +1,7 @@
 #include <stdio.h>
 
-#include <grv/syscall.h>
-
+/* putchar writes stdout, not "the console": when the shell redirects fd 1 the
+   character follows it, exactly as printf's output does. */
 int putchar(int ic) {
-    grv_putc((char)ic);
-    return (unsigned char)ic;
+    return fputc(ic, stdout);
 }

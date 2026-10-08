@@ -214,25 +214,9 @@ static void sys_putc(IDT::Registers* regs) {
 }
 
 static void sys_getc(IDT::Registers* regs) {
-    // Blocks until a key arrives. Interrupts stay off across the check-and-
-    // block so a key landing in between cannot be missed (its IRQ/write wakes
-    // us). The owner is re-read every pass: a task bound to a terminal while
-    // already blocked switches to that console ring.
-    asm volatile("cli");
-    int b = -1;
-    while (true) {
-        if (Sched::console_owner_of_current() != -1) {
-            b = Sched::console_ring_getc();
-            if (b >= 0) break;
-        } else {
-            char kc = Keyboard::get_queued_key();
-            if (kc != 0) { b = (int)kc; break; }
-        }
-        Sched::block_on_keyboard();
-        Sched::yield();   // returns when a key/write wakes us
-    }
-    Sched::clear_keyboard_waiting();
-    regs->rax = (uint64_t)b;
+    // Blocks until a key arrives. The blocking loop lives in Sched (the console
+    // descriptor's line read shares it).
+    regs->rax = (uint64_t)(long)Sched::console_getc_raw();
 }
 
 // The kernel's VFS::DirEntry and the ABI's struct grv_dirent are the same
@@ -720,6 +704,18 @@ static void sys_close(IDT::Registers* regs) {
     regs->rax = 0;
 }
 
+static void sys_dup(IDT::Registers* regs) {
+    regs->rax = (uint64_t)VFS::dup_fd((int)regs->rdi);
+}
+
+static void sys_dup2(IDT::Registers* regs) {
+    regs->rax = (uint64_t)VFS::dup2_fd((int)regs->rdi, (int)regs->rsi);
+}
+
+static void sys_pipe(IDT::Registers* regs) {
+    regs->rax = (uint64_t)VFS::pipe_fd((int*)regs->rdi);
+}
+
 static void sys_brk(IDT::Registers* regs) {
     uint64_t want = regs->rdi;
     if (Sched::current_task_brk() == 0) {
@@ -807,6 +803,9 @@ static const SyscallFn syscall_table[] = {
     /* 56 POWEROFF        */ sys_poweroff,
     /* 57 REBOOT          */ sys_reboot,
     /* 58 STATFS          */ sys_statfs,
+    /* 59 DUP             */ sys_dup,
+    /* 60 DUP2            */ sys_dup2,
+    /* 61 PIPE            */ sys_pipe,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

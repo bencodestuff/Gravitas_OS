@@ -23,6 +23,7 @@ namespace Errno {
     constexpr long EMFILE  = 24; // per-task fd table full
     constexpr long ENOSPC  = 28; // no space left
     constexpr long EROFS   = 30; // read-only filesystem
+    constexpr long EPIPE   = 32; // write to a pipe whose reader has gone
     constexpr long ENAMETOOLONG = 36; // a name or path too long to represent
     constexpr long ENOSYS  = 38; // no such syscall (retired hole / unknown id)
 }

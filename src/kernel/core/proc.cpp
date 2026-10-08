@@ -330,7 +330,11 @@ namespace Sched {
         new_task->fxsave_raw = new uint8_t[512 + 63];
         new_task->fxsave_area = (uint8_t*)(((uint64_t)new_task->fxsave_raw + 63) & ~(uint64_t)63);
         for (int i = 0; i < 512; i++) new_task->fxsave_area[i] = fpu_template[i];
-        for (int i = 0; i < VFS::MAX_FDS; i++) new_task->fds[i] = nullptr;
+        // The child inherits the parent's descriptors (Unix semantics): its
+        // stdout is where the parent pointed fd 1, which is what makes a shell
+        // redirection or a pipe end survive the spawn. Console entries share the
+        // one console endpoint.
+        VFS::fds_inherit(new_task->fds);
 
         // Forge the switch_context stack. NOTE: switch_context pops in
         // REVERSE push order (r15 first, rbx last), so the slots must be

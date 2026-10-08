@@ -17,14 +17,20 @@
 
 __BEGIN_DECLS
 
-/* Descriptors 0/1/2 are the console — there are no kernel descriptors 0/1/2
-   (stdio models the console directly). read() on stdin is line-oriented and
-   write() on stdout/stderr is unbuffered, like a terminal. Every other fd is a
-   VFS file. */
+/* Descriptors 0/1/2 are the standard streams, and they are real descriptors:
+   a console by default, or a file / pipe end when the shell redirects them with
+   dup2. read() on the console is line-oriented and echoes; write() is
+   unbuffered, like a terminal. Every other fd is a VFS file (or a pipe). */
 ssize_t read(int fd, void* buf, size_t count);
 ssize_t write(int fd, const void* buf, size_t count);
 int     close(int fd);
 off_t   lseek(int fd, off_t offset, int whence);
+
+/* Descriptor plumbing. dup()/dup2() share an open file description; pipe()
+   returns {read end, write end}. A new descriptor is never 0-2. */
+int     dup(int fd);
+int     dup2(int oldfd, int newfd);
+int     pipe(int fds[2]);
 
 int unlink(const char* path);
 int rmdir(const char* path);      /* removes an empty directory */

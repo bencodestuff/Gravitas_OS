@@ -91,8 +91,10 @@ namespace Sched {
     // writes the same console (the kernel one, or a terminal's hosted console).
     void inherit_console(int child_id);
     int  console_ring_getc();                    // owned GETC: one byte, or -1
+    int  console_getc_raw();                     // GETC: block for one key/byte (no echo)
     void console_emit(char c);                   // PUTC: route or kprint
     void console_emit_str(const char* s, int n); // a whole string, same rules
+    void console_emit_bytes(const char* s, int n); // n bytes, same routing
     void console_owner_gone(int owner_id);       // detach for a dying owner
 
     // Put the current task to sleep until task 'child_id' has exited.

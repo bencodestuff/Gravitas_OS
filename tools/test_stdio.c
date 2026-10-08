@@ -71,13 +71,21 @@ static struct ff* find_file(const char* name) {
     return 0;
 }
 
-#define NOPEN 8
+#define NOPEN 12
 static struct {
     struct ff* file;
     int mayread, maywrite;
     long pos;
     int used;
 } opens[NOPEN];
+
+/* Console capture: the standard descriptors 0/1/2, which the kernel holds in
+   the real system and this fake stands in for. Reads come from a fixed string,
+   writes land in a buffer. */
+static char cout[4096];
+static size_t cout_len = 0;
+static const char* cin = "";
+static size_t cin_pos = 0;
 
 int __stdio_open(const char* path, int flags) {
     struct ff* f = find_file(path);
@@ -91,7 +99,8 @@ int __stdio_open(const char* path, int flags) {
 
     int wr = (flags & GRV_O_WRONLY) != 0;
     int rw = (flags & GRV_O_RDWR) != 0;
-    for (int i = 0; i < NOPEN; i++) {
+    /* A file descriptor is never 0-2: those are the standard streams. */
+    for (int i = 3; i < NOPEN; i++) {
         if (opens[i].used) continue;
         opens[i].used = 1;
         opens[i].file = f;
@@ -105,6 +114,11 @@ int __stdio_open(const char* path, int flags) {
 }
 
 long __stdio_read(int fd, void* buf, size_t n) {
+    if (fd == 0) {   /* the console */
+        size_t i = 0;
+        while (i < n && cin[cin_pos] != '\0') ((char*)buf)[i++] = cin[cin_pos++];
+        return (long)i;
+    }
     if (fd < 0 || fd >= NOPEN || !opens[fd].used) { errno = EBADF; return -1; }
     if (!opens[fd].mayread) { errno = EACCES; return -1; }
     struct ff* f = opens[fd].file;
@@ -117,6 +131,11 @@ long __stdio_read(int fd, void* buf, size_t n) {
 }
 
 long __stdio_write(int fd, const void* buf, size_t n) {
+    if (fd == 1 || fd == 2) {   /* the console */
+        for (size_t i = 0; i < n; i++)
+            if (cout_len < sizeof(cout) - 1) cout[cout_len++] = ((const char*)buf)[i];
+        return (long)n;
+    }
     if (fd < 0 || fd >= NOPEN || !opens[fd].used) { errno = EBADF; return -1; }
     if (!opens[fd].maywrite) { errno = EACCES; return -1; }
     struct ff* f = opens[fd].file;
@@ -144,23 +163,6 @@ int __stdio_close(int fd) {
     if (fd < 0 || fd >= NOPEN || !opens[fd].used) { errno = EBADF; return -1; }
     opens[fd].used = 0;
     return 0;
-}
-
-/* Console capture: writes land in a buffer, reads come from a fixed string. */
-static char cout[4096];
-static size_t cout_len = 0;
-
-int __stdio_putc(char c) {
-    if (cout_len < sizeof(cout) - 1) cout[cout_len++] = c;
-    return (unsigned char)c;
-}
-
-static const char* cin = "";
-static size_t cin_pos = 0;
-
-int __stdio_getc(void) {
-    if (cin[cin_pos] == '\0') return -1;   /* our console never EOFs in practice */
-    return (unsigned char)cin[cin_pos++];
 }
 
 /* --- the real FILE layer ---------------------------------------------- */

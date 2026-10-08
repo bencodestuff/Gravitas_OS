@@ -4,13 +4,14 @@
 #include <errno.h>
 #include "stdio_io.h"
 
-// The FILE layer. A stream is one of two things:
+// The FILE layer. A stream wraps a descriptor, which is one of two things:
 //
-//   * a CONSOLE stream — the three standard streams. stdin reads keys from the
-//     kernel console, stdout/stderr write to it. They are unbuffered, so a
-//     terminal sees output the moment it is produced (and ordering against
-//     printf's atomic chunks is preserved).
-//   * a FILE stream — a descriptor from the VFS. These buffer through one
+//   * a STANDARD stream — stdin/stdout/stderr. The kernel gives every task
+//     descriptors 0/1/2: a console by default, or whatever the shell pointed
+//     them at (a file, a pipe end) with dup2. They are unbuffered, so a
+//     terminal sees output the moment it is produced and a redirect lands in
+//     the file at once.
+//   * a FILE stream — a descriptor from fopen(). These buffer through one
 //     BUFSIZ (or setvbuf) buffer, because that is where buffering pays.
 //
 // A single buffer serves reads and writes: a stream is read-or-write at a time,
@@ -20,8 +21,7 @@
 // Every kernel call goes through the __stdio_* seam (stdio_io.h), so the
 // buffering logic can be exercised on the host by tools/test_stdio.c.
 
-#define KIND_CONSOLE 0
-#define KIND_FILE    1
+#define KIND_FILE 1
 
 #define FL_READ  0x1u
 #define FL_WRITE 0x2u
@@ -30,7 +30,7 @@
 
 struct _FILE {
     int kind;
-    int which;           // console: 0/1/2 ; file: the descriptor
+    int which;           // the descriptor
     unsigned flags;
     int ungot;           // pushback byte, -1 when empty
     unsigned char* buf;  // file streams only
@@ -41,11 +41,11 @@ struct _FILE {
     long off;            // the descriptor's physical offset
 };
 
-static struct _FILE stdin_file  = { .kind = KIND_CONSOLE, .which = 0,
+static struct _FILE stdin_file  = { .kind = KIND_FILE, .which = 0,
                                     .flags = FL_READ, .ungot = -1 };
-static struct _FILE stdout_file = { .kind = KIND_CONSOLE, .which = 1,
+static struct _FILE stdout_file = { .kind = KIND_FILE, .which = 1,
                                     .flags = FL_WRITE, .ungot = -1 };
-static struct _FILE stderr_file = { .kind = KIND_CONSOLE, .which = 2,
+static struct _FILE stderr_file = { .kind = KIND_FILE, .which = 2,
                                     .flags = FL_WRITE, .ungot = -1 };
 
 FILE* stdin  = &stdin_file;
@@ -96,11 +96,6 @@ static void discard_read(FILE* f) {
 static int stream_write(FILE* f, const unsigned char* p, size_t n) {
     if (!(f->flags & FL_WRITE)) { f->flags |= FL_ERR; return -1; }
 
-    if (f->kind == KIND_CONSOLE) {
-        for (size_t i = 0; i < n; i++) __stdio_putc((char)p[i]);
-        return 0;
-    }
-
     if (f->rlen > f->rpos) discard_read(f);   // switching read -> write
 
     while (n > 0) {
@@ -131,15 +126,6 @@ static size_t stream_read(FILE* f, unsigned char* dst, size_t want) {
 
     size_t got = 0;
     if (f->ungot >= 0) { dst[got++] = (unsigned char)f->ungot; f->ungot = -1; }
-
-    if (f->kind == KIND_CONSOLE) {
-        while (got < want) {
-            int c = __stdio_getc();
-            if (c < 0) { f->flags |= FL_EOF; break; }
-            dst[got++] = (unsigned char)c;
-        }
-        return got;
-    }
 
     while (got < want) {
         if (f->rpos < f->rlen) {
@@ -408,7 +394,6 @@ int fileno(FILE* f) {
 
 int setvbuf(FILE* f, char* buf, int mode, size_t size) {
     if (f == 0) return -1;
-    if (f->kind == KIND_CONSOLE) return 0;   // the console never buffers
 
     if (f->owns_buf) { free(f->buf); f->owns_buf = 0; }
     f->buf = 0;

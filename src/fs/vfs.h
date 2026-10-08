@@ -148,9 +148,34 @@ struct Filesystem {
 };
 
 // --- An open file (referenced by an fd) ---
+// A descriptor is one of three things, tagged by 'kind':
+//   File    — a node in a filesystem, with a read/write position
+//   Console — the caller's console endpoint (the standard streams): reads take
+//             the keyboard, writes go to the console (or to the terminal that
+//             hosts this task). The endpoint is chosen per task, so the handle
+//             carries no state of its own
+//   Pipe    — one end of a byte pipe (pipe_write says which end)
+//
+// 'refs' counts the fd slots (in this task and any others) that name this
+// handle. dup2 and spawn inheritance *share* a handle rather than copy it, so a
+// file's offset and a pipe end's open/closed state mean the same thing to every
+// holder — POSIX's "open file description". The handle dies when the last
+// reference closes.
+enum class FdKind : uint8_t {
+    File    = 0,
+    Console = 1,
+    Pipe    = 2,
+};
+
+struct Pipe;   // the pipe pool lives in vfs.cpp
+
 struct FileHandle {
-    Node*    node;      // holds one reference to the node
-    uint64_t offset;
+    FdKind   kind       = FdKind::File;
+    uint32_t refs       = 0;      // fd slots naming this handle
+    Node*    node       = nullptr;// File: the node (one reference while refs > 0)
+    uint64_t offset     = 0;      // File: read/write position
+    Pipe*    pipe       = nullptr;// Pipe: the shared buffer
+    bool     pipe_write = false;  // Pipe: true = the write end
 };
 
 // --- A filesystem instance rooted at a path (e.g. "/bin") ---
@@ -196,6 +221,24 @@ long read_fd(int fd, void* buf, uint64_t count);      // bytes or -errno
 long write_fd(int fd, const void* buf, uint64_t count); // bytes or -errno
 void close_fd(int fd);
 void close_fd_for(FileHandle** fds, int fd);          // arbitrary table (task exit)
+
+// Duplicate a descriptor. dup_fd() returns a new descriptor (never 0-2) sharing
+// fd's open file description; dup2_fd() points newfd at oldfd's, closing
+// whatever newfd held. Both share, so a later lseek or close is seen by every
+// holder. Return the new fd, or -errno.
+int dup_fd(int fd);
+int dup2_fd(int oldfd, int newfd);
+
+// Create a pipe: out[0] is the read end, out[1] the write end. A reader blocks
+// until a writer sends (or the last writer closes, which is EOF); a writer
+// blocks when the buffer is full. Returns 0 or -errno.
+int pipe_fd(int out[2]);
+
+// Copy the current task's descriptor table into 'dst' (a newborn task's),
+// sharing every handle. Console entries are the shared console endpoint. This
+// is what makes redirection survive a spawn: the child writes where the parent
+// pointed fd 1.
+void fds_inherit(FileHandle** dst);
 
 // Path rule: lookups (open/stat) accept a bare name — the CWD is tried
 // first, then /bin. Creation and removal (mkdir/unlink) never search: they

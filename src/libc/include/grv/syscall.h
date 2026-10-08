@@ -103,6 +103,9 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_POWEROFF       56
 #define GRV_SYSCALL_REBOOT         57
 #define GRV_SYSCALL_STATFS         58
+#define GRV_SYSCALL_DUP            59
+#define GRV_SYSCALL_DUP2           60
+#define GRV_SYSCALL_PIPE           61
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -242,6 +245,24 @@ static inline long grv_write_fd(int fd, const void* buf, unsigned long count) {
 
 static inline void grv_close(int fd) {
     syscall1(GRV_SYSCALL_CLOSE, (long)fd);
+}
+
+/* Duplicate a descriptor. dup() returns a new descriptor (never 0-2) that
+   shares fd's open file description; dup2() makes newfd name oldfd's, closing
+   whatever newfd held. Sharing means a later lseek or close is seen by every
+   holder. Return the new fd, or -1 with errno. */
+static inline int grv_dup(int fd) {
+    return (int)grv_err(syscall1(GRV_SYSCALL_DUP, (long)fd));
+}
+static inline int grv_dup2(int oldfd, int newfd) {
+    return (int)grv_err(syscall2(GRV_SYSCALL_DUP2, (long)oldfd, (long)newfd));
+}
+
+/* Create a pipe: fds[0] is the read end, fds[1] the write end. A reader blocks
+   until a writer sends (or the last writer closes — EOF); a writer blocks when
+   the buffer is full. Returns 0, or -1 with errno. */
+static inline int grv_pipe(int fds[2]) {
+    return (int)grv_err(syscall1(GRV_SYSCALL_PIPE, (long)fds));
 }
 
 /* --- File positioning / metadata --- */

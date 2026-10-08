@@ -45,6 +45,7 @@ table.
 | `EMFILE` | 24 | per-task fd table full |
 | `ENOSPC` | 28 | no space left |
 | `EROFS` | 30 | read-only filesystem |
+| `EPIPE` | 32 | write to a pipe whose reader has gone |
 | `ENOSYS` | 38 | no such syscall (a retired hole or an unknown number) |
 
 A successful call never clears `errno` (check the return value, as in C).
@@ -192,6 +193,9 @@ value with a different meaning.
 | 56 | `POWEROFF` | — | does not return: the machine switches off |
 | 57 | `REBOOT` | — | does not return: the machine resets |
 | 58 | `STATFS` | `path, out*` | 0/−1; fills `{total, free, writable, type}` |
+| 59 | `DUP` | `fd` | new descriptor (≥ 3) sharing the open file description, or −1 |
+| 60 | `DUP2` | `oldfd, newfd` | `newfd` now names `oldfd`'s description (closing what it held), or −1 |
+| 61 | `PIPE` | `fds*` | 0 and `fds = {read end, write end}`, or −1 |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

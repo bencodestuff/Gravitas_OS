@@ -13,9 +13,53 @@ static Mount mounts[MAX_MOUNTS];
 static int mount_count = 0;
 static FileHandle handles[MAX_HANDLES];
 
+// The console is a single immutable handle: a task's standard streams read the
+// keyboard and write the console, and both are relative to the *calling* task
+// (its console owner), so the handle carries no per-user state and every task's
+// 0/1/2 can name it. It is never in the handle pool and never freed; close()
+// just drops the slot.
+static FileHandle console_handle;
+
+static bool is_console(const FileHandle* h) { return h == &console_handle; }
+
+// --- Pipes ---------------------------------------------------------------
+// One shared byte ring, plus how many read and write ends are still open. A
+// reader hits EOF when the last writer closes; a writer blocks when the ring
+// is full and the reader drains it. Waiters are task ids parked in
+// block_until_woken; a writer wakes them, so a read on a pipe is a real
+// blocking call rather than a poll.
+constexpr int PIPE_BUF = 4096;
+constexpr int MAX_PIPES = 8;
+constexpr int MAX_PIPE_WAITERS = 4;
+
+struct Pipe {
+    uint32_t refs;                 // handles naming this pipe (both ends)
+    int      readers, writers;     // live read-end / write-end handles
+    int      head, tail;           // byte ring; equal => empty
+    int      rd_wait[MAX_PIPE_WAITERS]; int rd_n;
+    int      wr_wait[MAX_PIPE_WAITERS]; int wr_n;
+    char     buf[PIPE_BUF];
+};
+static Pipe pipes[MAX_PIPES];
+
+static Pipe* pipe_alloc() {
+    for (int i = 0; i < MAX_PIPES; i++) {
+        Pipe* p = &pipes[i];
+        if (p->refs != 0) continue;
+        p->readers = p->writers = 0;
+        p->head = p->tail = 0;
+        p->rd_n = p->wr_n = 0;
+        return p;
+    }
+    return nullptr;
+}
+
 void init() {
     for (int i = 0; i < MAX_MOUNTS; i++) mounts[i].path = nullptr;
-    for (int i = 0; i < MAX_HANDLES; i++) handles[i].node = nullptr;
+    for (int i = 0; i < MAX_HANDLES; i++) handles[i].refs = 0;
+    for (int i = 0; i < MAX_PIPES; i++) pipes[i].refs = 0;
+    console_handle.kind = FdKind::Console;
+    console_handle.refs = 1;   // never freed; the count is only for clarity
 }
 
 // --- Path normalization ---
@@ -427,9 +471,21 @@ bool canonicalize(const char* path, char* out, uint64_t out_max) {
 }
 
 // --- fd plumbing: the table lives in the current task ---
+static inline uint64_t irq_save() {
+    uint64_t f;
+    asm volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
+    return f;
+}
+static inline void irq_restore(uint64_t f) {
+    if (f & (1ull << 9)) asm volatile("sti"); else asm volatile("cli");
+}
+
+// Every task starts with the three standard streams bound to the console; the
+// console handle is shared, so this costs no pool slots.
 void fds_init_current() {
     FileHandle** fds = Sched::current_task_fds();
     for (int i = 0; i < MAX_FDS; i++) fds[i] = nullptr;
+    for (int i = 0; i < FD_STD_STREAMS; i++) fds[i] = &console_handle;
 }
 
 FileHandle** fds_of_current() {
@@ -441,26 +497,39 @@ FileHandle* fd_slot_get(int fd) {
     return fds_of_current()[fd];
 }
 
+static FileHandle* handle_alloc() {
+    for (int j = 0; j < MAX_HANDLES; j++)
+        if (handles[j].refs == 0) return &handles[j];
+    return nullptr;
+}
+
 int fd_slot_alloc(Node* node) {
     FileHandle** fds = fds_of_current();
-    // Start at FD_STD_STREAMS: slots 0..2 are reserved for the standard
-    // streams, so the first descriptor a program opens is 3.
+    // Start at FD_STD_STREAMS: slots 0..2 hold the standard streams, so the
+    // first descriptor a program opens is 3.
     for (int i = FD_STD_STREAMS; i < MAX_FDS; i++) {
-        if (fds[i] == nullptr) {
-            // grab a kernel-wide handle slot
-            FileHandle* h = nullptr;
-            for (int j = 0; j < MAX_HANDLES; j++) {
-                if (handles[j].node == nullptr) { h = &handles[j]; break; }
-            }
-            if (h == nullptr) return -1; // out of global handles
-
-            h->node = node;
-            h->offset = 0;
-            fds[i] = h;
-            return i;
-        }
+        if (fds[i] != nullptr) continue;
+        FileHandle* h = handle_alloc();
+        if (h == nullptr) return -1; // out of global handles
+        h->kind = FdKind::File;
+        h->refs = 1;
+        h->node = node;
+        h->offset = 0;
+        h->pipe = nullptr;
+        h->pipe_write = false;
+        fds[i] = h;
+        return i;
     }
     return -1; // fd table full
+}
+
+// A new descriptor (dup, pipe) never lands in 0..2, so a program's stdio stays
+// its stdio unless it asks to replace it with dup2.
+static int fd_slot_new() {
+    FileHandle** fds = fds_of_current();
+    for (int i = FD_STD_STREAMS; i < MAX_FDS; i++)
+        if (fds[i] == nullptr) return i;
+    return -1;
 }
 
 // --- fd operations ---
@@ -516,9 +585,87 @@ int open_fd(const char* path, int flags) {
     return fd;
 }
 
+// --- console descriptors ---
+// A console read is a terminal line: bytes up to (and including) the newline,
+// echoed as they arrive. The echo lives here, not in the raw GETC (which stays
+// silent), because read(0) is now the console descriptor and a program reading
+// a terminal expects to see what it typed.
+static long console_read_fd(void* buf, uint64_t count) {
+    char* p = (char*)buf;
+    for (uint64_t i = 0; i < count; i++) {
+        int c = Sched::console_getc_raw();
+        if (c == '\n' || (c >= 32 && c < 127)) Sched::console_emit((char)c);
+        else if (c == '\b') {
+            Sched::console_emit('\b');
+            Sched::console_emit(' ');
+            Sched::console_emit('\b');
+        }
+        p[i] = (char)c;
+        if (c == '\n') return (long)(i + 1);
+    }
+    return (long)count;
+}
+
+// --- pipes ---
+static void pipe_wake(int* ids, int* n) {
+    for (int i = 0; i < *n; i++) Sched::wake_task(ids[i]);
+    *n = 0;
+}
+
+static long pipe_read_fd(FileHandle* h, void* buf, uint64_t count) {
+    Pipe* p = h->pipe;
+    if (count == 0) return 0;
+    char* out = (char*)buf;
+    asm volatile("cli");           // the check-and-block window (a syscall runs IF=0)
+    while (true) {
+        if (p->head != p->tail) {
+            uint64_t got = 0;
+            while (got < count && p->head != p->tail) {
+                out[got++] = p->buf[p->tail];
+                p->tail = (p->tail + 1) % PIPE_BUF;
+            }
+            pipe_wake(p->wr_wait, &p->wr_n);   // room freed
+            return (long)got;
+        }
+        if (p->writers == 0) return 0;         // EOF: the last writer has closed
+        if (p->rd_n < MAX_PIPE_WAITERS)
+            p->rd_wait[p->rd_n++] = Sched::current_task_id();
+        Sched::block_until_woken();
+        Sched::yield();                        // returns with interrupts on
+        asm volatile("cli");
+    }
+}
+
+static long pipe_write_fd(FileHandle* h, const void* buf, uint64_t count) {
+    Pipe* p = h->pipe;
+    if (count == 0) return 0;
+    const char* in = (const char*)buf;
+    uint64_t put = 0;
+    asm volatile("cli");
+    while (true) {
+        if (p->readers == 0) return put > 0 ? (long)put : -Errno::EPIPE;
+        int room = PIPE_BUF - 1 - ((p->head - p->tail + PIPE_BUF) % PIPE_BUF);
+        while (put < count && room > 0) {
+            p->buf[p->head] = in[put++];
+            p->head = (p->head + 1) % PIPE_BUF;
+            room--;
+        }
+        if (put > 0) pipe_wake(p->rd_wait, &p->rd_n);  // data available
+        if (put == count) return (long)put;
+        if (p->wr_n < MAX_PIPE_WAITERS)
+            p->wr_wait[p->wr_n++] = Sched::current_task_id();
+        Sched::block_until_woken();
+        Sched::yield();
+        asm volatile("cli");
+    }
+}
+
 long read_fd(int fd, void* buf, uint64_t count) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;
+    if (h->kind == FdKind::Console) return console_read_fd(buf, count);
+    if (h->kind == FdKind::Pipe)    return pipe_read_fd(h, buf, count);
+
     Node* n = h->node;
     if (n->fs->read == nullptr) return -Errno::EACCES;
     // Clamp against the node's size (protects zero-copy backends like tarfs
@@ -534,6 +681,12 @@ long read_fd(int fd, void* buf, uint64_t count) {
 long write_fd(int fd, const void* buf, uint64_t count) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;
+    if (h->kind == FdKind::Console) {
+        Sched::console_emit_bytes((const char*)buf, (int)count);
+        return (long)count;
+    }
+    if (h->kind == FdKind::Pipe) return pipe_write_fd(h, buf, count);
+
     Node* n = h->node;
     if (n->fs->write == nullptr) return -Errno::EROFS;
     uint64_t got = n->fs->write(n->fs->priv, n, buf, count, h->offset);
@@ -551,18 +704,103 @@ void close_fd_for(FileHandle** fds, int fd) {
     if (fd < 0 || fd >= MAX_FDS) return;
     FileHandle* h = fds[fd];
     if (h == nullptr) return;
-    if (h->node) h->node->fs->release(h->node->fs->priv, h->node);
-    h->node = nullptr;   // release the global handle slot
     fds[fd] = nullptr;
+    if (is_console(h)) return;         // the shared console endpoint is not ours to free
+    if (h->refs > 0) h->refs--;
+    if (h->refs > 0) return;           // still named elsewhere
+
+    // Last reference. Closing the last writer of a pipe must wake a blocked
+    // reader (to see EOF), and vice versa; the wake happens after interrupts
+    // come back, so collect the ids under the lock and wake outside it.
+    int wake[MAX_PIPE_WAITERS * 2];
+    int nwake = 0;
+    uint64_t f = irq_save();
+    if (h->kind == FdKind::File && h->node) {
+        h->node->fs->release(h->node->fs->priv, h->node);
+    } else if (h->kind == FdKind::Pipe && h->pipe) {
+        Pipe* p = h->pipe;
+        if (h->pipe_write) p->writers--; else p->readers--;
+        p->refs--;
+        if (p->refs == 0) {
+            for (int i = 0; i < p->rd_n; i++) wake[nwake++] = p->rd_wait[i];
+            for (int i = 0; i < p->wr_n; i++) wake[nwake++] = p->wr_wait[i];
+            p->head = p->tail = 0;
+            p->rd_n = p->wr_n = 0;
+        }
+    }
+    h->node = nullptr;
+    h->pipe = nullptr;
+    irq_restore(f);
+    for (int i = 0; i < nwake; i++) Sched::wake_task(wake[i]);
 }
 
 void close_fd(int fd) {
     close_fd_for(fds_of_current(), fd);
 }
 
+int dup_fd(int fd) {
+    FileHandle* h = fd_slot_get(fd);
+    if (h == nullptr) return -Errno::EBADF;
+    int i = fd_slot_new();
+    if (i < 0) return -Errno::EMFILE;
+    if (!is_console(h)) h->refs++;
+    fds_of_current()[i] = h;
+    return i;
+}
+
+int dup2_fd(int oldfd, int newfd) {
+    if (oldfd < 0 || oldfd >= MAX_FDS || newfd < 0 || newfd >= MAX_FDS)
+        return -Errno::EBADF;
+    FileHandle** fds = fds_of_current();
+    FileHandle* h = fds[oldfd];
+    if (h == nullptr) return -Errno::EBADF;
+    if (oldfd == newfd) return newfd;
+    close_fd_for(fds, newfd);
+    if (!is_console(h)) h->refs++;
+    fds[newfd] = h;
+    return newfd;
+}
+
+int pipe_fd(int out[2]) {
+    if (out == nullptr) return -Errno::EINVAL;
+    Pipe* p = pipe_alloc();
+    if (p == nullptr) return -Errno::EMFILE;
+
+    int rfd = fd_slot_new();
+    FileHandle* rh = handle_alloc();
+    if (rfd < 0 || rh == nullptr) return -Errno::EMFILE;
+    rh->kind = FdKind::Pipe; rh->refs = 1; rh->node = nullptr; rh->offset = 0;
+    rh->pipe = p; rh->pipe_write = false;
+
+    int wfd = fd_slot_new();
+    FileHandle* wh = handle_alloc();
+    if (wfd < 0 || wh == nullptr) { rh->refs = 0; return -Errno::EMFILE; }
+    wh->kind = FdKind::Pipe; wh->refs = 1; wh->node = nullptr; wh->offset = 0;
+    wh->pipe = p; wh->pipe_write = true;
+
+    FileHandle** fds = fds_of_current();
+    fds[rfd] = rh;
+    fds[wfd] = wh;
+    p->refs = 2;
+    p->readers = 1;
+    p->writers = 1;
+    out[0] = rfd;
+    out[1] = wfd;
+    return 0;
+}
+
+void fds_inherit(FileHandle** dst) {
+    FileHandle** src = fds_of_current();
+    for (int i = 0; i < MAX_FDS; i++) {
+        dst[i] = src[i];
+        if (dst[i] != nullptr && !is_console(dst[i])) dst[i]->refs++;
+    }
+}
+
 long lseek_fd(int fd, long offset, int whence) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;
+    if (h->kind != FdKind::File) return -Errno::EINVAL; // a console/pipe is not seekable
     long base;
     if (whence == 0) base = 0;                 // SET
     else if (whence == 1) base = (long)h->offset; // CUR
@@ -653,7 +891,7 @@ int rename(const char* from, const char* to) {
 
 int ftruncate_fd(int fd, uint64_t size) {
     FileHandle* h = fd_slot_get(fd);
-    if (h == nullptr) return -Errno::EBADF;
+    if (h == nullptr || h->kind != FdKind::File) return -Errno::EBADF;
     Node* n = h->node;
     if (n->fs->truncate == nullptr) return -Errno::EROFS;
     int r = n->fs->truncate(n->fs->priv, n, size);
@@ -783,7 +1021,8 @@ long readdir_entries(const char* path, DirEntry* out, uint64_t max) {
 // --- fd size accessor (spawn uses it to size the ELF buffer) ---
 uint64_t fd_size(int fd) {
     FileHandle* h = fd_slot_get(fd);
-    return (h == nullptr) ? 0 : h->node->size;
+    if (h == nullptr || h->kind != FdKind::File) return 0;
+    return h->node->size;
 }
 
 } // namespace VFS

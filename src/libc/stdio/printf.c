@@ -9,9 +9,9 @@
 
 // One formatter behind printf and snprintf/sprintf, and (via fmt_internal.h)
 // behind fprintf. Each call supplies an emit function; printf's emit batches
-// into a chunk and prints it with grv_puts() (which the kernel prints
-// atomically), so a task switch cannot interleave another task's characters
-// into the middle of a line.
+// into a chunk and writes it to stdout (fd 1, whatever it is pointed at), so a
+// task switch cannot interleave another task's characters into the middle of a
+// line — the kernel emits a console write atomically.
 //
 // Supported: flags '0' and '-', width, precision, the 'l'/'ll' length
 // modifiers, and the d/i/u/x/X/o/c/s/p/f/e/E/g/G conversions. Width and
@@ -365,8 +365,9 @@ struct put_ctx { char b[PBUF]; int n; };
 
 static void put_flush(struct put_ctx* o) {
     if (o->n == 0) return;
-    o->b[o->n] = '\0';
-    grv_puts(o->b);
+    // printf is fprintf(stdout): the FILE layer writes the descriptor, so a
+    // shell redirect (`> file`, `| next`) applies to printf like anything else.
+    fwrite(o->b, 1, (size_t)o->n, stdout);
     o->n = 0;
 }
 

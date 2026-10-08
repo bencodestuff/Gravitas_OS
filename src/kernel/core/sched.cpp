@@ -17,6 +17,7 @@
 #include "kernel/core/ipc.h"
 #include "kernel/core/memmap.h"
 #include "kernel/core/input.h"
+#include "kernel/dev/keyboard.h"
 
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
                                void* old_fxsave, void* new_fxsave);
@@ -84,7 +85,7 @@ namespace Sched {
         current_task->user_stack_guard = 0;
         current_task->kstack_mem = nullptr; // the boot stack has no canary
         current_task->cwd[0] = '/'; current_task->cwd[1] = '\0';
-        for (int i = 0; i < VFS::MAX_FDS; i++) current_task->fds[i] = nullptr;
+        VFS::fds_init_current();   // 0/1/2 = the console (the boot task's stdio)
         // ----------------
         
         ready_queue = current_task;
@@ -403,13 +404,22 @@ namespace Sched {
         kprint(s);
     }
 
-    // A whole string under the same routing: into the owner's ring if bound,
-    // else one atomic kprint. 's' must be NUL-terminated (the PUTS syscall
-    // stages it in kernel memory), 'n' its length.
-    void console_emit_str(const char* s, int n) {
+    // A whole run of bytes under the same routing: into the owner's ring if
+    // bound, else the kernel console. The kernel console is kprinted in chunks
+    // (kprint is atomic per call), so the bytes need not be NUL-terminated —
+    // which matters for a raw write(1) whose buffer is not C text.
+    void console_emit_bytes(const char* s, int n) {
         int owner_id = current_task->console_owner;
         if (owner_id == -1) {
-            kprint(s);
+            char chunk[256];
+            while (n > 0) {
+                int take = n < 255 ? n : 255;
+                for (int i = 0; i < take; i++) chunk[i] = s[i];
+                chunk[take] = '\0';
+                kprint(chunk);
+                s += take;
+                n -= take;
+            }
             return;
         }
         uint64_t f = irq_save();
@@ -419,10 +429,13 @@ namespace Sched {
             irq_restore(f);
             return;
         }
-        current_task->console_owner = -1;
+        current_task->console_owner = -1;   // owner died: fall back to kprint
         irq_restore(f);
-        kprint(s);
+        console_emit_bytes(s, n);
     }
+
+    // PUTS: the string spelling of the same routing.
+    void console_emit_str(const char* s, int n) { console_emit_bytes(s, n); }
 
     int console_read(char* buf, int max) {
         if (buf == nullptr || max <= 0) return 0;
@@ -483,6 +496,30 @@ namespace Sched {
         me->con_in_tail = (me->con_in_tail + 1) % CONSOLE_RING;
         irq_restore(f);
         return c;
+    }
+
+    // GETC: block until one byte is available — from the console's in-ring when
+    // this task is bound to a terminal, otherwise the keyboard. The owner is
+    // re-read every pass, so a task bound while already blocked switches rings.
+    // Interrupts stay off across the check-and-block so a byte landing in
+    // between cannot be missed. No echo: the raw reader echoes for itself (the
+    // console descriptor's line read in the VFS does).
+    int console_getc_raw() {
+        asm volatile("cli");
+        int b = -1;
+        while (true) {
+            if (current_task->console_owner != -1) {
+                b = console_ring_getc();
+                if (b >= 0) break;
+            } else {
+                char kc = Keyboard::get_queued_key();
+                if (kc != 0) { b = (int)kc; break; }
+            }
+            block_on_keyboard();
+            yield();   // returns when a key/write wakes us
+        }
+        clear_keyboard_waiting();
+        return b;
     }
 
     // --- Timed wakeup (userland) ---
