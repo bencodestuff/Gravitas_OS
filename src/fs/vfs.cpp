@@ -721,11 +721,23 @@ void close_fd_for(FileHandle** fds, int fd) {
         Pipe* p = h->pipe;
         if (h->pipe_write) p->writers--; else p->readers--;
         p->refs--;
-        if (p->refs == 0) {
+        // Wake the far side on the transition that ends its wait: the last
+        // writer closing means a blocked reader must run again to read EOF;
+        // the last reader closing means a blocked writer must run to see
+        // EPIPE. Waiting for refs == 0 alone misses both, because the other
+        // end is still a live handle at that moment, so a reader parked on an
+        // empty pipe would sleep forever after the writer exited. The ring
+        // and the waiter lists are recycled once nobody names the pipe.
+        if (p->writers == 0) {
             for (int i = 0; i < p->rd_n; i++) wake[nwake++] = p->rd_wait[i];
+            p->rd_n = 0;
+        }
+        if (p->readers == 0) {
             for (int i = 0; i < p->wr_n; i++) wake[nwake++] = p->wr_wait[i];
+            p->wr_n = 0;
+        }
+        if (p->refs == 0) {
             p->head = p->tail = 0;
-            p->rd_n = p->wr_n = 0;
         }
     }
     h->node = nullptr;
@@ -765,22 +777,28 @@ int pipe_fd(int out[2]) {
     if (out == nullptr) return -Errno::EINVAL;
     Pipe* p = pipe_alloc();
     if (p == nullptr) return -Errno::EMFILE;
+    FileHandle** fds = fds_of_current();
 
+    // Claim each slot as it is allocated: fd_slot_new() finds the first free
+    // slot, so the read end must be in the table before asking for the write
+    // end's slot, or both ends land on the same descriptor and the read end is
+    // lost when the second assignment overwrites it.
     int rfd = fd_slot_new();
+    if (rfd < 0) return -Errno::EMFILE;
     FileHandle* rh = handle_alloc();
-    if (rfd < 0 || rh == nullptr) return -Errno::EMFILE;
+    if (rh == nullptr) return -Errno::EMFILE;
     rh->kind = FdKind::Pipe; rh->refs = 1; rh->node = nullptr; rh->offset = 0;
     rh->pipe = p; rh->pipe_write = false;
+    fds[rfd] = rh;
 
     int wfd = fd_slot_new();
+    if (wfd < 0) { fds[rfd] = nullptr; rh->refs = 0; return -Errno::EMFILE; }
     FileHandle* wh = handle_alloc();
-    if (wfd < 0 || wh == nullptr) { rh->refs = 0; return -Errno::EMFILE; }
+    if (wh == nullptr) { fds[rfd] = nullptr; rh->refs = 0; return -Errno::EMFILE; }
     wh->kind = FdKind::Pipe; wh->refs = 1; wh->node = nullptr; wh->offset = 0;
     wh->pipe = p; wh->pipe_write = true;
-
-    FileHandle** fds = fds_of_current();
-    fds[rfd] = rh;
     fds[wfd] = wh;
+
     p->refs = 2;
     p->readers = 1;
     p->writers = 1;
