@@ -17,10 +17,25 @@ static bool str_ends_with_elf(const char* s) {
     return s[len-4] == '.' && s[len-3] == 'e' && s[len-2] == 'l' && s[len-1] == 'f';
 }
 
+// A bare program word ("ls") means the program in /bin ("ls.elf"); a name that
+// already ends in .elf (or is a path) is passed through.
+static void resolve_prog(const char* word, char* out, int cap) {
+    if (str_ends_with_elf(word)) {
+        int i = 0;
+        while (word[i] && i < cap - 1) { out[i] = word[i]; i++; }
+        out[i] = '\0';
+        return;
+    }
+    int len = 0;
+    while (word[len] && len < cap - 5) { out[len] = word[len]; len++; }
+    out[len++] = '.'; out[len++] = 'e'; out[len++] = 'l'; out[len++] = 'f';
+    out[len] = '\0';
+}
+
 static void cmd_help() {
     printf("Gravitas commands (commands are programs from the VFS):\n");
     printf("  ls [path]   - list a directory (default: cwd)\n");
-    printf("  cat <file>  - print a file's contents\n");
+    printf("  cat [file]  - print a file, or copy stdin\n");
     printf("  edit <file> - open a file in the text editor\n");
     printf("  bg <prog>   - spawn a program in the background\n");
     printf("  cd <dir>    - change directory (builtin)\n");
@@ -28,17 +43,18 @@ static void cmd_help() {
     printf("  run <prog>  - spawn a program by exact name\n");
     printf("  kill <pid>  - terminate a background task\n");
     printf("  help        - this list\n");
+    printf("  Redirection: cmd < in, cmd > out, cmd >> out\n");
+    printf("  Pipelines:   a | b | c\n");
 }
 
 // --- Shell builtins that mutate the shell's OWN state ---
 // cd must be a builtin (it changes this process's CWD — a child program
 // could never do it), and pwd reads it. Everything else is a program.
 
-static void cmd_cd(char* line) {
-    while (*line == ' ') line++;
-    if (*line == '\0') { printf("cd: missing directory\n"); return; }
-    if (grv_chdir(line) != 0) {
-        printf("cd: no such directory: %s\n", line);
+static void cmd_cd(const char* dir) {
+    if (dir == 0 || *dir == '\0') { printf("cd: missing directory\n"); return; }
+    if (grv_chdir(dir) != 0) {
+        printf("cd: no such directory: %s\n", dir);
     }
 }
 
@@ -52,46 +68,20 @@ static void cmd_pwd() {
 static long g_bg_pid[8];      /* 0 = empty slot */
 static char g_bg_name[8][32]; /* program name of the job */
 
-/* bg <prog> [args...] — spawn in the background, remember the pid. */
-static void cmd_bg(char* line) {
-    while (*line == ' ') line++;
-    if (*line == '\0') { printf("bg: usage: bg <prog> [args...]\n"); return; }
-
-    // Word split (same rules as execute(): max 8 words of max 63 chars)
-    static char* words[8];
-    static char storage[8][64];
-    int nwords = 0;
-    char* p = line;
-    while (*p && nwords < 8) {
-        while (*p == ' ') p++;
-        if (*p == '\0') break;
-        int i = 0;
-        while (*p && *p != ' ' && i < 63) storage[nwords][i++] = *p++;
-        storage[nwords][i] = '\0';
-        words[nwords] = storage[nwords];
-        nwords++;
-    }
-    if (nwords == 0) return;
+/* bg <prog> [args...] — spawn in the background, remember the pid.
+   'words' is the parsed command, so words[0] == "bg". */
+static void cmd_bg(char** words, int nwords) {
+    if (nwords < 2) { printf("bg: usage: bg <prog> [args...]\n"); return; }
 
     // Resolve the program name ('bg plasma' -> 'plasma.elf')
-    const char* prog;
     static char progbuf[64];
-    if (str_ends_with_elf(words[0])) {
-        prog = words[0];
-    } else {
-        int len = 0;
-        const char* w = words[0];
-        while (*w && len < 58) progbuf[len++] = *w++;
-        progbuf[len++] = '.'; progbuf[len++] = 'e';
-        progbuf[len++] = 'l'; progbuf[len++] = 'f';
-        progbuf[len] = '\0';
-        prog = progbuf;
-    }
+    resolve_prog(words[1], progbuf, sizeof(progbuf));
+    const char* prog = progbuf;
 
     const char* argv[9];
     int argc = 1;
     argv[0] = prog;
-    for (int i = 1; i < nwords && argc < 8; i++) argv[argc++] = words[i];
+    for (int i = 2; i < nwords && argc < 8; i++) argv[argc++] = words[i];
 
     long pid = grv_spawn_bg(prog, argv, argc);
     if (pid == -1) { printf("bg: cannot start '%s'\n", prog); return; }
@@ -122,12 +112,12 @@ static void cmd_jobs() {
 }
 
 /* kill <pid> — forcibly terminate a background task. */
-static void cmd_kill(char* line) {
-    while (*line == ' ') line++;
+static void cmd_kill(const char* arg) {
+    if (arg == 0) { printf("kill: usage: kill <pid>\n"); return; }
     long pid = 0;
-    const char* p = line;
+    const char* p = arg;
     while (*p >= '0' && *p <= '9') { pid = pid * 10 + (*p - '0'); p++; }
-    if (p == line || *p != '\0') { printf("kill: usage: kill <pid>\n"); return; }
+    if (p == arg || *p != '\0') { printf("kill: usage: kill <pid>\n"); return; }
 
     long r = grv_kill(pid, 0);
     if (r != 0) { printf("kill: no such task (or refused)\n"); return; }
@@ -137,102 +127,338 @@ static void cmd_kill(char* line) {
     }
 }
 
-// Startup listing: shows the CWD (the shell boots at "/")
+// --- Command line parsing ------------------------------------------------
+// A line is one or more commands separated by '|'. Each command is a program
+// (or a builtin) with whitespace-separated arguments and optional
+// redirections: '< file', '> file' (truncate), '>> file' (append). The
+// operators are always separate tokens, so 'cat<in>out' means the same as
+// 'cat < in > out'. There is no quoting: this shell is a spawner, and
+// everything on the line is a word.
 
-static void execute(char* line) {
-    while (*line == ' ') line++;
-    if (*line == '\0') return;
-    if (str_eq(line, "help")) { cmd_help(); return; }
-    if (str_eq(line, "pwd")) { cmd_pwd(); return; }
-    if (line[0] == 'c' && line[1] == 'd' && (line[2] == ' ' || line[2] == '\0')) {
-        cmd_cd(line + 2);
-        return;
+#define SH_MAX_CMDS 8
+#define SH_MAX_ARGS 8
+#define SH_WORD_MAX 64
+
+struct sh_cmd {
+    char words[SH_MAX_ARGS][SH_WORD_MAX];
+    int  nwords;
+    int  rin;                    // 0 none, else '<' present
+    char in_path[SH_WORD_MAX];
+    int  rout;                   // 0 none, 1 '>', 2 '>>'
+    char out_path[SH_WORD_MAX];
+    char prog[SH_WORD_MAX];      // resolved program name
+    int  arg_start;              // index of argv[1] in 'words'
+};
+
+static bool is_builtin(const char* w) {
+    return str_eq(w, "help") || str_eq(w, "pwd") || str_eq(w, "cd") ||
+           str_eq(w, "bg")   || str_eq(w, "jobs") || str_eq(w, "kill");
+}
+
+// Read one word (up to whitespace or an operator) into 'out'. Returns its
+// length, 0 when there was nothing to read.
+static int sh_read_word(const char** pp, char* out) {
+    const char* p = *pp;
+    while (*p == ' ' || *p == '\t') p++;
+    int n = 0;
+    while (*p && *p != ' ' && *p != '\t' && *p != '<' && *p != '>' && *p != '|') {
+        if (n < SH_WORD_MAX - 1) out[n++] = *p;
+        p++;
     }
+    out[n] = '\0';
+    *pp = p;
+    return n;
+}
 
-    // bg <prog> [args...] — spawn in the background, keep the pid so the
-    // prompt stays usable and `jobs`/`kill` can refer to it later.
-    if (line[0] == 'b' && line[1] == 'g' && (line[2] == ' ' || line[2] == '\0')) {
-        cmd_bg(line + 3);
-        return;
-    }
+// Parse 'line' into at most SH_MAX_CMDS commands. Returns the static array (and
+// the count through *out_n), or nullptr with *err set. An empty line yields a
+// count of 0.
+static struct sh_cmd* parse_pipeline(char* line, int* out_n, const char** err) {
+    static struct sh_cmd cmds[SH_MAX_CMDS];
+    *err = 0;
+    *out_n = 0;
 
-    // kill <pid> — forcibly terminate a spawned background task
-    if (line[0] == 'k' && line[1] == 'i' && line[2] == 'l' && line[3] == 'l' &&
-        (line[4] == ' ' || line[4] == '\0')) {
-        cmd_kill(line + 5);
-        return;
-    }
+    const char* p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '\0') return cmds;
 
-    // jobs — list spawned background tasks
-    if (str_eq(line, "jobs")) { cmd_jobs(); return; }
+    int nc = 0;
+    struct sh_cmd* c = &cmds[0];
+    c->nwords = 0; c->rin = 0; c->rout = 0;
 
-    // Split into words
-    static char* words[8];
-    static char storage[8][64];
-    int nwords = 0;
-    char* p = line;
-    while (*p && nwords < 8) {
-        while (*p == ' ') p++;
+    while (1) {
+        while (*p == ' ' || *p == '\t') p++;
         if (*p == '\0') break;
-        int i = 0;
-        while (*p && *p != ' ' && i < 63) storage[nwords][i++] = *p++;
-        storage[nwords][i] = '\0';
-        words[nwords] = storage[nwords];
-        nwords++;
-    }
-    if (nwords == 0) return;
 
-    // Pick the program: 'run' takes an exact tarfs name, everything else
-    // gets ".elf" appended ('ls' -> 'ls.elf').
-    const char* prog;
-    int arg_start;
-    static char progbuf[64];
-    if (str_eq(words[0], "run")) {
-        if (nwords < 2) { printf("run: missing program name\n"); return; }
-        if (str_ends_with_elf(words[1])) {
-            prog = words[1];
-        } else {
-            // accept 'run plasma' the same as 'run plasma.elf'
-            int len = 0;
-            const char* w = words[1];
-            while (*w && len < 58) progbuf[len++] = *w++;
-            progbuf[len++] = '.'; progbuf[len++] = 'e';
-            progbuf[len++] = 'l'; progbuf[len++] = 'f';
-            progbuf[len] = '\0';
-            prog = progbuf;
+        if (*p == '|') {
+            if (c->nwords == 0) { *err = "syntax error: empty command"; return 0; }
+            if (nc + 1 >= SH_MAX_CMDS) { *err = "too many commands in the pipeline"; return 0; }
+            nc++;
+            c = &cmds[nc];
+            c->nwords = 0; c->rin = 0; c->rout = 0;
+            p++;
+            continue;
         }
-        arg_start = 2;
-    } else {
-        if (str_ends_with_elf(words[0])) {
-            prog = words[0];
-        } else {
-            // progbuf = words[0] + ".elf"
-            int len = 0;
-            const char* w = words[0];
-            while (*w && len < 58) progbuf[len++] = *w++;
-            progbuf[len++] = '.'; progbuf[len++] = 'e';
-            progbuf[len++] = 'l'; progbuf[len++] = 'f';
-            progbuf[len] = '\0';
-            prog = progbuf;
+        if (*p == '<') {
+            p++;
+            if (sh_read_word(&p, c->in_path) == 0) { *err = "syntax error: '<' needs a file name"; return 0; }
+            c->rin = 1;
+            continue;
         }
-        arg_start = 1;
+        if (*p == '>') {
+            p++;
+            int app = 0;
+            if (*p == '>') { app = 1; p++; }
+            if (sh_read_word(&p, c->out_path) == 0) { *err = "syntax error: '>' needs a file name"; return 0; }
+            c->rout = app ? 2 : 1;
+            continue;
+        }
+
+        if (c->nwords >= SH_MAX_ARGS) { *err = "too many arguments"; return 0; }
+        sh_read_word(&p, c->words[c->nwords]);
+        c->nwords++;
     }
 
-    // Build argv: argv[0] = program name, argv[1..] = extra words
+    if (c->nwords == 0) { *err = "syntax error: empty command"; return 0; }
+    *out_n = nc + 1;
+    return cmds;
+}
+
+// Resolve a command's program: 'run' takes an exact name, anything else gets
+// ".elf" appended unless it already ends in one. Sets arg_start.
+static int resolve_command(struct sh_cmd* c, int* arg_start) {
+    const char* word = c->words[0];
+    *arg_start = 1;
+    if (str_eq(word, "run")) {
+        if (c->nwords < 2) return -1;
+        word = c->words[1];
+        *arg_start = 2;
+    }
+    resolve_prog(word, c->prog, (int)sizeof(c->prog));
+    return 0;
+}
+
+// Apply a command's redirections to the shell's own descriptors. On success
+// *save0/*save1 hold descriptors for restore_fds (or -1). The target of an
+// output redirection is created even if the command writes nothing, as a shell
+// does. Returns 0, or -1 with a message printed.
+static int apply_redirs(struct sh_cmd* c, int* save0, int* save1) {
+    *save0 = -1;
+    *save1 = -1;
+
+    if (c->rin) {
+        int fd = grv_open(c->in_path, GRV_O_RDONLY);
+        if (fd < 0) { printf("shell: cannot open '%s' to read\n", c->in_path); return -1; }
+        *save0 = grv_dup(0);
+        if (*save0 < 0 || grv_dup2(fd, 0) < 0) {
+            if (*save0 >= 0) { grv_close(*save0); *save0 = -1; }
+            grv_close(fd);
+            printf("shell: cannot redirect input\n");
+            return -1;
+        }
+        grv_close(fd);
+    }
+
+    if (c->rout) {
+        int flags = GRV_O_WRONLY | GRV_O_CREATE | (c->rout == 1 ? GRV_O_TRUNC : 0);
+        int fd = grv_open(c->out_path, flags);
+        if (fd < 0) {
+            printf("shell: cannot open '%s' to write\n", c->out_path);
+            if (*save0 >= 0) { grv_dup2(*save0, 0); grv_close(*save0); *save0 = -1; }
+            return -1;
+        }
+        if (c->rout == 2) grv_lseek(fd, 0, 2);   // append: start at the end (no O_APPEND)
+        *save1 = grv_dup(1);
+        if (*save1 < 0 || grv_dup2(fd, 1) < 0) {
+            if (*save1 >= 0) { grv_close(*save1); *save1 = -1; }
+            grv_close(fd);
+            if (*save0 >= 0) { grv_dup2(*save0, 0); grv_close(*save0); *save0 = -1; }
+            printf("shell: cannot redirect output\n");
+            return -1;
+        }
+        grv_close(fd);
+    }
+    return 0;
+}
+
+static void restore_fds(int save0, int save1) {
+    if (save0 >= 0) { grv_dup2(save0, 0); grv_close(save0); }
+    if (save1 >= 0) { grv_dup2(save1, 1); grv_close(save1); }
+}
+
+// A builtin runs in the shell itself (cd/bg/kill/jobs change the shell's own
+// state, so they cannot be a child), with its redirections applied around it.
+static void run_builtin(struct sh_cmd* c) {
+    int save0, save1;
+    if (apply_redirs(c, &save0, &save1) < 0) return;
+
+    const char* w = c->words[0];
+    if (str_eq(w, "help"))       cmd_help();
+    else if (str_eq(w, "pwd"))   cmd_pwd();
+    else if (str_eq(w, "jobs"))  cmd_jobs();
+    else if (str_eq(w, "cd"))    cmd_cd(c->nwords > 1 ? c->words[1] : "");
+    else if (str_eq(w, "bg")) {
+        char* wv[SH_MAX_ARGS];
+        for (int i = 0; i < c->nwords; i++) wv[i] = c->words[i];
+        cmd_bg(wv, c->nwords);
+    }
+    else if (str_eq(w, "kill"))  cmd_kill(c->nwords > 1 ? c->words[1] : "");
+
+    restore_fds(save0, save1);
+}
+
+// One program, spawned in the foreground: the shell blocks on it, so it owns
+// the console (input and Ctrl+C) exactly as before.
+static void run_single(struct sh_cmd* c) {
+    if (resolve_command(c, &c->arg_start) < 0) {
+        printf("run: missing program name\n");
+        return;
+    }
     const char* argv[9];
     int argc = 0;
-    argv[argc++] = prog;
-    for (int i = arg_start; i < nwords && argc < 8; i++) {
-        argv[argc++] = words[i];
-    }
+    argv[argc++] = c->prog;
+    for (int i = c->arg_start; i < c->nwords && argc < 8; i++) argv[argc++] = c->words[i];
 
-    // Spawn blocks us until the child exits
-    long pid = grv_spawn(prog, argv, argc);
+    int save0, save1;
+    if (apply_redirs(c, &save0, &save1) < 0) return;
+
+    long pid = grv_spawn(c->prog, argv, argc);
+    restore_fds(save0, save1);
+
     if (pid == -1) {
-        printf("shell: cannot run '%s' (try 'help', 'ls')\n", prog);
+        printf("shell: cannot run '%s' (try 'help', 'ls')\n", c->prog);
         return;
     }
     printf("[shell] program finished\n");
+}
+
+// A pipeline: every stage is spawned in the background with its descriptors
+// wired to the pipe, then the shell waits for them all. One pipe is created as
+// we go and the parent-side ends are closed as soon as the child that owns them
+// exists — that closure is what lets a reader see EOF.
+static void run_pipeline(struct sh_cmd* cmds, int ncmds) {
+    for (int i = 0; i < ncmds; i++) {
+        if (is_builtin(cmds[i].words[0])) {
+            printf("shell: '%s' cannot be used in a pipeline\n", cmds[i].words[0]);
+            return;
+        }
+        // A stage's input comes from the pipe before it and its output goes to
+        // the pipe after it. A redirection that would fight the pipe is refused
+        // rather than silently ignored (which would leave the other stage's
+        // end unwired, and a writer blocked on a pipe nobody reads).
+        if (i > 0 && cmds[i].rin) {
+            printf("shell: cannot read '<' into a piped command\n");
+            return;
+        }
+        if (i < ncmds - 1 && cmds[i].rout) {
+            printf("shell: cannot write '>' out of a piped command\n");
+            return;
+        }
+        if (resolve_command(&cmds[i], &cmds[i].arg_start) < 0) {
+            printf("run: missing program name\n");
+            return;
+        }
+    }
+
+    long pids[SH_MAX_CMDS];
+    for (int i = 0; i < ncmds; i++) pids[i] = -1;
+
+    int prev_read = -1;                  // read end feeding the next stage
+    for (int i = 0; i < ncmds; i++) {
+        struct sh_cmd* c = &cmds[i];
+        int is_last = (i == ncmds - 1);
+        int pipe_r = -1, pipe_w = -1;
+        if (!is_last) {
+            int pf[2];
+            if (grv_pipe(pf) != 0) { printf("shell: cannot create a pipe\n"); break; }
+            pipe_r = pf[0];
+            pipe_w = pf[1];
+        }
+
+        bool ok = true;
+        int save0 = -1, save1 = -1;
+
+        // stdin: the previous pipe, or this command's '< file', or the console.
+        if (i > 0) {
+            if (prev_read < 0) {
+                ok = false;
+            } else {
+                save0 = grv_dup(0);
+                if (save0 < 0 || grv_dup2(prev_read, 0) < 0) ok = false;
+            }
+        } else if (c->rin) {
+            int fd = grv_open(c->in_path, GRV_O_RDONLY);
+            if (fd < 0) { printf("shell: cannot open '%s' to read\n", c->in_path); ok = false; }
+            else {
+                save0 = grv_dup(0);
+                if (save0 < 0 || grv_dup2(fd, 0) < 0) ok = false;
+                grv_close(fd);
+            }
+        }
+
+        // stdout: the next pipe, or this command's '> file', or the console.
+        if (ok) {
+            if (!is_last) {
+                save1 = grv_dup(1);
+                if (save1 < 0 || grv_dup2(pipe_w, 1) < 0) ok = false;
+            } else if (c->rout) {
+                int flags = GRV_O_WRONLY | GRV_O_CREATE | (c->rout == 1 ? GRV_O_TRUNC : 0);
+                int fd = grv_open(c->out_path, flags);
+                if (fd < 0) { printf("shell: cannot open '%s' to write\n", c->out_path); ok = false; }
+                else {
+                    if (c->rout == 2) grv_lseek(fd, 0, 2);
+                    save1 = grv_dup(1);
+                    if (save1 < 0 || grv_dup2(fd, 1) < 0) ok = false;
+                    grv_close(fd);
+                }
+            }
+        }
+
+        if (ok) {
+            const char* argv[9];
+            int argc = 0;
+            argv[argc++] = c->prog;
+            for (int a = c->arg_start; a < c->nwords && argc < 8; a++) argv[argc++] = c->words[a];
+            long pid = grv_spawn_bg(c->prog, argv, argc);
+            if (pid < 0) printf("shell: cannot run '%s'\n", c->prog);
+            else pids[i] = pid;
+        }
+
+        restore_fds(save0, save1);
+        if (i > 0 && prev_read >= 0) { grv_close(prev_read); prev_read = -1; }
+        if (!is_last) {
+            grv_close(pipe_w);             // the child holds the write end now
+            if (ok) prev_read = pipe_r;    // the read end feeds the next stage
+            else grv_close(pipe_r);
+        }
+    }
+    if (prev_read >= 0) grv_close(prev_read);
+
+    int started = 0;
+    for (int i = 0; i < ncmds; i++) if (pids[i] > 0) started++;
+    for (int i = 0; i < ncmds; i++) if (pids[i] > 0) grv_wait(pids[i]);
+    if (started > 0) printf("[shell] program finished\n");
+}
+
+static void execute(char* line) {
+    const char* err = 0;
+    int ncmds = 0;
+    struct sh_cmd* cmds = parse_pipeline(line, &ncmds, &err);
+    if (cmds == 0) { printf("shell: %s\n", err ? err : "syntax error"); return; }
+    if (ncmds == 0) return;
+    // Builtins change the shell's own state and cannot run in a child, so they
+    // are only meaningful as a lone command.
+    if (is_builtin(cmds[0].words[0])) {
+        if (ncmds > 1) {
+            printf("shell: '%s' cannot be used in a pipeline\n", cmds[0].words[0]);
+            return;
+        }
+        run_builtin(&cmds[0]);
+        return;
+    }
+
+    if (ncmds == 1) run_single(&cmds[0]);
+    else run_pipeline(cmds, ncmds);
 }
 
 // --- the line reader ---

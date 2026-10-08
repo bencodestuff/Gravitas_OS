@@ -170,5 +170,50 @@ def ls_long_metadata(g):
     g.wait_for(r"[d-][rwx-]{9}\s+[0-9]+\s+[0-9]+\s+tests/")
 
 
+@test
+def redirection(g):
+    # The standard streams are real descriptors now, so the shell can point
+    # them at files: '>' writes one, '<' reads one, '>>' appends.
+    fin = g.count(r"\[shell\] program finished")
+
+    # '>' : stdout goes to the file. Reading it back proves the bytes landed
+    # there (the command printed nothing itself).
+    g.shell("cat hello.txt > /tmp/pout.txt")
+    g.wait_count(r"\[shell\] program finished", fin + 1)
+    g.shell("cat /tmp/pout.txt")
+    g.wait_for("Hello from the Gravitas tar filesystem!")
+
+    # '<' : stdin comes from the file (cat with no argument reads stdin).
+    g.shell("cat < hello.txt")
+    g.wait_for("Hello from the Gravitas tar filesystem!")
+
+    # '>>' : a second copy appends rather than truncating, so reading the file
+    # prints its content twice. (The 'before' count keeps this independent of
+    # every earlier cat.)
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt >> /tmp/pout.txt")
+    g.wait_count(r"\[shell\] program finished", fin + 1)
+    before = g.count("Hello from the Gravitas tar filesystem!")
+    g.shell("cat /tmp/pout.txt")
+    g.wait_count("Hello from the Gravitas tar filesystem!", before + 2)
+
+
+@test
+def pipeline(g):
+    # 'a | b': the first cat's stdout is the second's stdin through a pipe.
+    # Finishing at all is the interesting part — when the writer exits its end
+    # closes, and the reader must see EOF, or the shell waits forever.
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt | cat")
+    g.wait_for("Hello from the Gravitas tar filesystem!")
+    g.wait_count(r"\[shell\] program finished", fin + 1)
+
+    # Three stages, so the middle cat really is a pass-through and the shell
+    # waits on every stage.
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt | cat | cat")
+    g.wait_count(r"\[shell\] program finished", fin + 1)
+
+
 if __name__ == "__main__":
     run_module(__file__)
