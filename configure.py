@@ -51,6 +51,19 @@ TEST_PROGRAMS = {
     "hang", "posixtest", "overlaytest", "ext2test", "pathtest",
 }
 
+# Programs assembled from more than one translation unit. The auto-glob would
+# otherwise turn each src/user/*.cpp into a program of its own (with no main),
+# so the satellite units listed here are folded into the named program's link
+# instead. They still compile with the userland (SSE) flags.
+USER_EXTRA_SOURCES = {
+    "wm": [
+        "src/user/wm_windows.cpp",
+        "src/user/wm_taskbar.cpp",
+        "src/user/wm_menu.cpp",
+        "src/user/wm_input.cpp",
+    ],
+}
+
 # Flags
 CFLAGS = [
     "-target x86_64-unknown-none-elf",
@@ -187,6 +200,10 @@ def main():
     # so it links the Lua objects and gets its own rule below (a plain userelf
     # link would not know about Lua and would fail).
     user_sources = [f for f in user_sources if not f.endswith("/init.cpp")]
+    # Satellite units are linked into their program (see USER_EXTRA_SOURCES),
+    # not built as programs of their own.
+    extra_units = {u for units in USER_EXTRA_SOURCES.values() for u in units}
+    user_sources = [f for f in user_sources if f not in extra_units]
     cpp_sources = [f for f in cpp_sources if not f.startswith("src/user/")]
     # The libc builds separately (its own rules); never part of the kernel
     cpp_sources = [f for f in cpp_sources if not f.startswith("src/libc/")]
@@ -371,7 +388,8 @@ def main():
             subdir = "tests/" if stem in TEST_PROGRAMS else ""
             out = f"bin/{subdir}{stem}.elf"
             # crt0 + all libc objects are real inputs so ninja builds them
-            ninja.write(f"build {out}: userelf {src} {crt0_obj} {' '.join(libc_objects)}\n")
+            units = [src] + USER_EXTRA_SOURCES.get(stem, [])
+            ninja.write(f"build {out}: userelf {' '.join(units)} {crt0_obj} {' '.join(libc_objects)}\n")
             ninja.write(f"  base = {user_bases[stem]:#x}\n")
             user_elfs.append(out)
 
