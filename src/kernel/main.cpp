@@ -30,6 +30,7 @@
 #include "kernel/dev/memblock.h"
 #include "kernel/dev/modules.h"
 #include "kernel/dev/ata.h"
+#include "kernel/dev/virtio.h"
 #include "kernel/dev/ext2.h"
 #include "fs/ramfs.h"
 #include "fs/overlay.h"
@@ -245,17 +246,19 @@ extern "C" void kmain(void) {
     VFS::mount("/", Overlay::instance());
     kprint("[VFS] Mounted / (overlay: ramfs over tarfs).\n");
 
-    // 3. The data disk: a real ATA drive when the machine has one, otherwise
-    //    the disk.img module copied into a RAM disk. Either way ext2 goes on
-    //    top of it, read-only, and the rest of the system cannot tell which.
-    Block::Device* disk = Ata::init();   // logs [ATA] ... when it finds one
+    // 3. The data disk: a virtio-blk device when the machine has one, else a
+    //    real ATA drive, else the disk.img module copied into a RAM disk.
+    //    Either way ext2 goes on top of it, read-only, and the rest of the
+    //    system cannot tell which.
+    Block::Device* disk = Virtio::init();  // logs [Virtio] ... when it finds one
+    if (disk == nullptr) disk = Ata::init();   // logs [ATA] ... likewise
     if (disk == nullptr) {
         Modules::Module img;
         if (Modules::find(".img", &img) && img.size > 0) {
             uint64_t sectors = (img.size + Block::SECTOR - 1) / Block::SECTOR;
             disk = MemBlock::create("disk0", sectors, img.data, img.size);
             if (disk != nullptr)
-                kprint("[Disk] no ATA drive; disk.img copied into RAM\n");
+                kprint("[Disk] no virtio or ATA drive; disk.img copied into RAM\n");
         }
     }
 
@@ -263,6 +266,12 @@ extern "C" void kmain(void) {
     // this kernel, so it is scratch: the test machine attaches one (see
     // tests/harness.py) and the write path gets exercised without anything
     // being written to the disk the filesystem lives on.
+    for (int i = 1; i < Virtio::count(); i++) {
+        Block::Device* scratch = Virtio::device(i);
+        kprint(Block::self_test(scratch)
+                   ? "[Block] scratch drive self-test ok\n"
+                   : "[Block] scratch drive self-test FAILED\n");
+    }
     for (int i = 1; i < Ata::count(); i++) {
         Block::Device* scratch = Ata::device(i);
         kprint(Block::self_test(scratch)

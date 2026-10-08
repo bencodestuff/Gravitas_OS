@@ -21,12 +21,13 @@ machine cannot hide the others.
 
     tests/kernel/console.py     the boot log, the console, the shell's echo
     tests/kernel/contracts.py   surfaces and the compositor, on unmanaged surfaces
-    tests/kernel/fallback.py    the machine with no ATA drive (the RAM-disk path)
+    tests/kernel/fallback.py    the machine with no disk (the RAM-disk path)
     tests/kernel/faults.py      the fault contract (the kernel kills the task)
     tests/kernel/init.py        the userland init and its Lua boot manifest
     tests/kernel/lua.py         the interpreter, REPL and scripts
     tests/kernel/power.py       leaving: poweroff and reset end the guest
     tests/kernel/tasks.py       scheduling, IPC, the fd/VFS surface, mappings
+    tests/kernel/virtio.py      the virtio-blk DMA driver (no IDE controller)
     tests/ui/windows.py         WM geometry and lifecycle
     tests/ui/apps.py            the apps and the IDE (the slowest group)
 

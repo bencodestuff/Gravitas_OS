@@ -66,10 +66,11 @@ class Guest:
     # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
     PACE = 0.03
 
-    def __init__(self, name, disk=True, scratch=False):
+    def __init__(self, name, disk=True, scratch=False, virtio=False):
         self.name = name
         self.disk = disk
         self.scratch = scratch
+        self.virtio = virtio
         self.art = os.path.join(ROOT, "test_artifacts", name)
         os.makedirs(self.art, exist_ok=True)
         self.log_path = os.path.join(self.art, "serial.log")
@@ -116,42 +117,65 @@ class Guest:
         if not os.path.exists(iso):
             fail("gravitas.iso missing - run 'ninja iso' first")
         # The data disk. It also ships inside the ISO as a Limine module, so the
-        # guest boots without it; attaching it as a drive is what exercises the
-        # ATA driver instead of the RAM disk fallback.
+        # guest boots without it; attaching it as a drive is what exercises a
+        # real disk driver (ATA or virtio) instead of the RAM disk fallback.
         disk = os.path.join(ROOT, "iso_root", "disk.img")
         if self.disk and not os.path.exists(disk):
             fail("iso_root/disk.img missing - run 'ninja iso' first")
         if shutil.which("qemu-system-x86_64") is None:
             fail("qemu-system-x86_64 not installed")
         accel = ["-enable-kvm"] if os.path.exists("/dev/kvm") else []
-        # A group may ask for no drive (see BOOT in tests/kernel/fallback.py):
-        # the disk is then only the Limine module, which is the path a machine
-        # without an ATA disk takes.
-        ide = [
-            # q35's built-in SATA is AHCI and has no legacy task file, so the
-            # guest gets a classic IDE controller to put the disk on. That is
-            # what src/kernel/dev/ata.cpp drives. snapshot=on because a driver
-            # bug must not be able to corrupt the image the build produced.
-            "-device", "piix4-ide,id=ideb",
-        ] + ([
-            "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
-            "-device", "ide-hd,drive=disk0,bus=ideb.0",
-        ] if self.disk else [])
-        # One drive is the realistic machine and the default; a second one is
-        # asked for only where the ATA *write* path should be exercised (the
-        # kernel treats a drive besides the data disk as scratch and self-tests
-        # it — all zeros, thrown away with the temp dir). Two drives is not the
-        # same code path: there is a slave to probe, and the bus is touched
-        # between commands, which is exactly how a drive-select bug hid here
-        # until the single-drive case was booted.
+        # The disk controller. The default is a classic IDE controller, because
+        # q35's built-in SATA is AHCI and has no legacy task file, and that is
+        # what src/kernel/dev/ata.cpp drives. A group may instead ask for
+        # virtio-blk (see BOOT in tests/kernel/virtio.py), the modern driver:
+        # then there is no IDE controller at all, so the guest can only be
+        # reaching the disk through virtio.
+        scratch_img = os.path.join(self.tmp, "scratch.img")
         if self.scratch:
-            scratch = os.path.join(self.tmp, "scratch.img")
-            with open(scratch, "wb") as f:
+            with open(scratch_img, "wb") as f:
                 f.truncate(128 * 512)
-            ide += [
-                "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch,
-                "-device", "ide-hd,drive=scratch0,bus=ideb.0",
-            ]
+        ctrl = []
+        if self.virtio:
+            # Legacy virtio-blk: one I/O BAR and one virtqueue, which is what
+            # src/kernel/dev/virtio.cpp speaks. QEMU's default is the modern
+            # (1.0) interface, whose registers sit behind PCI capabilities.
+            if self.disk:
+                ctrl += [
+                    "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
+                    "-device", "virtio-blk-pci,drive=disk0,"
+                               "disable-modern=on,disable-legacy=off",
+                ]
+            if self.scratch:
+                ctrl += [
+                    "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch_img,
+                    "-device", "virtio-blk-pci,drive=scratch0,"
+                               "disable-modern=on,disable-legacy=off",
+                ]
+        else:
+            # A group may ask for no drive (see BOOT in tests/kernel/fallback.py):
+            # the disk is then only the Limine module, which is the path a
+            # machine without a disk takes.
+            ctrl = [
+                # snapshot=on because a driver bug must not be able to corrupt
+                # the image the build produced.
+                "-device", "piix4-ide,id=ideb",
+            ] + ([
+                "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
+                "-device", "ide-hd,drive=disk0,bus=ideb.0",
+            ] if self.disk else [])
+            # One drive is the realistic machine and the default; a second one
+            # is asked for only where the ATA *write* path should be exercised
+            # (the kernel treats a drive besides the data disk as scratch and
+            # self-tests it — all zeros, thrown away with the temp dir). Two
+            # drives is not the same code path: there is a slave to probe, and
+            # the bus is touched between commands, which is exactly how a
+            # drive-select bug hid here until the single-drive case was booted.
+            if self.scratch:
+                ctrl += [
+                    "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch_img,
+                    "-device", "ide-hd,drive=scratch0,bus=ideb.0",
+                ]
         self.qemu = subprocess.Popen([
             "qemu-system-x86_64", "-cdrom", iso, "-m", "512M",
             # q35 boots in ~3.4s against the default i440fx's ~7.3s: the older
@@ -159,7 +183,7 @@ class Guest:
             # module the slowest thing in the whole suite. Both machines are
             # exercised by hand, and the kernel is happy on either.
             "-machine", "q35",
-            *ide,
+            *ctrl,
             "-display", "none", "-no-reboot", *accel,
             "-serial", "file:" + self.log_path,
             "-monitor", "unix:%s,server,nowait" % self.sock_path,
