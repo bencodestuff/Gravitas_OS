@@ -66,9 +66,10 @@ class Guest:
     # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
     PACE = 0.03
 
-    def __init__(self, name, disk=True):
+    def __init__(self, name, disk=True, scratch=False):
         self.name = name
         self.disk = disk
+        self.scratch = scratch
         self.art = os.path.join(ROOT, "test_artifacts", name)
         os.makedirs(self.art, exist_ok=True)
         self.log_path = os.path.join(self.art, "serial.log")
@@ -136,11 +137,14 @@ class Guest:
             "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
             "-device", "ide-hd,drive=disk0,bus=ideb.0",
         ] if self.disk else [])
-        if self.disk:
-            # A second drive as the slave, all zeros and thrown away with the
-            # temp dir. The kernel treats it as scratch and runs the Block
-            # self-test on it, which is the only place the ATA *write* path is
-            # exercised. The data disk is never written to.
+        # One drive is the realistic machine and the default; a second one is
+        # asked for only where the ATA *write* path should be exercised (the
+        # kernel treats a drive besides the data disk as scratch and self-tests
+        # it — all zeros, thrown away with the temp dir). Two drives is not the
+        # same code path: there is a slave to probe, and the bus is touched
+        # between commands, which is exactly how a drive-select bug hid here
+        # until the single-drive case was booted.
+        if self.scratch:
             scratch = os.path.join(self.tmp, "scratch.img")
             with open(scratch, "wb") as f:
                 f.truncate(128 * 512)

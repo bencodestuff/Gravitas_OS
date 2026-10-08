@@ -124,11 +124,23 @@ static void write_words(uint16_t port, const void* addr, uint64_t count) {
 
 // Load the task file and issue a read or write of 'nsect' sectors at 'lba'.
 static bool submit(Drive* d, bool writing, uint64_t lba, uint32_t nsect) {
+    // Select the drive *first*. The status register reports the selected drive,
+    // so waiting for "ready" before selecting is waiting on whichever drive was
+    // selected last — which is how a command came to be issued to a drive whose
+    // status read as busy. The drive select also has to settle: the controller
+    // needs a moment before the rest of the task file means anything.
+    if (d->lba48) {
+        outb(IO_BASE + R_DRIVE, 0x40 | (d->select & 0x10));
+    } else {
+        outb(IO_BASE + R_DRIVE,
+             0xE0 | (d->select & 0x10) | ((lba >> 24) & 0x0F));
+    }
+    delay_400ns();
+
     if (!wait_ready(500000)) return false;
 
     if (d->lba48) {
         // LBA48 wants the high halves first, then the low halves.
-        outb(IO_BASE + R_DRIVE, 0x40 | (d->select & 0x10));
         outb(IO_BASE + R_COUNT, (nsect >> 8) & 0xFF);
         outb(IO_BASE + R_LBA0, (lba >> 24) & 0xFF);
         outb(IO_BASE + R_LBA1, (lba >> 32) & 0xFF);
@@ -138,8 +150,6 @@ static bool submit(Drive* d, bool writing, uint64_t lba, uint32_t nsect) {
         outb(IO_BASE + R_LBA1, (lba >> 8) & 0xFF);
         outb(IO_BASE + R_LBA2, (lba >> 16) & 0xFF);
     } else {
-        outb(IO_BASE + R_DRIVE,
-             0xE0 | (d->select & 0x10) | ((lba >> 24) & 0x0F));
         outb(IO_BASE + R_COUNT, nsect & 0xFF);
         outb(IO_BASE + R_LBA0, lba & 0xFF);
         outb(IO_BASE + R_LBA1, (lba >> 8) & 0xFF);

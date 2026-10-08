@@ -8,6 +8,11 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from harness import ppm, test, run_module
 
+# This group checks the ATA write path, which only runs when there is a drive
+# besides the data disk: the kernel treats that one as scratch and self-tests it.
+# Every other group boots the realistic single-drive machine.
+BOOT = {"scratch": True}
+
 
 @test
 def boot_identity(g):

@@ -11,9 +11,11 @@ nothing to say unless something breaks. Run it as `ninja soak`, or directly:
     tests/soak.py                 # 40 boots, as many at once as memory allows
     tests/soak.py -n 200 -j 8     # longer, harder
 
-Every boot is a plain QEMU with the same devices the suite uses (the IDE
-controller, the data disk, a scratch disk), and the whole test is that it
-reaches the shell prompt. A boot that does not gets its serial log kept in
+Every boot is a plain QEMU with the same devices the suite uses by default (the
+IDE controller and one data disk), and the whole test is that it reaches the
+shell prompt. That is the realistic machine: it is also the configuration a
+drive-select bug hid in, because a second drive changes what the driver has to
+do. A boot that does not gets its serial log kept in
 test_artifacts/soak/, because that log is the only evidence there is.
 """
 import argparse
@@ -52,11 +54,7 @@ def boot(index):
     """One boot. Returns (index, ok, seconds)."""
     tmp = tempfile.mkdtemp(prefix="gravitas-soak-")
     log = os.path.join(tmp, "serial.log")
-    scratch = os.path.join(tmp, "scratch.img")
     try:
-        with open(scratch, "wb") as f:
-            f.truncate(128 * 512)
-
         accel = ["-enable-kvm"] if os.path.exists("/dev/kvm") else []
         qemu = subprocess.Popen([
             "qemu-system-x86_64", "-cdrom", os.path.join(ROOT, "gravitas.iso"),
@@ -65,8 +63,6 @@ def boot(index):
             "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on"
                       % os.path.join(ROOT, "iso_root", "disk.img"),
             "-device", "ide-hd,drive=disk0,bus=ideb.0",
-            "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch,
-            "-device", "ide-hd,drive=scratch0,bus=ideb.0",
             *accel, "-serial", "file:" + log,
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
