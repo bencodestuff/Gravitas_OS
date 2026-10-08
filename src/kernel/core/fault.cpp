@@ -90,6 +90,20 @@ static const char* vector_name(uint64_t v) {
 }
 
 // --- The dump: everything we know, in one place ---
+
+// Which exceptions the CPU pushes an error code for. The stubs rely on this to
+// keep one stack layout; the dump uses it to know whether that slot means what
+// it says.
+static bool has_error_code(uint64_t v) {
+    switch (v) {
+        case 8: case 10: case 11: case 12: case 13: case 14:
+        case 17: case 21: case 29: case 30:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
     Console::ink(Console::LT_RED, Console::BLACK); // faults read red
 
@@ -156,6 +170,13 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
             kprint_hex(regs->error_code);
             kprint("\n");
         }
+    } else if (has_error_code(regs->interrupt_number)) {
+        // Vectors 8 and 10-17 push one. Worth printing even when it is zero:
+        // if the frame is shifted (a device interrupt delivered as an exception,
+        // which pushes no error code at all), this slot holds the *real* RIP.
+        kprint("[fault] error code=");
+        kprint_hex(regs->error_code);
+        kprint("\n");
     }
 
     kprint("[fault] RAX=");
@@ -200,6 +221,20 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
 
 // --- The contract ---
 [[noreturn]] void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2) {
+    // A fault *while reporting* a fault cannot be reported: the reporter would
+    // recurse, and it recurses until the stack is gone, filling the log with
+    // garbage instead of the one line that matters. (Seen: an early-boot page
+    // fault whose dump itself faulted, and the serial log became thousands of
+    // truncated fault headers.) One more fault here stops the machine, and the
+    // partial dump is already in the log.
+    static bool reporting = false;
+    if (reporting) {
+        kprint("\n[fault] fault while reporting a fault: halting\n");
+        asm volatile("cli; hlt");
+        while (true) asm("hlt");
+    }
+    reporting = true;
+
     record_fault(regs, cr2);
     bool from_user = (regs->cs & 3) == 3;
     if (from_user) {
@@ -218,6 +253,11 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
         // The dying task's kernel stack stays valid until the next switch
         // reaps the zombie — exit_current handles all of that, and never
         // returns. (Interrupts are already off: interrupt gate.)
+        //
+        // This fault was reported and handled, so the next one is a new fault,
+        // not a recursion: clear the guard before the task goes away. (A kernel
+        // fault below never gets here — it halts, so the guard stays set.)
+        reporting = false;
         Sched::exit_current(Sched::EXIT_FAULT);
     }
 

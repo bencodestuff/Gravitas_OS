@@ -25,6 +25,12 @@ def boot_identity(g):
     # place the ATA write path runs.
     g.wait_for(r"\[Block\] scratch drive self-test ok")
 
+    # Interrupt routing is taken over before interrupts are enabled: the PIC
+    # remapped (so IRQ0-7 are not vectors 8-15), and the IOAPIC silenced.
+    g.wait_for(r"\[PIC\] Remapped; interrupts on\.")
+    g.wait_for(r"\[IOAPIC\] [0-9]+ entries, [0-9]+ unmasked by the firmware, "
+               r"now all masked")
+
     # The read-only ext2 image: a real on-disk filesystem, mounted from a RAM
     # disk seeded with the Limine module.
     g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "

@@ -3,9 +3,10 @@
 Two halves, one command each:
 
     ninja check     host tests only — no QEMU, ~2s, most regressions
-    ninja test      host tests + the guest groups (~40s)
+    ninja test      host tests + the guest groups (~60s)
     ninja test-kernel / test-ui    a subset of the groups
     GROUPS=apps ninja test         one group (or `tests/run.py apps`)
+    ninja soak      boot the machine 40 times, looking for one that hangs
 
 `ninja check` runs `tests/host/run.sh`: the libc pieces that build and run
 natively (buffer, string, stdio, time, printf, libm) plus `tools/check_syscalls.py`,
@@ -64,3 +65,16 @@ The rules that keep it from being flaky:
 
 `test_artifacts/<group>/` keeps each run's serial log and any screendumps (a
 failing test dumps extra ones for the moment it failed).
+
+## The soak
+
+`ninja soak` boots the machine repeatedly (40 by default, as many at once as
+memory allows) and asserts only that each one reaches the shell prompt. It is
+not part of `ninja test`: it is a minute of booting with nothing to say unless
+something breaks, and it exists for the failures a scenario cannot provoke.
+
+It earned its place. The boot fault described in the roadmap appeared in roughly
+one boot in fifteen, and only under load — invisible to a suite that boots nine
+guests once each. `tests/soak.py -n 240` found it in two minutes and then proved
+the fix over 336 consecutive boots. Logs from boots that did not come up are kept
+in `test_artifacts/soak/`, because that log is the only evidence there is.

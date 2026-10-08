@@ -8,6 +8,7 @@
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"
 #include "arch/x86_64/cpu.h"
+#include "arch/x86_64/ioapic.h"
 #include "kernel/io.h"
 #include "kernel/core/heap.h"
 #include "kernel/core/sched.h"
@@ -192,9 +193,25 @@ extern "C" void kmain(void) {
 
     Sched::init();
 
+    // --- Interrupt controllers: take them over, then switch interrupts on ---
+    //
+    // All of this happens with interrupts still off, which is the point. The PIC
+    // is reprogrammed here, and reprogramming it with interrupts live is how the
+    // machine used to die: an interrupt would be delivered *during* the ICW
+    // sequence, while the vector mapping still meant something else. The fault
+    // it produced looked like a double fault with a nonsense frame, and the
+    // address in that frame was this function.
+    //
+    // Order matters: remap so IRQ0-7 land on 32-39 (not 8-15, which are
+    // exceptions), then silence every controller, then enable interrupts. The
+    // kernel unmasks exactly what it wants, below.
     PIC::remap();
-    kprint("[PIC] Remapped.\n");
-    
+    PIC::mask_all();
+    Cpu::disable_local_apic();   // interrupts go through the PIC here
+    Ioapic::mask_all();          // ...and never through the IOAPIC
+    asm volatile("sti");
+    kprint("[PIC] Remapped; interrupts on.\n");
+
     Timer::init();
     Rtc::init();   // anchor the wall clock before anything reads it
     PIC::unmask(0); // Enable Timer (IRQ 0)

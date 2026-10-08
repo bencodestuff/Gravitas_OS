@@ -312,6 +312,14 @@ def main():
         ninja.write(f"  command = rm -rf bin obj iso_root gravitas.iso\n")
         ninja.write(f"  description = CLEAN\n\n")
 
+        # The soak: boot the machine over and over, looking for the one that
+        # does not come up. Deliberately not part of `test` — it is minutes of
+        # booting with nothing to say unless something breaks.
+        ninja.write(f"rule soak\n")
+        ninja.write(f"  command = ./tests/soak.py\n")
+        ninja.write(f"  description = SOAK (repeated boots)\n")
+        ninja.write(f"  pool = console\n\n")
+
         # --- TARGETS ---
         objects = []
         for src in cpp_sources:
@@ -377,6 +385,7 @@ def main():
         ninja.write(f"  select = ui\n")
         ninja.write(f"build check: check\n")
         ninja.write(f"build clean: clean\n")
+        ninja.write(f"build soak: soak iso\n")
 
         ninja.write(f"\ndefault {KERNEL_FILE}\n")
 
