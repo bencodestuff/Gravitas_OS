@@ -41,6 +41,6 @@ namespace ELF {
 
     // Function to load a file
     // Returns the Entry Point address (or 0 on failure)
-    uint64_t load_elf(uint8_t* file_data);
+    uint64_t load_elf(uint8_t* file_data, uint64_t file_size);
 
 }
