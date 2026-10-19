@@ -158,7 +158,13 @@ int attach(int id, uint64_t* out_addr, uint64_t* out_size) {
     uint64_t va = VMM::alloc_user_range(cr3, r->pages);
     if (va == 0) return -1;
 
-    map_pages(cr3, va, r->frames[0], r->pages, true);
+    // The frames came from alloc_page one at a time, so they are a scatter
+    // list: map each one at its own offset rather than assuming frames[0] is
+    // followed by its neighbours in physical memory.
+    uint64_t flags = VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_SHARED |
+                     VMM::PTE_WRITABLE;
+    for (uint64_t p = 0; p < r->pages; p++)
+        VMM::map_page_in(cr3, r->frames[p], va + p * 4096, flags);
     r->refs++;
 
     m->used = true;
