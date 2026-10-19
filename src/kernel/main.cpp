@@ -97,7 +97,7 @@ static int spawn_program(const char* path, const char* name) {
     uint64_t old_cr3 = VMM::current_pml4();
     uint64_t child_cr3 = VMM::clone_kernel_space();
     VMM::switch_pml4(child_cr3);
-    uint64_t entry = ELF::load_elf((uint8_t*)data);
+    uint64_t entry = ELF::load_elf((uint8_t*)data, size);
     delete[] data;
 
     if (entry == 0) {

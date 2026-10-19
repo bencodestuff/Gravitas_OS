@@ -179,7 +179,7 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     uint64_t child_cr3 = VMM::clone_kernel_space();
     VMM::switch_pml4(child_cr3);
 
-    uint64_t entry = ELF::load_elf((uint8_t*)data);
+    uint64_t entry = ELF::load_elf((uint8_t*)data, fsize);
     delete[] data;
     if (entry == 0) {
         VMM::switch_pml4(old_cr3);
