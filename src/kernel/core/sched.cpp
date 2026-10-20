@@ -33,7 +33,8 @@ namespace Sched {
     // Shared scheduler state (see task.h for the declarations).
     Task* current_task = nullptr;
     Task* ready_queue = nullptr;
-    Task* zombie = nullptr;   // exited task awaiting cleanup by the next switch
+    Task* zombie_head = nullptr; // exited tasks awaiting cleanup by the next switch
+    Task* zombie_tail = nullptr;
 
     void init() {
         // ... previous setup ...
@@ -616,30 +617,34 @@ namespace Sched {
         // would freeze. Re-enable always: every resume path returns through
         // a trap/I RET whose saved user flags carry IF=1 anyway.
         asm volatile("sti");
-        // Reap any task that exited since the last switch (its old kernel
-        // stack is definitely abandoned by now). CLI guards 'zombie': a
-        // nested PIT yield could otherwise reap on our behalf and null the
-        // pointer mid-loop.
+        // Reap every task that exited since the last switch (its old kernel
+        // stack is definitely abandoned by now). A queue, not one slot: two
+        // tasks can exit before any survivor resumes, and each owns a kernel
+        // stack, an FPU area and a whole address space. CLI guards the list:
+        // a nested PIT yield could otherwise reap on our behalf and advance
+        // the head mid-loop.
         asm volatile("cli");
-        if (zombie != nullptr) {
+        while (zombie_head != nullptr) {
+            Task* dead = zombie_head;
+            zombie_head = dead->zombie_next;
+            if (zombie_head == nullptr) zombie_tail = nullptr;
             // Close any fds the task leaked, then free its address space
             for (int i = 0; i < VFS::MAX_FDS; i++) {
-                if (zombie->fds[i] != nullptr) {
-                    VFS::close_fd_for(zombie->fds, i);
+                if (dead->fds[i] != nullptr) {
+                    VFS::close_fd_for(dead->fds, i);
                 }
             }
-            Compositor::surfaces_for_task_gone(zombie->id);
-            Compositor::authority_gone(zombie->id);
-            input_focus_gone(zombie->id);
-            console_owner_gone(zombie->id);
-            Ipc::task_gone(zombie->id);
-            MemMap::task_gone(zombie->id);
+            Compositor::surfaces_for_task_gone(dead->id);
+            Compositor::authority_gone(dead->id);
+            input_focus_gone(dead->id);
+            console_owner_gone(dead->id);
+            Ipc::task_gone(dead->id);
+            MemMap::task_gone(dead->id);
             // Free the exited task's address space (its user frames + tables)
-            VMM::destroy_user_space(zombie->cr3);
-            delete[] zombie->kstack_mem;
-            delete[] zombie->fxsave_raw;
-            delete zombie;
-            zombie = nullptr;
+            VMM::destroy_user_space(dead->cr3);
+            delete[] dead->kstack_mem;
+            delete[] dead->fxsave_raw;
+            delete dead;
         }
         asm volatile("sti");
     }
