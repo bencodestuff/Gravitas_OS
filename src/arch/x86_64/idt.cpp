@@ -23,6 +23,7 @@
 #include "kernel/core/errno.h"
 #include "kernel/core/memmap.h"
 #include "kernel/core/power.h"
+#include "kernel/core/user_ptr.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
 // (0x500000+). Grows upward in whole pages.
@@ -130,6 +131,8 @@ namespace IDT {
 // Stages a spawn: kernel-side copies of argv, VFS read of the ELF image,
 // child address-space clone + load + task creation. Returns the child id,
 // or -1. Shared by SPAWN (4, foreground) and SPAWN_BG (21, immediate).
+// The user name and argv pointers must have been validated already; spawn_impl
+// does that at the syscall boundary before calling here.
 static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     // Stage argv into kernel memory: the kernel is about to switch CR3,
     // so user pointers may not survive the swap.
@@ -207,6 +210,24 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
 
 using SyscallFn = void (*)(IDT::Registers*);
 
+// --- Syscall-boundary address checks ---
+// Every pointer and length below comes from ring 3, so it is checked against
+// the caller's page tables before the kernel touches it (see user_ptr.h).
+// A rejected range returns -EFAULT and does nothing else.
+static inline void sys_efault(IDT::Registers* regs) {
+    regs->rax = (uint64_t)-Errno::EFAULT;
+}
+static bool user_in(uint64_t ptr, uint64_t len) {
+    return UserPtr::valid(ptr, len, false);
+}
+static bool user_out(uint64_t ptr, uint64_t len) {
+    return UserPtr::valid(ptr, len, true);
+}
+// A path argument: the terminator must be inside the VFS's own limit.
+static bool user_path(uint64_t ptr) {
+    return UserPtr::valid_string(ptr, VFS::PATH_MAX);
+}
+
 static void sys_putc(IDT::Registers* regs) {
     // Routed to a bound console owner (a terminal) if there is one, else the
     // kernel console. See Sched::console_emit.
@@ -230,8 +251,16 @@ static_assert(sizeof(VFS::DirEntry) == 264,
 static void sys_listdir(IDT::Registers* regs) {
     VFS::DirEntry* out = (VFS::DirEntry*)regs->rsi;
     long max = (long)regs->rdx;
-    if (out == nullptr || max <= 0) {
+    if (max <= 0) {
         regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    // The array holds 'max' 264-byte records, all written before it is read
+    // back for the type translation, so the whole range must be writable.
+    if ((uint64_t)max > UserPtr::USER_TOP / sizeof(VFS::DirEntry) ||
+        !user_path(regs->rdi) ||
+        !user_out(regs->rsi, (uint64_t)max * sizeof(VFS::DirEntry))) {
+        sys_efault(regs);
         return;
     }
 
@@ -249,6 +278,7 @@ static void sys_listdir(IDT::Registers* regs) {
 
 static void sys_chdir(IDT::Registers* regs) {
     const char* path = (const char*)regs->rdi;
+    if (!user_path(regs->rdi)) { sys_efault(regs); return; }
     if (!VFS::is_directory(path)) {
         regs->rax = (uint64_t)-Errno::ENOENT;
         return;
@@ -269,6 +299,11 @@ static void sys_getcwd(IDT::Registers* regs) {
     char* buf = (char*)regs->rdi;
     const char* cwd = Sched::current_task_cwd();
     uint64_t max = regs->rsi;
+    if (max == 0) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    if (!user_out(regs->rdi, max)) { sys_efault(regs); return; }
     uint64_t i = 0;
     while (cwd[i] && i + 1 < max) { buf[i] = cwd[i]; i++; }
     buf[i] = '\0';
@@ -292,6 +327,7 @@ static void sys_mouse_read(IDT::Registers* regs) {
     // authority exists the pointer is its alone (the WM brokers it).
     struct MousePkt { int16_t dx, dy; uint8_t buttons; int8_t dz; };
     MousePkt* out = (MousePkt*)regs->rdi;
+    if (!user_out(regs->rdi, sizeof(MousePkt))) { sys_efault(regs); return; }
     int16_t dx, dy; uint8_t buttons; int8_t dz;
     if (Compositor::has_authority() && !Compositor::is_authority()) {
         regs->rax = 0;
@@ -308,6 +344,7 @@ static void sys_fb_info(IDT::Registers* regs) {
     // user VA; returns the geometry and that address.
     struct FbPkt { uint64_t w, h, pitch, bpp, address, size; };
     FbPkt* out = (FbPkt*)regs->rdi;
+    if (!user_out(regs->rdi, sizeof(FbPkt))) { sys_efault(regs); return; }
     Framebuffer::Info info;
     if (Framebuffer::get_info_and_map(Sched::current_task_cr3(), &info)) {
         out->w = info.width; out->h = info.height;
@@ -324,6 +361,12 @@ static void sys_ticks(IDT::Registers* regs) {
 }
 
 static void sys_surface_create(IDT::Registers* regs) {
+    // The optional geometry packet is written only after the surface exists,
+    // so reject a bad one before creating anything.
+    if (regs->rdx && !user_out(regs->rdx, sizeof(Compositor::Info))) {
+        sys_efault(regs);
+        return;
+    }
     long id = Compositor::surface_create(regs->rdi, regs->rsi);
     if (id >= 0 && regs->rdx) {
         Compositor::Info info;
@@ -340,6 +383,10 @@ static void sys_surface_commit(IDT::Registers* regs) {
     struct RectPkt { int64_t x, y, w, h; };
     RectPkt* r = (RectPkt*)regs->rdi;
     int cid = (int)regs->rsi;
+    if (r != nullptr && !user_in(regs->rdi, sizeof(RectPkt))) {
+        sys_efault(regs);
+        return;
+    }
     if (r != nullptr)
         Compositor::surface_commit(cid, (int)r->x, (int)r->y, (int)r->w, (int)r->h);
     else
@@ -353,6 +400,12 @@ static void sys_surface_move(IDT::Registers* regs) {
 }
 
 static void sys_surface_resize(IDT::Registers* regs) {
+    // Validate the optional geometry packet before the resize moves the
+    // pixels: a bad pointer must not leave a resized surface behind.
+    if (regs->r10 && !user_out(regs->r10, sizeof(Compositor::Info))) {
+        sys_efault(regs);
+        return;
+    }
     long r = Compositor::surface_resize((int)regs->rdi, regs->rsi, regs->rdx);
     if (r == 0 && regs->r10) {
         Compositor::Info info;
@@ -370,6 +423,11 @@ struct MapOut { uint64_t address, size; };
 static void sys_map_file(IDT::Registers* regs) {
     MapOut* out = (MapOut*)regs->rsi;
     uint64_t addr = 0, size = 0;
+    if (!user_path(regs->rdi) ||
+        (regs->rsi && !user_out(regs->rsi, sizeof(MapOut)))) {
+        sys_efault(regs);
+        return;
+    }
     if (MemMap::map_file((const char*)regs->rdi, &addr, &size) != 0) {
         regs->rax = (uint64_t)(long)-1;
         return;
@@ -393,6 +451,10 @@ static void sys_shm_grant(IDT::Registers* regs) {
 static void sys_shm_map(IDT::Registers* regs) {
     MapOut* out = (MapOut*)regs->rsi;
     uint64_t addr = 0, size = 0;
+    if (regs->rsi && !user_out(regs->rsi, sizeof(MapOut))) {
+        sys_efault(regs);
+        return;
+    }
     if (MemMap::attach((int)regs->rdi, &addr, &size) != 0) {
         regs->rax = (uint64_t)(long)-1;
         return;
@@ -425,21 +487,38 @@ static void sys_surface_z(IDT::Registers* regs) {
 }
 
 static void sys_surface_list(IDT::Registers* regs) {
+    // 'max' records of 64 bytes are copied into the caller's array. Bound the
+    // count first so the byte length cannot overflow.
+    if (regs->rsi > UserPtr::USER_TOP / sizeof(Compositor::Info) ||
+        !user_out(regs->rdi, regs->rsi * sizeof(Compositor::Info))) {
+        sys_efault(regs);
+        return;
+    }
     regs->rax = (uint64_t)(long)Compositor::surface_list(
         (Compositor::Info*)regs->rdi, regs->rsi);
 }
 
 static void sys_sysinfo(IDT::Registers* regs) {
+    if (!user_out(regs->rdi, sizeof(SysInfo))) { sys_efault(regs); return; }
     Sysinfo::get((SysInfo*)regs->rdi);
     regs->rax = 0;
 }
 
 static void sys_task_list(IDT::Registers* regs) {
+    int max = (int)regs->rsi;
+    if (max > 0) {
+        if ((uint64_t)max > UserPtr::USER_TOP / sizeof(Sched::TaskInfo) ||
+            !user_out(regs->rdi, (uint64_t)max * sizeof(Sched::TaskInfo))) {
+            sys_efault(regs);
+            return;
+        }
+    }
     regs->rax = (uint64_t)(long)Sched::task_snapshot(
-        (Sched::TaskInfo*)regs->rdi, (int)regs->rsi);
+        (Sched::TaskInfo*)regs->rdi, max);
 }
 
 static void sys_fault_last(IDT::Registers* regs) {
+    if (!user_out(regs->rdi, sizeof(Fault::Record))) { sys_efault(regs); return; }
     regs->rax = Fault::last_fault((Fault::Record*)regs->rdi) ? 1 : 0;
 }
 
@@ -470,12 +549,18 @@ static void sys_console_detach(IDT::Registers* regs) {
 }
 
 static void sys_console_read(IDT::Registers* regs) {
-    regs->rax = (uint64_t)(long)Sched::console_read((char*)regs->rdi, (int)regs->rsi);
+    int max = (int)regs->rsi;
+    if (max < 0) { sys_efault(regs); return; }
+    if (max > 0 && !user_out(regs->rdi, (uint64_t)max)) { sys_efault(regs); return; }
+    regs->rax = (uint64_t)(long)Sched::console_read((char*)regs->rdi, max);
 }
 
 static void sys_console_write(IDT::Registers* regs) {
+    int n = (int)regs->rdx;
+    if (n < 0) { sys_efault(regs); return; }
+    if (n > 0 && !user_in(regs->rsi, (uint64_t)n)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)(long)Sched::console_write(
-        (int)regs->rdi, (const char*)regs->rsi, (int)regs->rdx);
+        (int)regs->rdi, (const char*)regs->rsi, n);
 }
 
 static void sys_wm_hotkey(IDT::Registers* regs) {
@@ -496,6 +581,12 @@ static void sys_puts(IDT::Registers* regs) {
     const char* us = (const char*)regs->rdi;
     char buf[256];
     int i = 0;
+    // The kernel stops at 255 bytes whether or not a terminator arrived, so
+    // only those bytes have to be readable.
+    if (!UserPtr::valid_prefix(regs->rdi, 255)) {
+        sys_efault(regs);
+        return;
+    }
     while (us != nullptr && i < 255 && us[i] != '\0') { buf[i] = us[i]; i++; }
     buf[i] = '\0';
     Sched::console_emit_str(buf, i);
@@ -509,16 +600,17 @@ static void sys_lseek(IDT::Registers* regs) {
 // Write a VFS::Stat into the userland packet. Mirrors struct grv_stat in
 // grv/syscall.h. The host test pins that side's offsets; this pins ours to the
 // same numbers.
+struct StatPkt {
+    uint64_t size;
+    uint64_t is_dir;
+    uint64_t ino;
+    uint64_t mode;
+    uint64_t mtime;
+};
+static_assert(sizeof(StatPkt) == 40 && offsetof(StatPkt, mtime) == 32,
+              "StatPkt must match struct grv_stat in grv/syscall.h");
+
 static void stat_out(uint64_t ptr, const VFS::Stat& st) {
-    struct StatPkt {
-        uint64_t size;
-        uint64_t is_dir;
-        uint64_t ino;
-        uint64_t mode;
-        uint64_t mtime;
-    };
-    static_assert(sizeof(StatPkt) == 40 && offsetof(StatPkt, mtime) == 32,
-                  "StatPkt must match struct grv_stat in grv/syscall.h");
     if (ptr == 0) return;
     StatPkt* out = (StatPkt*)ptr;
     out->size = st.size;
@@ -529,6 +621,13 @@ static void stat_out(uint64_t ptr, const VFS::Stat& st) {
 }
 
 static void sys_stat(IDT::Registers* regs) {
+    // The path is read by the VFS and the optional packet is written here:
+    // both must be the caller's memory before either is touched.
+    if (!user_path(regs->rdi) ||
+        (regs->rsi && !user_out(regs->rsi, sizeof(StatPkt)))) {
+        sys_efault(regs);
+        return;
+    }
     VFS::Stat st;
     int r = VFS::stat_path((const char*)regs->rdi, &st);
     if (r == 0) stat_out(regs->rsi, st);
@@ -537,6 +636,10 @@ static void sys_stat(IDT::Registers* regs) {
 
 // The same record, for a descriptor the caller already holds.
 static void sys_fstat(IDT::Registers* regs) {
+    if (regs->rsi && !user_out(regs->rsi, sizeof(StatPkt))) {
+        sys_efault(regs);
+        return;
+    }
     VFS::Stat st;
     int r = VFS::fstat_fd((int)regs->rdi, &st);
     if (r == 0) stat_out(regs->rsi, st);
@@ -544,17 +647,24 @@ static void sys_fstat(IDT::Registers* regs) {
 }
 
 static void sys_mkdir(IDT::Registers* regs) {
+    if (!user_path(regs->rdi)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::mkdir((const char*)regs->rdi);
 }
 
+// Mirrors struct grv_statfs in grv/syscall.h.
+struct StatFsPkt {
+    uint64_t total;
+    uint64_t free;
+    uint64_t writable;
+    char     type[16];
+};
+
 static void sys_statfs(IDT::Registers* regs) {
-    // Mirrors struct grv_statfs in grv/syscall.h.
-    struct StatFsPkt {
-        uint64_t total;
-        uint64_t free;
-        uint64_t writable;
-        char     type[16];
-    };
+    if (!user_path(regs->rdi) ||
+        (regs->rsi && !user_out(regs->rsi, sizeof(StatFsPkt)))) {
+        sys_efault(regs);
+        return;
+    }
     VFS::StatFs st;
     int r = VFS::statfs_path((const char*)regs->rdi, &st);
     if (r == 0 && regs->rsi) {
@@ -571,10 +681,15 @@ static void sys_statfs(IDT::Registers* regs) {
 }
 
 static void sys_unlink(IDT::Registers* regs) {
+    if (!user_path(regs->rdi)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::unlink((const char*)regs->rdi);
 }
 
 static void sys_rename(IDT::Registers* regs) {
+    if (!user_path(regs->rdi) || !user_path(regs->rsi)) {
+        sys_efault(regs);
+        return;
+    }
     regs->rax = (uint64_t)VFS::rename((const char*)regs->rdi, (const char*)regs->rsi);
 }
 
@@ -596,8 +711,31 @@ static void sys_time(IDT::Registers* regs) {
 // SPAWN (4) and SPAWN_BG (21) share this: stage the name, load the ELF, make
 // the task. 'background' decides whether we then block on the child.
 static void spawn_impl(IDT::Registers* regs, bool background) {
+    // The name and every argv string are read below and then staged into
+    // kernel memory. Validate them here, at the boundary: stage_spawn is
+    // entered with the caller's pointers still live.
+    if (!UserPtr::valid_prefix(regs->rdi, 63)) {
+        sys_efault(regs);
+        return;
+    }
+    uint64_t user_argc = regs->rdx;
+    if (user_argc > 8) user_argc = 8;
+    if (user_argc > 0) {
+        if (!user_in(regs->rsi, user_argc * sizeof(const char*))) {
+            sys_efault(regs);
+            return;
+        }
+        const char* const* user_argv = (const char* const*)regs->rsi;
+        for (uint64_t i = 0; i < user_argc; i++) {
+            if (user_argv[i] == nullptr) break;
+            if (!UserPtr::valid_prefix((uint64_t)user_argv[i], 63)) {
+                sys_efault(regs);
+                return;
+            }
+        }
+    }
+
     const char* user_name = (const char*)regs->rdi;
-    if (user_name == nullptr) { regs->rax = (uint64_t)-1; return; }
 
     // Stage the name into kernel memory: the kernel is about to switch CR3, so
     // user pointers may not survive the swap. (Terminate at the true end: the
@@ -662,7 +800,7 @@ static void sys_send(IDT::Registers* regs) {
     // The kernel stamps 'from' with OUR id — senders cannot pose as someone
     // else, and receivers can trust the field.
     const Ipc::Msg* um = (const Ipc::Msg*)regs->rsi;
-    if (um == nullptr) { regs->rax = (uint64_t)-1; return; }
+    if (!user_in(regs->rsi, sizeof(Ipc::Msg))) { sys_efault(regs); return; }
     Ipc::Msg m;
     m.from = Sched::current_task_id();
     m.type = um->type;   // user-VA reads run on the caller's CR3
@@ -676,7 +814,7 @@ static void sys_recv(IDT::Registers* regs) {
     // wait use it too). A send between our check and our waiter registration
     // is impossible with IF off; one after registration wakes us via wake.
     Ipc::Msg* um = (Ipc::Msg*)regs->rdi;
-    if (um == nullptr) { regs->rax = (uint64_t)-1; return; }
+    if (!user_out(regs->rdi, sizeof(Ipc::Msg))) { sys_efault(regs); return; }
     while (true) {
         asm volatile("cli");
         Ipc::Msg m;
@@ -700,14 +838,21 @@ static void sys_recv(IDT::Registers* regs) {
 }
 
 static void sys_open(IDT::Registers* regs) {
+    if (!user_path(regs->rdi)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::open_fd((const char*)regs->rdi, (int)regs->rsi);
 }
 
 static void sys_read(IDT::Registers* regs) {
+    // An output buffer: every byte read_fd may fill must be writable user
+    // memory. Validating up front keeps a short buffer from faulting in ring 0
+    // halfway through the copy.
+    if (!user_out(regs->rsi, regs->rdx)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::read_fd((int)regs->rdi, (void*)regs->rsi, regs->rdx);
 }
 
 static void sys_write(IDT::Registers* regs) {
+    // An input buffer: readable user memory (write permission is not needed).
+    if (!user_in(regs->rsi, regs->rdx)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::write_fd((int)regs->rdi, (const void*)regs->rsi, regs->rdx);
 }
 
@@ -725,6 +870,8 @@ static void sys_dup2(IDT::Registers* regs) {
 }
 
 static void sys_pipe(IDT::Registers* regs) {
+    // Two ints are written into the caller's array.
+    if (!user_out(regs->rdi, 2 * sizeof(int))) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::pipe_fd((int*)regs->rdi);
 }
 

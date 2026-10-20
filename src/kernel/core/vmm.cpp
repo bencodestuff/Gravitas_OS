@@ -101,14 +101,19 @@ namespace VMM {
         return (void*)(uintptr_t)(phys + hhdm_offset);
     }
 
-    bool is_mapped(uint64_t virtual_addr) {        uint64_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
+    uint64_t leaf_pte_in(uint64_t pml4_phys, uint64_t virtual_addr) {
+        uint64_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
         uint64_t pdp_idx  = (virtual_addr >> 30) & 0x1FF;
         uint64_t pd_idx   = (virtual_addr >> 21) & 0x1FF;
         uint64_t pt_idx   = (virtual_addr >> 12) & 0x1FF;
 
-        uint64_t* pt = get_next_level_in(current_pml4(), pml4_idx, pdp_idx, pd_idx, false, false);
-        if (!pt) return false;
-        return (pt[pt_idx] & PTE_PRESENT) != 0;
+        uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, false, false);
+        if (!pt) return 0;
+        return pt[pt_idx];
+    }
+
+    bool is_mapped(uint64_t virtual_addr) {
+        return (leaf_pte_in(current_pml4(), virtual_addr) & PTE_PRESENT) != 0;
     }
 
     void map_page_in(uint64_t pml4_phys, uint64_t physical_addr,

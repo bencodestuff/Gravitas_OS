@@ -6,6 +6,12 @@ namespace VMM {
     // UPDATED: Now requires the memory map to know what to map!
     void init(struct limine_memmap_response* map);
 
+    // The user/kernel split: every user virtual address is below this, and the
+    // kernel's upper half (HHDM, image, page tables) starts at it. The upper
+    // half is shared into every address space, so a syscall must never treat
+    // an address at or above this as a user buffer.
+    constexpr uint64_t USER_VA_LIMIT = 0x0000800000000000ull;
+
     // Map into the CURRENT address space
     void map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags);
     // Map into an explicit address space (used for building new processes)
@@ -23,6 +29,13 @@ namespace VMM {
     uint64_t current_pml4();          // read CR3
     uint64_t get_kernel_pml4_phys();
     bool is_mapped(uint64_t virtual_addr);
+
+    // The leaf PTE for 'virtual_addr' in an explicit address space, exactly as
+    // stored (present, guard, or otherwise), or 0 when the tables do not reach
+    // a leaf. Walks the same tables as is_mapped() and allocates nothing.
+    // Callers that must know whether the mapping belongs to a user (PTE_USER)
+    // and whether it is writable use this; check PTE_PRESENT themselves.
+    uint64_t leaf_pte_in(uint64_t pml4_phys, uint64_t virtual_addr);
 
     // Leaf flags for map_page_in: the low 12 bits are stored in the PTE
     // verbatim, so anything here survives.

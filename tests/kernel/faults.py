@@ -45,5 +45,16 @@ def stack_guard(g):
     g.wait_after("terminating task per the fault contract", "program finished")
 
 
+@test
+def bad_user_pointers(g):
+    # The syscall boundary rejects null, unmapped, kernel and over-long
+    # ranges with EFAULT. Before the boundary checks these faulted in ring 0
+    # (halting the machine) or reached kernel memory. The program finishing
+    # at all is half the proof; its own summary is the other half.
+    g.shell("run badptr.elf")
+    g.wait_for("badptr: all checks pass")
+    g.wait_after("badptr: all checks pass", "program finished")
+
+
 if __name__ == "__main__":
     run_module(__file__)

@@ -43,6 +43,7 @@ LUA_SOURCES = LUA_CORE + LUA_LIB + ["lua"]   # lua.c = the standalone interprete
 # everything else lands in /bin. (The VFS searches both directories for a
 # bare program name — see kProgramPath in src/fs/vfs.cpp.)
 TEST_PROGRAMS = {
+    "badptr",
     "closetest", "consoletest", "crash", "damagetest", "echoprog",
     "filetest", "flood", "libctest", "mouse", "msgecho", "msgtest",
     "popuptest", "proctest", "rawwin", "sleeper", "smash",

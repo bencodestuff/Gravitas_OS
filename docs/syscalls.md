@@ -52,6 +52,21 @@ A successful call never clears `errno` (check the return value, as in C).
 Not every syscall distinguishes every reason yet: the filesystem backends
 report 0/−1, so the VFS maps their failures to the closest code above.
 
+## Bad addresses
+
+Every pointer and length argument is checked at the boundary, before the
+kernel touches it, against the calling task's page tables. A syscall rejects
+a null pointer, an address at or above the user/kernel split
+(`0x0000800000000000`), a range that wraps or crosses the split, and a range
+whose pages are not mapped (or not writable, for an output buffer) with
+`-EFAULT`. The whole `[ptr, ptr + len)` range is checked page by page, so a
+buffer that starts in one page and ends in an unmapped one is refused instead
+of faulting in ring 0 (where the fault contract halts the machine). Strings are
+scanned to their terminator inside the VFS's path limit, and an argv array and
+each string it points at are checked before a spawn copies them. Optional
+output pointers (a null struct pointer meaning "just do the work") keep
+working; a bad non-null one is `-EFAULT`.
+
 ## Paths
 
 A path is absolute (`/Pictures/x.bmp`) or relative to the task's working
