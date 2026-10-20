@@ -851,6 +851,15 @@ static void sys_read(IDT::Registers* regs) {
 }
 
 static void sys_write(IDT::Registers* regs) {
+    // A count past the VFS cap is an invalid argument, not a bad address. Such
+    // a range necessarily runs past the user half, so the boundary check would
+    // report EFAULT for what is really an impossible request; deciding it here
+    // also keeps the page walk bounded. Genuinely bad pointers within the cap
+    // are still EFAULT below.
+    if (regs->rdx > VFS::MAX_WRITE_BYTES) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
     // An input buffer: readable user memory (write permission is not needed).
     if (!user_in(regs->rsi, regs->rdx)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::write_fd((int)regs->rdi, (const void*)regs->rsi, regs->rdx);

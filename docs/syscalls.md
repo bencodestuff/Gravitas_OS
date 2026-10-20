@@ -67,6 +67,12 @@ each string it points at are checked before a spawn copies them. Optional
 output pointers (a null struct pointer meaning "just do the work") keep
 working; a bad non-null one is `-EFAULT`.
 
+A write count above the per-call cap (`16 MB`, see
+`VFS::MAX_WRITE_BYTES`) is `-EINVAL`, not `-EFAULT`: such a count is an
+impossible request rather than a bad buffer, and it is refused before the page
+walk. A pointer or range that is genuinely bad or unmapped within the cap stays
+`-EFAULT`.
+
 ## Paths
 
 A path is absolute (`/Pictures/x.bmp`) or relative to the task's working
