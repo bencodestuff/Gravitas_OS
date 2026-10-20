@@ -56,6 +56,7 @@ namespace Sched {
                                 // if the task died from an exception
         uint64_t exit_code_inbox;   // exit code of the task this task WAITED
                                     // on (written by exit_current at kill time)
+        Task* zombie_next;          // link in the exited-task queue (see sched.cpp)
 
         // --- Console endpoint (M12) ---
         // When console_owner != -1 this task's PUTC is delivered to that
@@ -79,7 +80,8 @@ namespace Sched {
     // reaches everything below through these declarations.
     extern Task* current_task;
     extern Task* ready_queue;    // circular ready list (Round Robin)
-    extern Task* zombie;         // exited task awaiting cleanup by the next switch
+    extern Task* zombie_head;    // exited tasks awaiting cleanup by the next switch
+    extern Task* zombie_tail;    // (FIFO list through Task::zombie_next)
     extern int task_counter;     // id issuer (storage in sched.cpp)
     extern uint8_t fpu_template[512]; // boot-clean FPU snapshot (storage in sched.cpp)
 

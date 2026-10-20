@@ -406,6 +406,16 @@ namespace Sched {
         current_task->cwd[i] = '\0';
     }
 
+    // Queue an exited task for the next switch to free. A single slot would
+    // lose the older task if two exit before any survivor resumes, leaking
+    // its kernel stack, FPU area and address space for good.
+    static void queue_zombie(Task* dead) {
+        dead->zombie_next = nullptr;
+        if (zombie_tail != nullptr) zombie_tail->zombie_next = dead;
+        else zombie_head = dead;
+        zombie_tail = dead;
+    }
+
     void exit_current(uint64_t code) {
         Task* dead = current_task;
         dead->exit_code = code;
@@ -454,9 +464,9 @@ namespace Sched {
             next = next->next;
         }
 
-        // 6. Free the Task struct AFTER the next switch (we are standing on
-        // the dying kernel stack, so we can't free it here).
-        zombie = dead;
+        // 6. Queue the Task struct for cleanup AFTER the next switch (we are
+        //    standing on the dying kernel stack, so we can't free it here).
+        queue_zombie(dead);
 
         current_task = next;
         GDT::tss.rsp0 = next->kstack_top;
