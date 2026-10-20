@@ -216,6 +216,45 @@ int main(int argc, char** argv) {
     grv_close(fd);
     check(grv_unlink(big) == 0 && grv_unlink(big2) == 0, "clean up the big files");
 
+    // --- an overflowing write count is refused, never copied ---
+    // 'offset + count' wraps to a small end, which used to pass the cap check
+    // and copy far past the heap buffer. The write must fail cleanly, leave the
+    // file as it was, and leave the heap usable.
+    const char* ovf = "/tmp/ftdir/ovf.bin";
+    grv_unlink(ovf);
+    fd = grv_open(ovf, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "open for the overflow test");
+    check(grv_write_fd(fd, "safe", 4) == 4, "write before the overflow");
+
+    unsigned long wrap = ~0UL - (1UL << 20) + 100; // 2^64 - 1 MB + 100: wraps
+    errno = 0;
+    long refused = grv_write_fd(fd, chunk, wrap);
+    check(refused == -1 && errno == EINVAL, "overflowing count -> EINVAL");
+    unsigned long absurd = 1UL << 40;              // absurd, but does not wrap
+    errno = 0;
+    refused = grv_write_fd(fd, chunk, absurd);
+    check(refused == -1 && errno == EINVAL, "absurd count -> EINVAL");
+    grv_close(fd);
+
+    check(grv_stat(ovf, &st) == 0 && st.size == 4, "refused writes left the size alone");
+    fd = grv_open(ovf, GRV_O_RDONLY);
+    n = grv_read_fd(fd, buf, sizeof(buf));
+    check(n == 4 && memcmp(buf, "safe", 4) == 0, "refused writes left the bytes alone");
+    grv_close(fd);
+    check(grv_unlink(ovf) == 0, "clean up the overflow file");
+
+    // The heap still works after the refusals: a fresh file allocates and reads.
+    const char* after = "/tmp/ftdir/after.bin";
+    grv_unlink(after);
+    fd = grv_open(after, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0 && grv_write_fd(fd, "intact", 6) == 6, "write after the refusals");
+    grv_close(fd);
+    fd = grv_open(after, GRV_O_RDONLY);
+    n = grv_read_fd(fd, buf, sizeof(buf));
+    check(n == 6 && memcmp(buf, "intact", 6) == 0, "the heap is intact after the refusals");
+    grv_close(fd);
+    check(grv_unlink(after) == 0, "clean up the heap check");
+
     if (fails == 0) { printf("filetest: all checks pass\n"); return 0; }
     printf("filetest: %d check(s) failed\n", fails);
     return 1;

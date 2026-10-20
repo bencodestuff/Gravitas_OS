@@ -31,6 +31,12 @@ constexpr int PATH_MAX = 512;
 // lists but cannot be opened is worse than a refusal.
 constexpr int NAME_MAX = 256;
 
+// The most a single write may ask a backend to take. No file this kernel can
+// hold comes close (the ramfs cap is 1 MB), while a count past this is not a
+// real buffer: the kernel would have to read that many bytes from user memory.
+// The VFS refuses it before a backend ever has to defend its own arithmetic.
+constexpr uint64_t MAX_WRITE_BYTES = 16ull << 20; // 16 MB
+
 // Descriptors 0, 1 and 2 are reserved for the standard streams. The kernel has
 // no console file object — userland maps those three to the console — but
 // reserving the slots keeps VFS descriptors from colliding with them, which is

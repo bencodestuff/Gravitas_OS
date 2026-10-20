@@ -694,6 +694,10 @@ long read_fd(int fd, void* buf, uint64_t count) {
 long write_fd(int fd, const void* buf, uint64_t count) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;
+    // An absurd count is refused here, before any backend sees it. Otherwise
+    // every backend has to prove 'offset + count' fits, and one that adds
+    // first can wrap to a small end and copy past its buffer.
+    if (count > MAX_WRITE_BYTES) return -Errno::EINVAL;
     if (h->kind == FdKind::Console) {
         Sched::console_emit_bytes((const char*)buf, (int)count);
         return (long)count;
@@ -703,6 +707,10 @@ long write_fd(int fd, const void* buf, uint64_t count) {
     Node* n = h->node;
     if (n->fs->write == nullptr) return -Errno::EROFS;
     if (h->append) h->offset = n->size;  // O_APPEND: the end is wherever it is now
+    // The range must be representable: a wrapped addition would describe a
+    // small write at a huge offset, or a huge one at a small offset, and either
+    // way a backend's cap check would be checking the wrong number.
+    if (h->offset > UINT64_MAX - count) return -Errno::EINVAL;
     uint64_t got = n->fs->write(n->fs->priv, n, buf, count, h->offset);
     // A backend that writes nothing for a real request has run out of room
     // (a read-only backend never gets here: it has no write at all).
