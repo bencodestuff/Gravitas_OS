@@ -204,12 +204,18 @@ static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf,
                           uint64_t count, uint64_t offset) {
     (void)priv;
     RamNode* n = (RamNode*)node->priv;
+
+    // Prove the range fits before computing it. 'offset + count' can wrap, and
+    // a wrapped 'end' would pass the cap check and let the copy below run off
+    // the end of the heap buffer. Subtracting instead of adding also rejects an
+    // offset that itself lies past the cap.
+    if (count > MAX_FILE_BYTES || offset > MAX_FILE_BYTES - count) return 0;
     uint64_t end = offset + count;
 
     // No room: report nothing written, which the VFS turns into ENOSPC. (Not a
     // partial write: the caps are page-sized, and a short write that silently
     // loses bytes is worse than a refusal.)
-    if (end > MAX_FILE_BYTES || !reserve(n, end)) return 0;
+    if (!reserve(n, end)) return 0;
 
     const uint8_t* src = (const uint8_t*)buf;
     for (uint64_t i = 0; i < count; i++) n->data[offset + i] = src[i];
