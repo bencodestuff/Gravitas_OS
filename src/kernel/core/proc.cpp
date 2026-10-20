@@ -115,8 +115,10 @@ namespace Sched {
         if (victim == nullptr) { irq_restore(iflags); return -1; }
         victim->exit_code = code;
 
-        char namebuf[16];
-        strcpy(namebuf, victim->name);
+        // Sized from the field, not a guess: Task::name is 32 bytes and a
+        // spawn name may fill it, so a 16-byte buffer overflowed the stack.
+        char namebuf[sizeof(Task::name)];
+        copy_name(namebuf, victim->name, (int)sizeof(namebuf));
 
         // Same bookkeeping as a normal exit: ring + waiter wakeups
         recent_exits[exit_head % RECENT_EXITS].id = victim->id;
