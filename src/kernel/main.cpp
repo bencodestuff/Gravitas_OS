@@ -248,8 +248,10 @@ extern "C" void kmain(void) {
 
     // 3. The data disk: a virtio-blk device when the machine has one, else a
     //    real ATA drive, else the disk.img module copied into a RAM disk.
-    //    Either way ext2 goes on top of it, read-only, and the rest of the
-    //    system cannot tell which.
+    //    Either way ext2 goes on top of it, mounted read-write, and the rest of
+    //    the system cannot tell which. The RAM-disk copy is writable too: the
+    //    image keeps the guest's changes until the machine is gone, and the
+    //    image on the host is never touched.
     Block::Device* disk = Virtio::init();  // logs [Virtio] ... when it finds one
     if (disk == nullptr) disk = Ata::init();   // logs [ATA] ... likewise
     if (disk == nullptr) {
@@ -282,7 +284,7 @@ extern "C" void kmain(void) {
     if (disk == nullptr) {
         kprint("[Disk] no disk image\n");
     } else {
-        VFS::Filesystem* ext2 = Ext2::mount(disk);
+        VFS::Filesystem* ext2 = Ext2::mount(disk, true);
         if (ext2 == nullptr) {
             kprint("[Ext2] the disk is not ext2\n");
         } else if (!VFS::mount("/disk", ext2)) {

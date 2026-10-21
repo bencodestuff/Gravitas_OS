@@ -36,9 +36,9 @@ def virtio_boot(g):
     if g.count(r"\[Disk\] no virtio or ATA drive"):
         g.fail("the data disk fell back to the RAM disk")
 
-    # The same read-only ext2 image, now mounted over virtio.
+    # The same ext2 image, now mounted read-write over virtio.
     g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
-               r"[0-9]+ group \(read-only\)")
+               r"[0-9]+ group \(read-write\)")
 
 
 @test

@@ -20,7 +20,7 @@ BOOT = {"disk": False}
 def disk_fallback(g):
     g.wait_for(r"\[Disk\] no virtio or ATA drive; disk\.img copied into RAM")
     g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
-               r"[0-9]+ group \(read-only\)")
+               r"[0-9]+ group \(read-write\)")
     if g.count(r"\[ATA\] "):
         g.fail("an ATA device appeared with no drive attached")
     if g.count(r"\[Virtio\] "):

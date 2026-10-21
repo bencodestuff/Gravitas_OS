@@ -98,9 +98,10 @@ def overlay_root(g):
 
 @test
 def ext2_disk(g):
-    # A real on-disk filesystem (ext2, made on the host) mounted read-only from
-    # a RAM disk: metadata out of the inodes, the directory walk, and a file big
-    # enough to need an indirect block.
+    # A real on-disk filesystem (ext2, made on the host) mounted read-write from
+    # a RAM disk or a real drive: metadata out of the inodes, the directory walk,
+    # a file big enough to need an indirect block, and the writer creating,
+    # growing, truncating, renaming and removing its own files.
     g.shell("run ext2test.elf")
     g.wait_for("ext2test: all checks pass")
 
@@ -135,9 +136,10 @@ def file_commands(g):
 
     run("mkdir -p /tmp/fc/deep")
     run("touch /tmp/fc/a.txt")
-    # The source is on the read-only ext2 mount, so no other test can have
-    # changed it. (/hello.txt in the image *is* written by overlay_root, which
-    # overwrites an image file on purpose and leaves it overwritten.)
+    # The source is an image file on ext2, so no other test can have changed it:
+    # ext2test only ever writes names beginning with rwtest, and removes them.
+    # (/hello.txt in the image *is* written by overlay_root, which overwrites an
+    # image file on purpose and leaves it overwritten.)
     run("cp /disk/hello.txt /tmp/fc/b.txt")
     run("cat /tmp/fc/b.txt")
     g.wait_for("Hello from the ext2 disk")
@@ -178,11 +180,12 @@ def file_commands(g):
     g.wait_for(r"^  PID STATE")
     g.wait_for(r"^\s+\d+ running\s+-\s+ps\.elf$")
 
-    # df asks the filesystem how much room there is. The read-only mount reports
-    # nothing free, and the overlay reports the ramfs cap it writes into — the
-    # number that is otherwise invisible until a write is refused.
+    # df asks the filesystem how much room there is. The ext2 mount is writable,
+    # so it reports the superblock's free kilobytes and no "(read-only)"; the
+    # overlay reports the ramfs cap it writes into — the number that is otherwise
+    # invisible until a write is refused.
     run("df /disk")
-    g.wait_for(r"^/disk\s+ext2\s+\d+K\s+0K\s+\(read-only\)$")
+    g.wait_for(r"^/disk\s+ext2\s+\d+K\s+[1-9]\d*K\s*$")
     run("df /")
     g.wait_for(r"^/\s+overlay\s+\d+K\s+\d+K\s*$")
     # A path that does not exist is an error, not the filesystem it would have
