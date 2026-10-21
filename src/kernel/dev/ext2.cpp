@@ -1,5 +1,6 @@
 #include "kernel/dev/ext2.h"
 #include "kernel/core/block.h"
+#include "kernel/core/blockcache.h"
 #include "kernel/klib/klib.h"
 #include "kernel/dev/rtc.h"
 #include "fs/vfs.h"
@@ -199,16 +200,16 @@ static inline void irq_restore(uint64_t f) {
 
 // --- reading ---
 // The transfer unit is the sector, so this is the one place partial-sector reads
-// are assembled. Whole sectors go straight into the destination in a single
-// request, which matters now that a real disk sits below this: a 1 KB block is
-// one command, not two.
+// are assembled. Whole sectors go into the destination in one call, and the
+// page cache below fills a whole 4 KB page on the first miss, so a 1 KB block
+// and its neighbours cost one device command between them.
 static bool read_bytes(Fs* f, uint64_t off, void* dst, uint32_t n) {
     uint8_t* d = (uint8_t*)dst;
 
     // Up to the next sector boundary.
     while (n > 0 && (off % Block::SECTOR) != 0) {
         uint8_t sec[Block::SECTOR];
-        if (f->dev->dev->read(f->dev->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+        if (!BlockCache::read(f->dev->dev, off / Block::SECTOR, 1, sec))
             return false;
         uint32_t boff = (uint32_t)(off % Block::SECTOR);
         uint32_t chunk = Block::SECTOR - boff;
@@ -222,7 +223,7 @@ static bool read_bytes(Fs* f, uint64_t off, void* dst, uint32_t n) {
     // Whole sectors, straight into the caller's buffer.
     uint32_t whole = n / Block::SECTOR;
     if (whole > 0) {
-        if (f->dev->dev->read(f->dev->dev->priv, off / Block::SECTOR, whole, d) != whole)
+        if (!BlockCache::read(f->dev->dev, off / Block::SECTOR, whole, d))
             return false;
         d += (uint64_t)whole * Block::SECTOR;
         off += (uint64_t)whole * Block::SECTOR;
@@ -232,7 +233,7 @@ static bool read_bytes(Fs* f, uint64_t off, void* dst, uint32_t n) {
     // The remainder.
     if (n > 0) {
         uint8_t sec[Block::SECTOR];
-        if (f->dev->dev->read(f->dev->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+        if (!BlockCache::read(f->dev->dev, off / Block::SECTOR, 1, sec))
             return false;
         for (uint32_t i = 0; i < n; i++) d[i] = sec[i];
     }
@@ -240,20 +241,21 @@ static bool read_bytes(Fs* f, uint64_t off, void* dst, uint32_t n) {
 }
 
 // The mirror image, for metadata small enough to sit inside a sector. A partial
-// first or last sector is read, patched and written back; whole sectors go out
-// as one request.
+// first or last sector is read, patched and written; whole sectors are copied
+// in as they are. Either way the page becomes dirty and the device sees it on
+// the next sync, not here.
 static bool write_bytes(Fs* f, uint64_t off, const void* src, uint32_t n) {
     const uint8_t* s = (const uint8_t*)src;
 
     while (n > 0 && (off % Block::SECTOR) != 0) {
         uint8_t sec[Block::SECTOR];
-        if (f->dev->dev->read(f->dev->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+        if (!BlockCache::read(f->dev->dev, off / Block::SECTOR, 1, sec))
             return false;
         uint32_t boff = (uint32_t)(off % Block::SECTOR);
         uint32_t chunk = Block::SECTOR - boff;
         if (chunk > n) chunk = n;
         for (uint32_t i = 0; i < chunk; i++) sec[boff + i] = s[i];
-        if (f->dev->dev->write(f->dev->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+        if (!BlockCache::write(f->dev->dev, off / Block::SECTOR, 1, sec))
             return false;
         s += chunk;
         off += chunk;
@@ -262,7 +264,7 @@ static bool write_bytes(Fs* f, uint64_t off, const void* src, uint32_t n) {
 
     uint32_t whole = n / Block::SECTOR;
     if (whole > 0) {
-        if (f->dev->dev->write(f->dev->dev->priv, off / Block::SECTOR, whole, s) != whole)
+        if (!BlockCache::write(f->dev->dev, off / Block::SECTOR, whole, s))
             return false;
         s += (uint64_t)whole * Block::SECTOR;
         off += (uint64_t)whole * Block::SECTOR;
@@ -271,10 +273,10 @@ static bool write_bytes(Fs* f, uint64_t off, const void* src, uint32_t n) {
 
     if (n > 0) {
         uint8_t sec[Block::SECTOR];
-        if (f->dev->dev->read(f->dev->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+        if (!BlockCache::read(f->dev->dev, off / Block::SECTOR, 1, sec))
             return false;
         for (uint32_t i = 0; i < n; i++) sec[i] = s[i];
-        if (f->dev->dev->write(f->dev->dev->priv, off / Block::SECTOR, 1, sec) != 1)
+        if (!BlockCache::write(f->dev->dev, off / Block::SECTOR, 1, sec))
             return false;
     }
     return true;
@@ -289,14 +291,15 @@ static bool write_block(Fs* f, uint32_t blk, const void* buf) {
 }
 
 // A new block must not carry the bytes of whoever had it before. Written a
-// sector at a time so this does not need a second block-sized buffer.
+// sector at a time so this does not need a second block-sized buffer; the page
+// cache coalesces the sectors into one dirty page and so one device write.
 static bool zero_block(Fs* f, uint32_t blk) {
     uint8_t zero[Block::SECTOR];
     memset(zero, 0, sizeof(zero));
     uint64_t off = (uint64_t)blk * f->dev->block_size;
     for (uint32_t done = 0; done < f->dev->block_size; done += Block::SECTOR) {
-        if (f->dev->dev->write(f->dev->dev->priv,
-                               (off + done) / Block::SECTOR, 1, zero) != 1)
+        if (!BlockCache::write(f->dev->dev,
+                                (off + done) / Block::SECTOR, 1, zero))
             return false;
     }
     return true;
@@ -1665,8 +1668,10 @@ static int e2_statfs(void* priv, VFS::StatFs* out) {
     return 0;
 }
 
-// There is no cache between this and the device, so "sync" is the device's own
-// flush plus the superblock's write time. The counts are written as they change.
+// Writes are held in the page cache, so "sync" means: stamp the superblock and
+// counts, write every dirty page back, then flush the drive's own cache. That
+// order matters, because the drive flush only covers writes it has already
+// seen. The counts are written as they change.
 static int e2_sync(void* priv) {
     Fs* f = (Fs*)priv;
     if (f->writable) {
@@ -1674,7 +1679,7 @@ static int e2_sync(void* priv) {
         write_bytes(f, 1024 + 48, &now, sizeof(now));
         save_counts(f);
     }
-    return Block::flush(f->dev->dev) ? 0 : -1;
+    return BlockCache::flush(f->dev->dev) ? 0 : -1;
 }
 
 static VFS::Filesystem make_fs(bool writable) {

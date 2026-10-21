@@ -32,6 +32,12 @@ static unsigned char rw_byte(size_t i, unsigned char base) {
     return (unsigned char)(base + (i % 26));
 }
 
+// A byte that depends on its offset, so a read that lands on the wrong side of
+// a page boundary is caught rather than coincidentally matching.
+static unsigned char cache_byte(size_t i) {
+    return (unsigned char)(7 + (i * 31) % 251);
+}
+
 static ssize_t read_all(int fd, void* buf, size_t want) {
     size_t done = 0;
     while (done < want) {
@@ -362,7 +368,78 @@ int main(int argc, char** argv) {
     // 15. sync flushes every mount; the ext2 one has a real device to flush.
     check(sync() == 0, "sync returns 0");
 
-    // 16. Everything this test made is gone, and the image's own entries are
+    // 16. The page cache boundaries. A file spanning more than three 4 KB pages
+    //     makes every page a miss on the way in, and single-byte reads at the
+    //     edges prove the cache splits a transfer at the page boundary correctly.
+    constexpr size_t cache_total = 3 * 4096 + 1234;
+    fd = open("/disk/rwtestcache.bin", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    check(fd >= 0, "create rwtestcache.bin");
+    if (fd >= 0) {
+        size_t done = 0;
+        int ok = 1;
+        while (done < cache_total) {
+            size_t span = cache_total - done;
+            if (span > sizeof(wbuf)) span = sizeof(wbuf);
+            for (size_t i = 0; i < span; i++)
+                wbuf[i] = cache_byte(done + i);
+            if (write(fd, wbuf, span) != (ssize_t)span) { ok = 0; break; }
+            done += span;
+        }
+        check(ok, "write a file across four pages");
+        check(fstat(fd, &st) == 0 && st.st_size == (off_t)cache_total,
+              "fstat reports the cache file's size");
+
+        static const size_t edges[] = {
+            0, 4095, 4096, 4097, 8191, 8192, 12287, 12288, cache_total - 1,
+        };
+        ok = 1;
+        for (size_t i = 0; i < sizeof(edges) / sizeof(edges[0]); i++) {
+            unsigned char b = 0;
+            if (lseek(fd, (off_t)edges[i], SEEK_SET) != (off_t)edges[i] ||
+                read(fd, &b, 1) != 1 || b != cache_byte(edges[i])) {
+                ok = 0;
+                break;
+            }
+        }
+        check(ok, "single-byte reads at every page boundary agree");
+
+        const size_t at = 4096 + 100;
+        const unsigned char nv = (unsigned char)(cache_byte(at) ^ 0xff);
+        check(lseek(fd, (off_t)at, SEEK_SET) == (off_t)at &&
+              write(fd, &nv, 1) == 1,
+              "overwrite one byte in the middle page");
+
+        static const size_t near[] = {
+            at - 2, at - 1, at + 1, at + 2, 4095, 4096, 8191, 8192,
+        };
+        ok = 1;
+        for (size_t i = 0; i < sizeof(near) / sizeof(near[0]); i++) {
+            unsigned char b = 0;
+            if (lseek(fd, (off_t)near[i], SEEK_SET) != (off_t)near[i] ||
+                read(fd, &b, 1) != 1 || b != cache_byte(near[i])) {
+                ok = 0;
+                break;
+            }
+        }
+        check(ok, "the bytes around the overwrite are unchanged");
+
+        unsigned char b = 0;
+        check(lseek(fd, (off_t)at, SEEK_SET) == (off_t)at &&
+              read(fd, &b, 1) == 1 && b == nv,
+              "the overwritten byte reads back");
+        check(sync() == 0, "sync writes the dirty pages back");
+        check(lseek(fd, (off_t)at, SEEK_SET) == (off_t)at &&
+              read(fd, &b, 1) == 1 && b == nv,
+              "the overwritten byte survives sync");
+        check(lseek(fd, 4095, SEEK_SET) == 4095 &&
+              read(fd, &b, 1) == 1 && b == cache_byte(4095),
+              "the page before the overwrite survives sync");
+        close(fd);
+    }
+    check(unlink("/disk/rwtestcache.bin") == 0, "unlink rwtestcache.bin");
+    check(stat("/disk/rwtestcache.bin", &st) == -1, "the cache file is gone");
+
+    // 17. Everything this test made is gone, and the image's own entries are
     //     still the only ones in the root. root is the directory the kernel
     //     mounts as the writable root's upper layer.
     count = 0;
