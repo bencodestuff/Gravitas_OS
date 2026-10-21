@@ -75,6 +75,7 @@ struct Dev {
     uint8_t* used;        // used ring, on its own page
     uint16_t last_used;
     Request* req;         // header/status plus the staged data
+    bool failed;          // re-arm failed: the device must not be driven again
 };
 
 static Dev devs[Block::MAX_DEVICES];
@@ -108,10 +109,52 @@ static uint8_t* alloc_page_aligned(size_t bytes) {
     return (uint8_t*)a;
 }
 
+// Put the device back in a state where no completion from an earlier request
+// can ever be read as the answer to a later one. A full reset is required
+// rather than resyncing last_used from the used index: only one chain is ever
+// in flight, so a stale used entry is indistinguishable from the one the next
+// request will produce, and there is no way to tell them apart by inspection.
+// The reset aborts the request; emptying the rings then removes any trace of
+// it. The queue memory, its size and the descriptors are unchanged, so only
+// the legacy handshake and the ring indices have to be redone.
+static bool rearm(Dev* d) {
+    outb(d->io + R_STATUS, 0);
+
+    outb(d->io + R_STATUS, S_ACKNOWLEDGE);
+    outb(d->io + R_STATUS, S_ACKNOWLEDGE | S_DRIVER);
+    (void)inl(d->io + R_HOST_FEATURES);
+    outl(d->io + R_GUEST_FEATURES, 0);
+
+    outw(d->io + R_QUEUE_SELECT, 0);
+    // The device picks the queue size, so a different one after the reset would
+    // mean the ring layout below no longer matches what is in guest memory.
+    if (inw(d->io + R_QUEUE_SIZE) != d->qsize) {
+        outb(d->io + R_STATUS, 0);
+        return false;
+    }
+
+    // Same queue page as before: the register wants its page frame number.
+    outl(d->io + R_QUEUE_ADDRESS, (uint32_t)(VMM::phys_of(d->desc) >> 12));
+
+    // Only the rings carry device-visible state, so emptying them is enough to
+    // forget the abandoned request. The barrier keeps those stores (and the
+    // last_used reset) before the device is told it may look at the rings.
+    memset(d->avail, 0, 4u + 2u * d->qsize);
+    memset(d->used, 0, 4u + 8u * d->qsize);
+    d->last_used = 0;
+    d->req->status = 0xFF;
+    __sync_synchronize();
+
+    outb(d->io + R_STATUS, S_ACKNOWLEDGE | S_DRIVER | S_DRIVER_OK);
+    return true;
+}
+
 // Issue one request of at most BOUNCE_SECTORS sectors. False on a device error
 // or a timeout; prints the reason, because a disk that stops answering should
 // say so rather than look like a disk that ran out of room.
 static bool submit(Dev* d, bool write, uint64_t lba, uint32_t nsec, void* buf) {
+    if (d->failed) return false;
+
     Request* r = d->req;
     r->type = write ? 1u : 0u;
     r->reserved = 0;
@@ -156,6 +199,13 @@ static bool submit(Dev* d, bool write, uint64_t lba, uint32_t nsec, void* buf) {
     (void)inb(d->io + R_ISR);   // clear the completion bit (unused, but deasserts)
     if (!done) {
         kprint("[Virtio] request timed out\n");
+        // The chain is still in the device's hands. Leaving it there would let
+        // its late completion satisfy the next request, so re-arm now; if that
+        // fails there is no safe way to keep using this device.
+        if (!rearm(d)) {
+            d->failed = true;
+            kprint("[Virtio] re-arm failed, device disabled\n");
+        }
         return false;
     }
     d->last_used = *used_idx;
@@ -257,6 +307,7 @@ static bool init_one(const Pci::Address& a) {
     d->avail = q + 16u * qsize;
     d->used = q + used_off;
     d->last_used = 0;
+    d->failed = false;
 
     d->req = (Request*)Heap::malloc(sizeof(Request));
     if (d->req == nullptr) { outb(io + R_STATUS, 0); return false; }

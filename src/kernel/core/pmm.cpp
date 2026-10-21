@@ -53,7 +53,10 @@ namespace PMM {
         }
         
         uint64_t total_pages = highest_addr / PAGE_SIZE;
-        bitmap_size = total_pages / 8;
+        // One byte covers eight frames, so round up: the tail frames of an
+        // unaligned total still need a bit, and truncating the byte count made
+        // bitmap_set/test touch a byte past the end for them.
+        bitmap_size = (total_pages + 7) / 8;
         
         // Find space for the bitmap
         for (uint64_t i = 0; i < map->entry_count; i++) {
@@ -107,8 +110,10 @@ namespace PMM {
         // Keep this in step with HEAP_SIZE in main.cpp.
         reserve_range(0x08000000, 0x2000000); // 32MB for the kernel heap
 
-        // Seed the free-frame counter from the finished bitmap.
-        total_frames_count = bitmap_size * 8;
+        // Seed the free-frame counter from the finished bitmap. The rounded-up
+        // bitmap has spare bits past the real frames; they stay set (used), so
+        // the count is taken from the actual page total, not the byte count.
+        total_frames_count = total_pages;
         free_frames_count = 0;
         for (uint64_t i = 0; i < total_frames_count; i++) {
             if (!bitmap_test(i)) free_frames_count++;
@@ -145,6 +150,10 @@ namespace PMM {
 
     void free_page(uint64_t address) {
         uint64_t i = address / PAGE_SIZE;
+        // Frame 0 is reserved and never allocated, so a 0 here means the caller
+        // passed on the result of a failed allocation; drop it rather than
+        // clearing a reserved frame.
+        if (i == 0) return;
         if (!bitmap_test(i)) return; // already free: don't over-count
         bitmap_unset(i);
         free_frames_count++;
