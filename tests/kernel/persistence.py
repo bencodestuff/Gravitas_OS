@@ -10,10 +10,13 @@ first wrote, which means the bytes reached the medium and survived the machine
 going away; e2fsck afterwards says whether the result is also a clean ext2
 filesystem, not merely a readable one.
 
-The test does not call sync: leaving the machine is what has to flush, and a
-test that syncs first would pass even if poweroff forgot to. Nothing here
-writes to "/": the disk is mounted at /disk, and the files are all under it,
-with names no other group uses.
+Two layers are covered. The first test writes under /disk, the disk mounted
+under its own name, and deliberately does not call sync: leaving the machine is
+what has to flush, and a test that syncs first would pass even if poweroff
+forgot to. The second writes to /, which lands in the disk's "root" directory,
+the overlay's upper layer; it appends to an image file so a copy-up has to carry
+the image's original bytes into the upper, and it does call sync as well. Each
+test owns its own copy of the image, so one failing does not decide the other.
 """
 import atexit
 import os
@@ -45,6 +48,10 @@ def _prepare():
 
 
 TMPDIR, DISK = _prepare()
+
+# The root-persistence test gets its own copy, so its result does not depend on
+# whether the /disk test ran (or passed) first.
+ROOT_TMPDIR, ROOT_DISK = _prepare()
 
 # The group's first guest boots on the copy, not on the repo image.
 BOOT = {"disk_image": DISK}
@@ -155,6 +162,64 @@ def disk_writes_survive_reboot(g):
     print("  e2fsck clean: %s" % out.splitlines()[-1], flush=True)
 
     shutil.rmtree(TMPDIR, ignore_errors=True)
+
+
+@test
+def root_writes_survive_reboot(g):
+    # The other test covers /disk, the disk under its own name. This one covers
+    # the overlay's upper layer: the disk's "root" directory is where "/" writes
+    # go, so a file created at "/" and an edit of an image file (which copies
+    # the file up) have to reach the medium too.
+    #
+    # The group's first guest is gone by now (the other test powered it off), so
+    # this one boots its own, the way tests/kernel/power.py does.
+    rc, out = fsck(ROOT_DISK)
+    if rc != 0:
+        g.fail("the copied image was not clean before boot (e2fsck rc %d):\n%s"
+               % (rc, out))
+
+    # First boot. The file starts from the image's own /hello.txt, and a fresh
+    # image has no /root-persist.txt, so nothing is read before it is written.
+    # The append is what proves the copy-up: the upper has to hold the image's
+    # original bytes as well as the new ones, which only a real copy produces.
+    first = Guest("persistence-root", disk_image=ROOT_DISK)
+    try:
+        run(first, "cp /hello.txt /root-persist.txt")
+        run(first, "cat /disk/hello.txt >> /hello.txt")
+        run(first, "sync")
+        leave(first, "root first boot")
+    finally:
+        first.close()
+
+    # Second boot on the same file: both writes are on the medium.
+    second = Guest("persistence-root-second", disk_image=ROOT_DISK)
+    try:
+        cat(second, "/root-persist.txt",
+            "Hello from the Gravitas tar filesystem!")
+
+        # The image's line and the appended one: the copy-up carried the
+        # original bytes across, and the append landed on top of them.
+        mark = second.mark()
+        run(second, "cat /hello.txt")
+        text = second.since(mark)
+        for want in ("Hello from the Gravitas tar filesystem!",
+                     "Hello from the ext2 disk"):
+            if want not in text:
+                second.fail("cat /hello.txt lost %r after the reboot; it read:"
+                            "\n%s" % (want, text.strip()))
+
+        leave(second, "root second boot")
+    finally:
+        second.close()
+
+    # A clean ext2 image, not just one that happens to read back.
+    rc, out = fsck(ROOT_DISK)
+    if rc != 0:
+        g.fail("e2fsck -fn says the root image is not clean (rc %d):\n%s"
+               % (rc, out))
+    print("  e2fsck clean (root): %s" % out.splitlines()[-1], flush=True)
+
+    shutil.rmtree(ROOT_TMPDIR, ignore_errors=True)
 
 
 if __name__ == "__main__":
