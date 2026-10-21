@@ -52,6 +52,10 @@ static bool reserve(RamNode* n, uint64_t need) {
     uint8_t* nd = new uint8_t[newcap];
     if (nd == nullptr) return false;
     for (uint64_t i = 0; i < n->size; i++) nd[i] = n->data[i];
+    // The heap recycles memory between tasks, so the bytes past the copy must
+    // not keep a previous owner's contents: every byte of a file that was never
+    // written has to read as zero.
+    for (uint64_t i = n->size; i < newcap; i++) nd[i] = 0;
     delete[] n->data;
     n->data = nd;
     ram_bytes += newcap - n->capacity;
@@ -216,6 +220,12 @@ static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf,
     // partial write: the caps are page-sized, and a short write that silently
     // loses bytes is worse than a refusal.)
     if (!reserve(n, end)) return 0;
+
+    // A write past the current end must leave a zero-filled hole, not whatever
+    // the heap buffer (or a previous, larger allocation) happened to hold.
+    if (offset > n->size) {
+        for (uint64_t i = n->size; i < offset; i++) n->data[i] = 0;
+    }
 
     const uint8_t* src = (const uint8_t*)buf;
     for (uint64_t i = 0; i < count; i++) n->data[offset + i] = src[i];
