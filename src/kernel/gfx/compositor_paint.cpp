@@ -20,9 +20,9 @@ extern volatile struct limine_hhdm_request hhdm_request;
 // covers, then every surface intersecting it — so z-order and "text under a
 // window" fall out for free.
 //
-// Painting runs with interrupts disabled: syscalls enter through a trap gate
-// (IF stays on), so a timer IRQ could otherwise interrupt a paint or run the
-// scheduler mid-frame.
+// Painting runs with interrupts disabled: a syscall enters through an
+// interrupt gate, which clears IF, so no timer IRQ can preempt a paint or run
+// the scheduler mid-frame.
 
 namespace Compositor {
 
