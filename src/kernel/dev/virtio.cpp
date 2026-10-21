@@ -38,6 +38,15 @@ constexpr uint8_t S_DRIVER_OK   = 4;
 constexpr uint16_t VENDOR     = 0x1AF4;
 constexpr uint16_t DEVICE_BLK = 0x1001;   // legacy virtio-blk
 
+// Feature bit 9: the device has a write cache and accepts a FLUSH request. The
+// driver negotiates it, and only it: the rest of the feature word stays zero.
+constexpr uint32_t F_FLUSH = 1u << 9;
+
+// Request types from the virtio-blk protocol.
+constexpr uint32_t T_IN   = 0;   // read, device to guest
+constexpr uint32_t T_OUT  = 1;   // write, guest to device
+constexpr uint32_t T_FLUSH = 4;  // push the device's write cache to the medium
+
 // --- the split virtqueue ---
 
 struct Desc {
@@ -53,12 +62,12 @@ constexpr uint16_t DESC_WRITE = 2;   // device-writable
 // 256. The headroom is so a device that reports a little more still works.
 constexpr uint32_t MAX_QUEUE = 256;
 
-// One request in flight at a time, staged through a fixed buffer. The chain is
-// header, data, status.
+// One request in flight at a time, staged through a fixed buffer. A read or
+// write is a chain of header, data, status; a flush drops the data descriptor.
 constexpr uint32_t BOUNCE_SECTORS = 32;   // 16 KB
 
 struct Request {
-    uint32_t type;        // 0 = read (device to guest), 1 = write
+    uint32_t type;        // T_IN, T_OUT or T_FLUSH
     uint32_t reserved;
     uint64_t sector;
     uint8_t  status;      // written by the device: 0 is ok
@@ -76,6 +85,7 @@ struct Dev {
     uint16_t last_used;
     Request* req;         // header/status plus the staged data
     bool failed;          // re-arm failed: the device must not be driven again
+    bool has_flush;       // the host offered F_FLUSH at probe, so it was negotiated
 };
 
 static Dev devs[Block::MAX_DEVICES];
@@ -122,8 +132,11 @@ static bool rearm(Dev* d) {
 
     outb(d->io + R_STATUS, S_ACKNOWLEDGE);
     outb(d->io + R_STATUS, S_ACKNOWLEDGE | S_DRIVER);
-    (void)inl(d->io + R_HOST_FEATURES);
-    outl(d->io + R_GUEST_FEATURES, 0);
+    // The host features must be read before the guest word is written, and the
+    // flush bit is negotiated again so a flush issued after a re-arm is
+    // accepted rather than rejected as an unnegotiated request.
+    uint32_t host = inl(d->io + R_HOST_FEATURES);
+    outl(d->io + R_GUEST_FEATURES, host & F_FLUSH);
 
     outw(d->io + R_QUEUE_SELECT, 0);
     // The device picks the queue size, so a different one after the reset would
@@ -149,39 +162,19 @@ static bool rearm(Dev* d) {
     return true;
 }
 
-// Issue one request of at most BOUNCE_SECTORS sectors. False on a device error
-// or a timeout; prints the reason, because a disk that stops answering should
-// say so rather than look like a disk that ran out of room.
-static bool submit(Dev* d, bool write, uint64_t lba, uint32_t nsec, void* buf) {
+// Hand the prepared chain to the device and wait for the used ring. Shared by
+// the data requests and the flush, so the ring ordering, the poll, the timeout
+// diagnostics and the re-arm after a timeout exist in one place.
+static bool run(Dev* d) {
     if (d->failed) return false;
 
     Request* r = d->req;
-    r->type = write ? 1u : 0u;
-    r->reserved = 0;
-    r->sector = lba;
-    r->status = 0xFF;
-    uint32_t len = nsec * (uint32_t)Block::SECTOR;
-    if (write) memcpy(r->data, buf, len);
 
-    Desc* desc = (Desc*)d->desc;
-    desc[0].addr  = VMM::phys_of(&r->type);
-    desc[0].len   = 16;
-    desc[0].flags = DESC_NEXT;
-    desc[0].next  = 1;
-    desc[1].addr  = VMM::phys_of(r->data);
-    desc[1].len   = len;
-    desc[1].flags = DESC_NEXT | (write ? 0 : DESC_WRITE);
-    desc[1].next  = 2;
-    desc[2].addr  = VMM::phys_of(&r->status);
-    desc[2].len   = 1;
-    desc[2].flags = DESC_WRITE;
-    desc[2].next  = 0;
-
-    // Hand the chain to the device. Descriptor 0 is always its head and only
-    // one request is ever in flight, so the available ring always says 0. The
-    // stores must be visible before the notify, hence the barriers. The rings
-    // are volatile because the device, not this CPU, is what moves the used
-    // index, and the poll below must re-read it every turn.
+    // Only one request is ever in flight, so descriptor 0 is always the head
+    // and the available ring always says 0. The stores must be visible before
+    // the notify, hence the barriers. The rings are volatile because the
+    // device, not this CPU, is what moves the used index, and the poll below
+    // must re-read it every turn.
     volatile uint16_t* avail_idx = (volatile uint16_t*)(d->avail + 2);
     volatile uint16_t* avail_ring = (volatile uint16_t*)(d->avail + 4);
     uint16_t slot = *avail_idx;
@@ -216,8 +209,64 @@ static bool submit(Dev* d, bool write, uint64_t lba, uint32_t nsec, void* buf) {
         kprint("\n");
         return false;
     }
+    return true;
+}
+
+// Issue one data request of at most BOUNCE_SECTORS sectors. False on a device
+// error or a timeout; run() prints the reason, because a disk that stops
+// answering should say so rather than look like a disk that ran out of room.
+static bool submit(Dev* d, bool write, uint64_t lba, uint32_t nsec, void* buf) {
+    if (d->failed) return false;
+
+    Request* r = d->req;
+    r->type = write ? T_OUT : T_IN;
+    r->reserved = 0;
+    r->sector = lba;
+    r->status = 0xFF;
+    uint32_t len = nsec * (uint32_t)Block::SECTOR;
+    if (write) memcpy(r->data, buf, len);
+
+    Desc* desc = (Desc*)d->desc;
+    desc[0].addr  = VMM::phys_of(&r->type);
+    desc[0].len   = 16;
+    desc[0].flags = DESC_NEXT;
+    desc[0].next  = 1;
+    desc[1].addr  = VMM::phys_of(r->data);
+    desc[1].len   = len;
+    desc[1].flags = DESC_NEXT | (write ? 0 : DESC_WRITE);
+    desc[1].next  = 2;
+    desc[2].addr  = VMM::phys_of(&r->status);
+    desc[2].len   = 1;
+    desc[2].flags = DESC_WRITE;
+    desc[2].next  = 0;
+
+    if (!run(d)) return false;
     if (!write) memcpy(buf, r->data, len);
     return true;
+}
+
+// A FLUSH carries no data: the chain is the header and then the status byte,
+// with nothing for the device to read out of or write into in between.
+static bool submit_flush(Dev* d) {
+    if (d->failed) return false;
+
+    Request* r = d->req;
+    r->type = T_FLUSH;
+    r->reserved = 0;
+    r->sector = 0;
+    r->status = 0xFF;
+
+    Desc* desc = (Desc*)d->desc;
+    desc[0].addr  = VMM::phys_of(&r->type);
+    desc[0].len   = 16;
+    desc[0].flags = DESC_NEXT;
+    desc[0].next  = 1;
+    desc[1].addr  = VMM::phys_of(&r->status);
+    desc[1].len   = 1;
+    desc[1].flags = DESC_WRITE;
+    desc[1].next  = 0;
+
+    return run(d);
 }
 
 // The Block ops. A request that runs past the end moves none, matching the
@@ -261,6 +310,17 @@ static uint64_t blk_write(void* priv, uint64_t lba, uint64_t count,
     return done;
 }
 
+// Push the device's write cache to the medium. True only when the device
+// answered the request successfully; a timeout or a non-zero status is a
+// failure, because the caller asked precisely because it needs durability.
+static bool blk_flush(void* priv) {
+    Dev* d = (Dev*)priv;
+    uint64_t f = irq_save();
+    bool ok = submit_flush(d);
+    irq_restore(f);
+    return ok;
+}
+
 // --- probe ---
 
 static bool init_one(const Pci::Address& a) {
@@ -274,12 +334,15 @@ static bool init_one(const Pci::Address& a) {
     uint16_t io = (uint16_t)(bar0 & 0xFFFC);
     if (io == 0) return false;   // firmware never assigned the BAR
 
-    // Reset, then the handshake: acknowledge, then driver, then features.
+    // Reset, then the handshake: acknowledge, then driver, then features. The
+    // host features are read before the guest word is written, and only the
+    // flush bit is asked for; everything else stays off, as before.
     outb(io + R_STATUS, 0);
     outb(io + R_STATUS, S_ACKNOWLEDGE);
     outb(io + R_STATUS, S_ACKNOWLEDGE | S_DRIVER);
-    (void)inl(io + R_HOST_FEATURES);
-    outl(io + R_GUEST_FEATURES, 0);   // no optional feature is used
+    uint32_t host = inl(io + R_HOST_FEATURES);
+    bool has_flush = (host & F_FLUSH) != 0;
+    outl(io + R_GUEST_FEATURES, host & F_FLUSH);
 
     outw(io + R_QUEUE_SELECT, 0);
     uint16_t qsize = inw(io + R_QUEUE_SIZE);
@@ -308,6 +371,7 @@ static bool init_one(const Pci::Address& a) {
     d->used = q + used_off;
     d->last_used = 0;
     d->failed = false;
+    d->has_flush = has_flush;
 
     d->req = (Request*)Heap::malloc(sizeof(Request));
     if (d->req == nullptr) { outb(io + R_STATUS, 0); return false; }
@@ -327,7 +391,7 @@ static bool init_one(const Pci::Address& a) {
     dev->sectors = sectors;
     dev->read = blk_read;
     dev->write = blk_write;
-    dev->flush = nullptr;   // filled in when the flush request lands
+    dev->flush = d->has_flush ? blk_flush : nullptr;
     dev->priv = d;
     if (!Block::add(dev)) { outb(io + R_STATUS, 0); return false; }
 

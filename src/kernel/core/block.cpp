@@ -41,7 +41,11 @@ bool self_test(Device* dev) {
     if (dev->write(dev->priv, dev->sectors, 1, pattern) != 0) return false;
     if (dev->read(dev->priv, dev->sectors - 1, 2, back) != 0) return false;
 
-    return dev->write(dev->priv, lba, 2, saved) == 2;
+    if (dev->write(dev->priv, lba, 2, saved) != 2) return false;
+
+    // The restored sectors are a write like any other, so the device's cache
+    // has to be told to empty before the disk can be called as it was found.
+    return flush(dev);
 }
 
 bool flush(Device* dev) {
