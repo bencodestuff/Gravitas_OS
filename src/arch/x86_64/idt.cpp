@@ -109,9 +109,19 @@ namespace IDT {
                 set_gate(i, (uint64_t)isr_stub_table[i], ist, 0x8E);
         }
 
-        // Syscall gate: trap gate (0xEE, IF stays enabled), IST=0 so each
-        // task's syscalls — including blocking ones like spawn — live on
-        // its own kernel stack.
+        // Syscall gate: an interrupt gate (0xEE), so the CPU clears IF on
+        // entry and the syscall runs with interrupts off. IST=0 so each
+        // task's syscalls, including blocking ones like spawn, live on its
+        // own kernel stack.
+        //
+        // INVARIANT: code reached from a non-blocking syscall may assume
+        // interrupts stay off for the whole call. The blocking paths
+        // (sys_wait, sys_recv, sys_pipe) re-enable them deliberately by
+        // yielding. Changing this gate to a trap gate (0xEF), or enabling
+        // interrupts earlier on the syscall path, therefore requires
+        // auditing that code first: the cli-guarded check-and-block
+        // sequences, the shared spawn buffers and the unlocked heap all
+        // depend on this.
         set_gate(0x80, (uint64_t)isr_128, 0, 0xEE);
 
         kprint("[IDT] Loading IDT...\n");
@@ -901,8 +911,30 @@ static void sys_brk(IDT::Registers* regs) {
         // accepted but pages stay mapped.)
         uint64_t limit = Sched::current_task_brk_limit();
         uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
-        for (uint64_t va = limit; va < new_top; va += 4096) {
-            VMM::map_page(PMM::alloc_page(), va, 0x07);   // P|W|U
+        uint64_t va = limit;
+        for (; va < new_top; va += 4096) {
+            uint64_t phys = PMM::alloc_page();
+            if (phys == 0) break;
+            VMM::map_page(phys, va, 0x07);   // P|W|U
+            // map_page cannot report failure: it gives up silently when a
+            // page table cannot be allocated, so ask the tables instead.
+            if (!VMM::is_mapped(va)) {
+                PMM::free_page(phys);
+                break;
+            }
+        }
+        if (va < new_top) {
+            // A frame ran out part way through. Take back everything this
+            // call mapped and leave brk where it was, so a failed call has
+            // no effect and the caller can retry after freeing memory.
+            uint64_t pml4 = VMM::current_pml4();
+            for (uint64_t undo = limit; undo < va; undo += 4096) {
+                uint64_t pte = VMM::leaf_pte_in(pml4, undo);
+                if (pte & VMM::PTE_PRESENT) PMM::free_page(pte & ~0xFFFull);
+            }
+            VMM::unmap_user_range(pml4, limit, (va - limit) / 4096);
+            regs->rax = (uint64_t)-Errno::ENOMEM;
+            return;
         }
         Sched::current_task_set_brk(want);
         Sched::current_task_set_brk_limit(new_top);
