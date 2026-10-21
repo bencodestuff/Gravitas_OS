@@ -90,6 +90,12 @@ empties one that exists, `O_APPEND` makes every write land at the current end
 refuses a file that is already there — the safe create, `EEXIST` rather than a
 truncate. `O_EXCL` without `O_CREATE` has no effect.
 
+A create that fails reports why rather than one flat code: `ENOSPC` when the
+filesystem has no room for another entry (or block), `EEXIST` when the name is
+taken, `EINVAL` for a name the backend will not take, and `EIO` for a real I/O
+failure. `MKDIR` passes the same code through, so `mkdir -p` can tell "already
+there" (which it ignores) from "no room" (which it reports).
+
 The root is an **overlay**: the tar image is the read-only lower layer and the
 writable upper is the image's `root` directory when a disk is present, so a
 write to an image file is copied up into ext2 and survives a reboot. The
@@ -130,7 +136,11 @@ or as a real drive the kernel drives over **ATA PIO** (`src/kernel/dev/ata.cpp`)
 or **virtio-blk**. The kernel prefers virtio, then a real ATA drive, then the
 module, so the guest boots either way, and the mount above cannot tell which it
 got. It is then mounted read-write as **ext2** at `/disk`
-(`src/kernel/dev/ext2.cpp`).
+(`src/kernel/dev/ext2.cpp`). The image is 16 MB with 512 inodes
+(`tools/mkext2.py`), small on purpose: it is where a session's writes land, so a
+full disk is a condition to test rather than the accident a 4 MB image made it.
+`STATFS` reports the free inodes as well as the free bytes, because the inode
+table runs out first.
 
 The writer allocates and frees blocks and inodes through the group bitmaps,
 grows and truncates files across the direct and indirect pointers, and keeps
@@ -225,7 +235,7 @@ value with a different meaning.
 | 55 | `SHM_CLOSE` | `id` | 0 or −1 (owner only) |
 | 56 | `POWEROFF` | — | does not return: the machine switches off |
 | 57 | `REBOOT` | — | does not return: the machine resets |
-| 58 | `STATFS` | `path, out*` | 0/−1; fills `{total, free, writable, type}` |
+| 58 | `STATFS` | `path, out*` | 0/−1; fills `{total, free, inodes_total, inodes_free, writable, type}` (the inode counts are 0 when the backend has no limit or cannot say) |
 | 59 | `DUP` | `fd` | new descriptor (≥ 3) sharing the open file description, or −1 |
 | 60 | `DUP2` | `oldfd, newfd` | `newfd` now names `oldfd`'s description (closing what it held), or −1 |
 | 61 | `PIPE` | `fds*` | 0 and `fds = {read end, write end}`, or −1 |

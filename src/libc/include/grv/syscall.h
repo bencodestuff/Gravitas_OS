@@ -311,10 +311,15 @@ static inline int grv_sync(void) {
 /* How much room the filesystem holding 'path' has. 'total' is what the medium
    holds (0 = unknown), 'free' is what can still be written — 0 on a read-only
    filesystem, whatever the medium holds — and 'writable' says whether anything
-   can be written at all. 'type' is the backend's name. */
+   can be written at all. 'inodes_total'/'inodes_free' are the entry counts the
+   same way (0 = unknown, which is what a backend without an inode limit says),
+   so a disk that is out of inodes can be told from one that is out of bytes.
+   'type' is the backend's name. */
 struct grv_statfs {
     unsigned long total;
     unsigned long free;
+    unsigned long inodes_total;
+    unsigned long inodes_free;
     long          writable;
     char          type[16];
 };

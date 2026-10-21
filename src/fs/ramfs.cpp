@@ -1,5 +1,6 @@
 #include "fs/ramfs.h"
 #include "fs/vfs.h"
+#include "kernel/core/errno.h"
 #include "kernel/core/heap.h"
 #include "kernel/dev/rtc.h"
 
@@ -254,15 +255,16 @@ static int ram_create(void* priv, VFS::Node* dir, const char* name,
                       VFS::FileType type, VFS::Node** out) {
     (void)priv;
     RamNode* d = (RamNode*)dir->priv;
-    if (!d->is_dir || name[0] == '\0') return -1;
-    if (find_child(d, name) != nullptr) return -1;   // already there
+    if (!d->is_dir) return -Errno::ENOTDIR;
+    if (name[0] == '\0') return -Errno::EINVAL;
+    if (find_child(d, name) != nullptr) return -Errno::EEXIST;   // already there
 
     RamNode* c = new_node(name, type == VFS::FT_DIR);
     c->next_sibling = d->first_child;
     d->first_child = c;
 
     VFS::Node* n = wrap(c);
-    if (n == nullptr) { detach(d, c); node_unref(c); return -1; }
+    if (n == nullptr) { detach(d, c); node_unref(c); return -Errno::ENOMEM; }
     *out = n;
     return 0;
 }

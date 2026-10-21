@@ -33,7 +33,8 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "iso_root", "disk.img")
 
-BLOCKS = 4096        # 1 KB blocks -> a 4 MB image
+BLOCKS = 16384       # 1 KB blocks -> a 16 MB image
+INODES = 512         # 512 inodes, so a full disk is visible before it is full
 BIG_SIZE = 20000     # > 12 KB, so the direct pointers are not enough
 
 # A name longer than 128 bytes. ext2 allows 255, and the point of NAME_MAX 256
@@ -82,11 +83,15 @@ def main():
             os.unlink(OUT)
 
         # ext2, no journal; dir_index off so directories stay a linear list
-        # (the reader does not walk an htree), and a small inode count.
+        # (the reader does not walk an htree). The image is the writable root's
+        # upper layer as well as /disk, so it has to hold what a session writes:
+        # a few copied images would exhaust the 128 inodes the first version
+        # shipped, and a full disk should be a real condition to test rather
+        # than the normal one.
         subprocess.check_call([
             "mke2fs", "-q", "-t", "ext2", "-b", "1024",
             "-O", "^dir_index,^resize_inode",
-            "-N", "128",
+            "-N", str(INODES),
             "-d", stage,
             "-F", "-L", "gravitas",
             OUT, str(BLOCKS),

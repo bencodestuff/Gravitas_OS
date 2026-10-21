@@ -1,5 +1,6 @@
 #include "fs/overlay.h"
 #include "fs/vfs.h"
+#include "kernel/core/errno.h"
 #include "kernel/core/heap.h"
 
 // See overlay.h for the model. A few notes on the mechanics:
@@ -139,11 +140,16 @@ static VFS::Node* make_ov(const char* path, VFS::Node* upper, VFS::Node* lower) 
 }
 
 // Make sure the upper has a directory to work in, creating it if the directory
-// exists only in the lower. Stores it in *slot (which the node owns).
-static VFS::Node* ensure_dir(VFS::Node** slot, const char* path) {
+// exists only in the lower. Stores it in *slot (which the node owns). A failure
+// fills *out_err with the upper's reason (typically ENOSPC) so the caller can
+// pass it on rather than invent one.
+static VFS::Node* ensure_dir(VFS::Node** slot, const char* path, int* out_err) {
+    if (out_err) *out_err = 0;
     if (*slot != nullptr) return *slot;
-    VFS::Node* d = VFS::node_create(upper_fs, path, VFS::FT_DIR);
+    int err = 0;
+    VFS::Node* d = VFS::node_create(upper_fs, path, VFS::FT_DIR, &err);
     if (d != nullptr) *slot = d;
+    else if (out_err) *out_err = err ? err : -Errno::EIO;
     return d;
 }
 
@@ -297,23 +303,27 @@ static int ov_create(void* priv, VFS::Node* dir, const char* name,
                      VFS::FileType type, VFS::Node** out) {
     (void)priv;
     OvNode* d = (OvNode*)dir->priv;
-    if (name[0] == '\0' || upper_fs->create == nullptr) return -1;
+    if (name[0] == '\0' || upper_fs->create == nullptr) return -Errno::EINVAL;
 
-    if (ensure_dir(&d->upper, d->path) == nullptr) return -1;
+    int derr = 0;
+    if (ensure_dir(&d->upper, d->path, &derr) == nullptr) return derr;
 
     // Creating a directory over a lower one would hide the lower's contents.
     if (type == VFS::FT_DIR && d->lower && !whited_out(d->upper, name)) {
         VFS::Node* l = lower_fs->lookup(lower_fs->priv, d->lower, name);
-        if (l) { lower_fs->release(lower_fs->priv, l); return -1; }
+        if (l) { lower_fs->release(lower_fs->priv, l); return -Errno::EEXIST; }
     }
 
     VFS::Node* un = nullptr;
-    if (upper_fs->create(upper_fs->priv, d->upper, name, type, &un) != 0) return -1;
+    // The upper owns the reason: ENOSPC when it is full, EEXIST when the name
+    // appeared in the meantime. The overlay adds nothing of its own.
+    int r = upper_fs->create(upper_fs->priv, d->upper, name, type, &un);
+    if (r != 0) return r;
 
     char path[256];
     join(d->path, name, path, sizeof(path));
     VFS::Node* n = make_ov(path, un, nullptr);
-    if (n == nullptr) return -1;
+    if (n == nullptr) return -Errno::ENOMEM;
     *out = n;
     return 0;
 }
@@ -336,7 +346,7 @@ static int ov_unlink(void* priv, VFS::Node* dir, const char* name) {
     if (l == nullptr) return -1;
     lower_fs->release(lower_fs->priv, l);
 
-    if (ensure_dir(&d->upper, d->path) == nullptr) return -1;
+    if (ensure_dir(&d->upper, d->path, nullptr) == nullptr) return -1;
 
     char wn[VFS::NAME_MAX];
     if (!whiteout_name(name, wn, sizeof(wn))) return -1;
@@ -358,7 +368,7 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (from[0] == '\0' || to[0] == '\0') return -1;
     if (upper_fs->rename == nullptr) return -1;
 
-    VFS::Node* fup = ensure_dir(&fd->upper, fd->path);
+    VFS::Node* fup = ensure_dir(&fd->upper, fd->path, nullptr);
     if (fup == nullptr) return -1;
 
     bool in_upper = false;
@@ -380,7 +390,7 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
         if (!ok) return -1;
     }
 
-    VFS::Node* tup = ensure_dir(&td->upper, td->path);
+    VFS::Node* tup = ensure_dir(&td->upper, td->path, nullptr);
     if (tup == nullptr) return -1;
 
     // An existing lower destination is fine: the upper entry shadows it.

@@ -50,6 +50,24 @@ int main() {
     same("grv_stat.mode", 24, offsetof(struct grv_stat, mode));
     same("grv_stat.mtime", 32, offsetof(struct grv_stat, mtime));
 
+    // grv_statfs: the dispatcher fills it from VFS::StatFs, so the two must
+    // line up field for field. The ABI carries the type as a fixed char[16]
+    // where the kernel carries a pointer, so only the sizes below the type are
+    // pinned; the type's own offset still has to agree.
+    same("grv_statfs.total", offsetof(VFS::StatFs, total),
+         offsetof(struct grv_statfs, total));
+    same("grv_statfs.free", offsetof(VFS::StatFs, free),
+         offsetof(struct grv_statfs, free));
+    same("grv_statfs.inodes_total", offsetof(VFS::StatFs, inodes_total),
+         offsetof(struct grv_statfs, inodes_total));
+    same("grv_statfs.inodes_free", offsetof(VFS::StatFs, inodes_free),
+         offsetof(struct grv_statfs, inodes_free));
+    same("grv_statfs.writable", offsetof(VFS::StatFs, writable),
+         offsetof(struct grv_statfs, writable));
+    same("grv_statfs.type", offsetof(VFS::StatFs, type),
+         offsetof(struct grv_statfs, type));
+    same("sizeof(grv_statfs)", 56, sizeof(struct grv_statfs));
+
     if (failures == 0) {
         std::printf("test_abi: the kernel and the ABI agree\n");
         return 0;

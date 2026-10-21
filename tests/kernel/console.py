@@ -39,7 +39,7 @@ def boot_identity(g):
     # The ext2 image: a real on-disk filesystem, mounted read-write from a RAM
     # disk seeded with the Limine module.
     g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
-               r"[0-9]+ group \(read-write\)")
+               r"[0-9]+ groups? \(read-write\)")
 
 
 @test
