@@ -184,10 +184,28 @@ def file_commands(g):
     # so it reports the superblock's free kilobytes and no "(read-only)"; the
     # overlay reports its upper layer's room, which with a disk attached is the
     # same ext2 store's free kilobytes.
+    #
+    # It also reports inodes, on a line of its own so the summary above keeps
+    # its shape. The image has 512 of them, far fewer than it has bytes, so a
+    # full inode table is the limit a session reaches first; both mounts must
+    # show it, which is also the overlay passing the upper layer's answer on.
+    mark = g.mark()
     run("df /disk")
-    g.wait_for(r"^/disk\s+ext2\s+\d+K\s+[1-9]\d*K\s*$")
+    out = g.since(mark)
+    if not re.search(r"^/disk\s+ext2\s+\d+K\s+[1-9]\d*K\s*$", out, re.M):
+        g.fail("df /disk did not report ext2 free space:\n%s" % out.strip())
+    if not re.search(r"^Inodes: \d+/512 used$", out, re.M):
+        g.fail("df /disk did not report the inode counts:\n%s" % out.strip())
+
+    mark = g.mark()
     run("df /")
-    g.wait_for(r"^/\s+overlay\s+\d+K\s+\d+K\s*$")
+    out = g.since(mark)
+    if not re.search(r"^/\s+overlay\s+\d+K\s+\d+K\s*$", out, re.M):
+        g.fail("df / did not report the overlay:\n%s" % out.strip())
+    if not re.search(r"^Inodes: \d+/512 used$", out, re.M):
+        g.fail("df / did not pass the upper layer's inode counts on:\n%s"
+               % out.strip())
+
     # A path that does not exist is an error, not the filesystem it would have
     # lived on.
     run("df /no/such/path")

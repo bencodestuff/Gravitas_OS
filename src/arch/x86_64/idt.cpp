@@ -665,9 +665,13 @@ static void sys_mkdir(IDT::Registers* regs) {
 struct StatFsPkt {
     uint64_t total;
     uint64_t free;
+    uint64_t inodes_total;
+    uint64_t inodes_free;
     uint64_t writable;
     char     type[16];
 };
+static_assert(sizeof(StatFsPkt) == 56 && offsetof(StatFsPkt, inodes_free) == 24,
+              "StatFsPkt must match struct grv_statfs in grv/syscall.h");
 
 static void sys_statfs(IDT::Registers* regs) {
     if (!user_path(regs->rdi) ||
@@ -681,6 +685,8 @@ static void sys_statfs(IDT::Registers* regs) {
         StatFsPkt* out = (StatFsPkt*)regs->rsi;
         out->total = st.total;
         out->free = st.free;
+        out->inodes_total = st.inodes_total;
+        out->inodes_free = st.inodes_free;
         out->writable = st.writable ? 1 : 0;
         const char* t = st.type ? st.type : "";
         uint64_t i = 0;

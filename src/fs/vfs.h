@@ -92,10 +92,12 @@ struct Stat {
 
 // How much room a filesystem has.
 struct StatFs {
-    uint64_t total;      // bytes the medium holds; 0 = unknown
-    uint64_t free;       // bytes that can still be written
-    bool     writable;   // false when nothing can be written here at all
-    const char* type;    // the backend's name (its fs_type)
+    uint64_t total;         // bytes the medium holds; 0 = unknown
+    uint64_t free;          // bytes that can still be written
+    uint64_t inodes_total;  // inodes the medium holds; 0 = unknown
+    uint64_t inodes_free;   // inodes that can still be created
+    bool     writable;      // false when nothing can be written here at all
+    const char* type;       // the backend's name (its fs_type)
 };
 
 // --- Filesystem backend interface ---
@@ -148,8 +150,10 @@ struct Filesystem {
     // How much room this filesystem has: 'total' is the medium, 'free' is what
     // can still be written (so a read-only filesystem reports 0, whatever the
     // medium holds), and 'writable' says whether anything can be written at all.
-    // nullptr when the backend cannot say, and then the VFS reports what it can
-    // infer. Returns 0 or -1.
+    // 'inodes_total'/'inodes_free' are the same for the entry count, and are 0
+    // for a backend that has no such limit (ramfs) or cannot say. nullptr when
+    // the backend cannot say, and then the VFS reports what it can infer.
+    // Returns 0 or -1.
     int (*statfs)(void* priv, StatFs* out);
 
     // The physical address and length of a file's bytes, for a zero-copy

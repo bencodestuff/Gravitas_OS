@@ -225,7 +225,7 @@ value with a different meaning.
 | 55 | `SHM_CLOSE` | `id` | 0 or −1 (owner only) |
 | 56 | `POWEROFF` | — | does not return: the machine switches off |
 | 57 | `REBOOT` | — | does not return: the machine resets |
-| 58 | `STATFS` | `path, out*` | 0/−1; fills `{total, free, writable, type}` |
+| 58 | `STATFS` | `path, out*` | 0/−1; fills `{total, free, inodes_total, inodes_free, writable, type}` (the inode counts are 0 when the backend has no limit or cannot say) |
 | 59 | `DUP` | `fd` | new descriptor (≥ 3) sharing the open file description, or −1 |
 | 60 | `DUP2` | `oldfd, newfd` | `newfd` now names `oldfd`'s description (closing what it held), or −1 |
 | 61 | `PIPE` | `fds*` | 0 and `fds = {read end, write end}`, or −1 |

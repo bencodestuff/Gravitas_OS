@@ -1058,6 +1058,8 @@ int statfs_path(const char* path, StatFs* out) {
 
     out->total = 0;
     out->free = 0;
+    out->inodes_total = 0;
+    out->inodes_free = 0;
     out->writable = (fs->write != nullptr);
     out->type = fs->fs_type;
 

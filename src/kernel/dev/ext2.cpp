@@ -1672,12 +1672,19 @@ static void e2_release(void* priv, VFS::Node* node) {
 // The medium's size is in the superblock, and it is worth reporting: it is the
 // one thing here that came off the disk rather than out of the kernel. The free
 // count is the superblock's own, kept current as blocks are handed out.
+//
+// The inode counts come from the same superblock counters. They matter as much
+// as the blocks: the image has far fewer inodes than bytes, so a directory that
+// will not take another entry runs out of inodes first, and without these a
+// "no space" that is really "no inodes" cannot be seen.
 static int e2_statfs(void* priv, VFS::StatFs* out) {
     Fs* f = (Fs*)priv;
     out->total = (uint64_t)f->dev->blocks_count * f->dev->block_size;
     out->free = f->writable
                     ? (uint64_t)f->dev->free_blocks * f->dev->block_size
                     : 0;
+    out->inodes_total = f->dev->inodes_count;
+    out->inodes_free = f->writable ? f->dev->free_inodes : 0;
     out->writable = f->writable;
     out->type = "ext2";
     return 0;
