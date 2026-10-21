@@ -182,8 +182,8 @@ def file_commands(g):
 
     # df asks the filesystem how much room there is. The ext2 mount is writable,
     # so it reports the superblock's free kilobytes and no "(read-only)"; the
-    # overlay reports the ramfs cap it writes into — the number that is otherwise
-    # invisible until a write is refused.
+    # overlay reports its upper layer's room, which with a disk attached is the
+    # same ext2 store's free kilobytes.
     run("df /disk")
     g.wait_for(r"^/disk\s+ext2\s+\d+K\s+[1-9]\d*K\s*$")
     run("df /")

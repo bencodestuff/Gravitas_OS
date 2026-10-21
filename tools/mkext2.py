@@ -14,10 +14,15 @@ quietly wrong.
     hello.txt      one line
     sub/nested.txt a file reached through a directory
     big.bin        20000 bytes of a pattern derived from the offset
+    root/          an empty directory, the upper layer of the writable root
 
 The guest mounts it read-write, but the RAM disk copies the image and the test
 harness attaches the drive with snapshot=on, so the host image stays the
 starting state every boot and a test can assert on the files above.
+
+`root/` is where the kernel keeps the writable root: it mounts the same disk a
+second time with that directory as the root inode and puts the overlay's upper
+layer there. It ships empty so a fresh image has somewhere to write.
 """
 import os
 import shutil
@@ -65,6 +70,12 @@ def main():
         with open(os.path.join(stage, "big.bin"), "w") as f:
             f.write("".join(chr(big_byte(i)) for i in range(BIG_SIZE)))
         os.chmod(os.path.join(stage, "big.bin"), 0o644)
+
+        # The persistent root's backing directory. The kernel can create it if
+        # an image predates it, but shipping it means a fresh disk already has
+        # the directory the overlay's upper layer mounts.
+        os.mkdir(os.path.join(stage, "root"))
+        os.chmod(os.path.join(stage, "root"), 0o755)
 
         os.makedirs(os.path.dirname(OUT), exist_ok=True)
         if os.path.exists(OUT):

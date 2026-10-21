@@ -54,13 +54,20 @@ The kernel side is one function, `kmain` in `src/kernel/main.cpp`. In order:
    timer (IRQ0), the keyboard (IRQ1) and the mouse (IRQ12).
 4. **Block layer self-test** on a small scratch RAM disk (`MemBlock`), no
    user's data.
-5. **Filesystem.** `Tar::init` finds `files.tar`; `RamFS::init` and
-   `Overlay::init(RamFS, Tar)` build the writable root, and `VFS::mount("/")`
-   mounts it. `/` is therefore an overlay: the tar is the read-only lower
-   layer, the ramfs the writable upper.
-6. **Data disk.** `Ata::init` drives a real drive over PIO, or the kernel
-   falls back to copying the `disk.img` module into a RAM disk; either way
-   `Ext2::mount(dev, true)` puts it, read-write, at `/disk`.
+5. **Filesystem.** `Tar::init` finds `files.tar`; `VFS::init` and
+   `RamFS::init` prepare the layers. The overlay's upper comes from the disk
+   when there is one (see the next step) and is a ramfs otherwise;
+   `Overlay::init(upper, Tar)` and `VFS::mount("/")` mount the result. `/` is
+   therefore an overlay: the tar is the read-only lower layer, the upper is
+   where writes land.
+6. **Data disk.** `Virtio::init` and `Ata::init` find a real drive, or the
+   kernel copies the `disk.img` module into a RAM disk. `Ext2::mount(dev,
+   true)` puts it, read-write, at `/disk`, and the same device is mounted a
+   second time with the image's `root` directory as the root inode: that mount
+   is the overlay's upper layer, so writes to `/` are ext2 writes and survive a
+   reboot. The directory is created if the image predates it. If the disk is
+   missing or is not ext2, the upper stays a ramfs. `/tmp` is a ramfs mount,
+   volatile and capped at 1 MB per file.
 7. **Presentation and data.** The console font (`Font::load_from_disk`), the
    fault-handler symbol table (`/symbols.bin`), and the environment block
    (`/env`).
@@ -91,15 +98,19 @@ test programs.
 | backend | source | role |
 |---|---|---|
 | tarfs | `src/fs/tar.cpp` | ustar archive from Limine, read-only lower layer |
-| ramfs | `src/fs/ramfs.cpp` | writable, in-memory upper layer; refcounted nodes |
-| overlay | `src/fs/overlay.cpp` | the writable root: ramfs over tarfs, copy-up on write, whiteouts on delete |
-| ext2 | `src/kernel/dev/ext2.cpp` | read-write ext2 on the data disk, mounted at `/disk` |
+| ramfs | `src/fs/ramfs.cpp` | writable, in-memory filesystem: the upper layer when there is no disk, and `/tmp`; refcounted nodes |
+| overlay | `src/fs/overlay.cpp` | the writable root: an ext2 `root` directory (or a ramfs) over tarfs, copy-up on write, whiteouts on delete |
+| ext2 | `src/kernel/dev/ext2.cpp` | read-write ext2 on the data disk, mounted at `/disk` and as the root's upper layer |
 
 The overlay is what makes `/` writable at all: a write to an image file is
 copied up first (or shadowed by `O_TRUNC`), a listing is the union of both
 layers, and deleting an image file leaves a `.wh.<name>` marker in the upper
-rather than touching the immutable tar. `ext2` has a writer, so `/disk` takes
-ordinary writes; `sync` and `fsync` push them to the drive.
+rather than touching the immutable tar. When a disk is present the upper is
+the image's `root` directory, so a copy-up, a new directory or a whiteout is
+an ordinary ext2 write and outlives the reboot; `sync` and `fsync` flush the
+drive. Without a disk the upper is a ramfs and the tree lasts for the session.
+`/tmp` is always a ramfs, so temporary files never spend the disk's room and
+keep the 1 MB per-file cap.
 
 ### Block layer and the disk
 

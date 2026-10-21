@@ -235,22 +235,15 @@ extern "C" void kmain(void) {
     }
 
     // --- Filesystem layer ---
-    // 1. Locate the tar module (the file tree: /bin, /fonts, /Pictures, /tmp)
+    // 1. Locate the tar module (the file tree: /bin, /fonts, /Pictures)
     Tar::init();
-    // 2. The writable root: the tar image is the read-only lower layer and a
-    //    ramfs is the upper layer over it, so "/" is writable — writes land in
-    //    the upper and never touch the image. /tmp is just a directory in it.
     VFS::init();
     RamFS::init();
-    Overlay::init(RamFS::instance(), Tar::vfs_instance());
-    VFS::mount("/", Overlay::instance());
-    kprint("[VFS] Mounted / (overlay: ramfs over tarfs).\n");
 
-    // 3. The data disk: a virtio-blk device when the machine has one, else a
+    // 2. The data disk: a virtio-blk device when the machine has one, else a
     //    real ATA drive, else the disk.img module copied into a RAM disk.
-    //    Either way ext2 goes on top of it, mounted read-write, and the rest of
-    //    the system cannot tell which. The RAM-disk copy is writable too: the
-    //    image keeps the guest's changes until the machine is gone, and the
+    //    Either way ext2 goes on top of it. The RAM-disk copy is writable too:
+    //    the image keeps the guest's changes until the machine is gone, and the
     //    image on the host is never touched.
     Block::Device* disk = Virtio::init();  // logs [Virtio] ... when it finds one
     if (disk == nullptr) disk = Ata::init();   // logs [ATA] ... likewise
@@ -263,6 +256,7 @@ extern "C" void kmain(void) {
                 kprint("[Disk] no virtio or ATA drive; disk.img copied into RAM\n");
         }
     }
+    if (disk == nullptr) kprint("[Disk] no disk image\n");
 
     // A drive the controller has besides the data disk is not used as data by
     // this kernel, so it is scratch: the test machine attaches one (see
@@ -281,16 +275,58 @@ extern "C" void kmain(void) {
                    : "[Block] scratch drive self-test FAILED\n");
     }
 
-    if (disk == nullptr) {
-        kprint("[Disk] no disk image\n");
-    } else {
-        VFS::Filesystem* ext2 = Ext2::mount(disk, true);
-        if (ext2 == nullptr) {
+    // 3. The writable root. The tar image is the read-only lower layer; the
+    //    upper layer is the "root" directory on the data disk, so a write to
+    //    /, /home or anywhere else is an ext2 write and survives a reboot. The
+    //    same disk is mounted twice: at inode 2 as /disk for everyone to see,
+    //    and at that directory as the overlay's upper. Geometry, free counts
+    //    and the inode table are per device, so the two mounts are one
+    //    filesystem.
+    VFS::Filesystem* data = nullptr;
+    VFS::Filesystem* upper = RamFS::instance();
+    bool store = false;
+
+    if (disk != nullptr) {
+        data = Ext2::mount(disk, true);
+        if (data == nullptr) {
             kprint("[Ext2] the disk is not ext2\n");
-        } else if (!VFS::mount("/disk", ext2)) {
-            kprint("[Ext2] no room in the mount table\n");
+        } else {
+            // An image made before this directory existed gets it created here,
+            // so an older disk still boots with a persistent root.
+            VFS::Node* droot = data->root(data->priv);
+            VFS::Node* node = nullptr;
+            if (droot != nullptr)
+                node = data->lookup(data->priv, droot, "root");
+            if (node == nullptr && droot != nullptr && data->create != nullptr &&
+                data->create(data->priv, droot, "root", VFS::FT_DIR, &node) != 0)
+                node = nullptr;
+            if (droot != nullptr) data->release(data->priv, droot);
+
+            if (node != nullptr) {
+                uint32_t ino = node->ino;
+                data->release(data->priv, node);
+                upper = Ext2::mount(disk, true, ino);
+                store = upper != nullptr;
+            }
+            if (!store)
+                kprint("[VFS] no usable root directory on the disk\n");
         }
     }
+
+    // 4. Mount the root first: mount() creates the mountpoint in the parent
+    //    filesystem, and only "/" has no parent.
+    Overlay::init(upper, Tar::vfs_instance());
+    VFS::mount("/", Overlay::instance());
+    kprint(store ? "[VFS] Mounted / (overlay: ext2 /disk/root over tarfs).\n"
+                 : "[VFS] Mounted / (overlay: ramfs over tarfs).\n");
+
+    // 5. The data disk under its own name, then volatile scratch space. /tmp is
+    //    RAM on purpose: it is this system's tmpfs, and the ramfs per-file cap
+    //    (ENOSPC at 1 MB) is the ceiling the file tests expect to hit.
+    if (data != nullptr && !VFS::mount("/disk", data))
+        kprint("[Ext2] no room in the mount table\n");
+    if (store && !VFS::mount("/tmp", RamFS::instance()))
+        kprint("[VFS] no room in the mount table for /tmp\n");
 
     // --- Console font: swap the embedded 8x8 for the PSF2 from the
     // tarfs (never fatal; falls back silently on any failure). On a

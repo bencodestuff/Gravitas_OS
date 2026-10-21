@@ -30,14 +30,17 @@ shell grammar is, all in code you can read and change.
 - The kernel starts one program, `/bin/init.elf`, and idles. `init.elf` runs a
   Lua manifest (`files/init.lua`) that spawns the shell, then the WM, then the
   terminal.
-- `/` is writable, so a new `/init.lua` written at runtime copies up into the
-  ramfs overlay and shadows the shipped one. That affects only the running
-  system: the overlay is lost on reboot, and the manifest in `files.tar` is what
-  boots next time.
+- `/` is writable: the tar image is the read-only lower layer, and the `root`
+  directory on `disk.img` is the upper layer, so a file written at runtime
+  copies up into ext2 and survives a reboot. Without a disk the upper is a
+  ramfs and the changes last only for the session.
 
 ### Filesystem and storage
-- `/` is an **overlay**: a read-only tarfs lower layer over a writable ramfs
-  upper, with copy-up on write and `.wh.<name>` whiteouts on delete.
+- `/` is an **overlay**: a read-only tarfs lower layer over a writable upper,
+  with copy-up on write and `.wh.<name>` whiteouts on delete. The upper is the
+  `root` directory on the data disk when one is present, so writes at `/`,
+  `/home` and the rest survive a reboot; `/tmp` is a separate ramfs (volatile,
+  1 MB per file). Without a disk the upper is a ramfs too.
 - A node-shaped VFS with `ino`/type/size/mode/mtime, so `ls -l` works and
   `opendir`/`readdir` report real `d_ino`/`d_type`.
 - Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
@@ -243,9 +246,6 @@ subsystem landing with its own tests.
 
 Not done yet:
 
-- **A persistent upper layer.** `/` is writable today, but the ramfs upper layer
-  is lost on reboot, so writes do not survive it. Durable writes need a small
-  custom filesystem or ext2-rw, plus `sync`/`fsync` and a clean shutdown.
 - **A page cache.** Opportunistic; the `Block` layer is deliberately cacheless.
 - **`fork`/`exec`/`waitpid` and copy-on-write.** Spawn/exit/wait exist; the POSIX
   process model does not.
