@@ -243,6 +243,11 @@ int dup2_fd(int oldfd, int newfd);
 // blocks when the buffer is full. Returns 0 or -errno.
 int pipe_fd(int out[2]);
 
+// Forget a task that is exiting or being killed: drop its id from every pipe's
+// reader and writer wait lists. A dead task can never be woken, and the lists
+// hold only MAX_PIPE_WAITERS ids, so leaving it there would slowly wedge a pipe.
+void forget_task(int task_id);
+
 // Copy the current task's descriptor table into 'dst' (a newborn task's),
 // sharing every handle. Console entries are the shared console endpoint. This
 // is what makes redirection survive a spawn: the child writes where the parent
