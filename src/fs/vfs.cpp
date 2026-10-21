@@ -1042,7 +1042,11 @@ int statfs_path(const char* path, StatFs* out) {
 
     // A backend that can say more, says it. One that cannot leaves the defaults
     // above, which are honest: unknown total, nothing free unless it can write.
+    // The type stays the resolved mount's own: a backend may refine the sizes,
+    // but what is mounted at this path is what df should name (the overlay's
+    // upper is an ext2 directory, yet "/" is still an overlay).
     if (fs->statfs != nullptr) fs->statfs(fs->priv, out);
+    out->type = fs->fs_type;
     return 0;
 }
 
