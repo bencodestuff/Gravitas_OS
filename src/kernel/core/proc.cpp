@@ -135,6 +135,10 @@ namespace Sched {
             t = t->next;
         } while (t != ready_queue);
 
+        // The victim may be parked in a pipe's waiter list; it can never run
+        // again to be woken, and four such ids would fill that pipe's list.
+        VFS::forget_task(victim->id);
+
         // Unlink (the caller itself stays in the queue).
         Task* before = victim;
         while (before->next != victim) before = before->next;
@@ -177,11 +181,12 @@ namespace Sched {
         new_task->timer_armed = false;
         copy_name(new_task->name, "kernel-thread", (int)sizeof(new_task->name));
 
-        // 2. Allocate a Stack for this thread (4KB)
-        uint64_t* stack_bottom = new uint64_t[4096]; // 32KB: deep syscalls
-                                                     // + nested IRQs live here
+        // 2. Allocate a Stack for this thread (32KB: deep syscalls + nested
+        //    IRQs live here). The forged frame goes at the very top of the
+        //    allocation, so the canary below it sees any overrun.
+        uint64_t* stack_bottom = new uint64_t[4096];
         stack_bottom[0] = KSTACK_CANARY; // verified each tick (see sched.cpp)
-        uint64_t* stack_top = stack_bottom + 512;
+        uint64_t* stack_top = stack_bottom + 4096;
         new_task->user_stack_guard = 0; // kernel threads have no user stack
 
         new_task->kstack_top = (uint64_t)stack_top;
@@ -260,9 +265,28 @@ namespace Sched {
         new_task->user_stack_guard = stack_base; // the unmapped guard page
         // Back every page of the stack: alloc_user_range only reserves the
         // VA range, so the frames must be mapped here. 8 pages (32K) is a
-        // comfortable floor — bigger programs put multi-KB frames on it.
-        for (uint64_t p = 0; p < USER_STACK_PAGES; p++)
-            VMM::map_page(PMM::alloc_page(), stack_base + (p + 1) * 4096, 0x07); // P|W|U
+        // comfortable floor; bigger programs put multi-KB frames on it.
+        // A failed allocation must not be mapped: physical 0 is reserved
+        // memory, and mapping it would let the later space teardown free it.
+        // Undo this attempt (mappings and frames), then fail; the caller
+        // disposes of the task, as the NOTE below says.
+        uint64_t frames[USER_STACK_PAGES];
+        uint64_t mapped = 0;
+        bool oom = false;
+        for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {
+            uint64_t frame = PMM::alloc_page();
+            if (frame == 0) { oom = true; break; }
+            frames[mapped++] = frame;
+            VMM::map_page(frame, stack_base + (p + 1) * 4096, 0x07); // P|W|U
+        }
+        if (oom) {
+            kprint("[Sched] Out of physical memory for user stack!\n");
+            VMM::unmap_user_range(new_task->cr3, stack_base + 4096, mapped);
+            for (uint64_t i = 0; i < mapped; i++) PMM::free_page(frames[i]);
+            if (switched) VMM::switch_pml4(old_cr3);
+            // NOTE: caller must clean up the task on failure (id already used)
+            return -1;
+        }
         if (switched) VMM::switch_pml4(old_cr3);
 
         // --- Build the initial user stack (System V layout) ---
@@ -448,6 +472,10 @@ namespace Sched {
         }
 
         // 4. Unlink from the circular list
+        // The task may be parked in a pipe's waiter list and will never run
+        // again to be woken, so its ids must go before the slot can be reused.
+        VFS::forget_task(dead->id);
+
         Task* prev = dead;
         while (prev->next != dead) prev = prev->next;
         prev->next = dead->next;

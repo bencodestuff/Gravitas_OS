@@ -625,6 +625,36 @@ static void pipe_wake(int* ids, int* n) {
     *n = 0;
 }
 
+// Park a task id without duplicating it. A waiter woken by something other
+// than pipe_wake (an IPC message, say) comes back through the same loop while
+// its id is still in the list, and two copies would eat two of the four slots
+// for one task.
+static void pipe_wait_add(int* ids, int* n, int id) {
+    for (int i = 0; i < *n; i++)
+        if (ids[i] == id) return;
+    if (*n < MAX_PIPE_WAITERS) ids[(*n)++] = id;
+}
+
+// Drop one id from a waiter list, keeping the order of the rest. The lists are
+// fixed-size and per pipe, so an id that is never removed burns a slot for
+// every later waiter on that pipe.
+static void pipe_wait_forget(int* ids, int* n, int id) {
+    int keep = 0;
+    for (int i = 0; i < *n; i++)
+        if (ids[i] != id) ids[keep++] = ids[i];
+    *n = keep;
+}
+
+void forget_task(int task_id) {
+    uint64_t f = irq_save();
+    for (int i = 0; i < MAX_PIPES; i++) {
+        Pipe* p = &pipes[i];
+        pipe_wait_forget(p->rd_wait, &p->rd_n, task_id);
+        pipe_wait_forget(p->wr_wait, &p->wr_n, task_id);
+    }
+    irq_restore(f);
+}
+
 static long pipe_read_fd(FileHandle* h, void* buf, uint64_t count) {
     Pipe* p = h->pipe;
     if (count == 0) return 0;
@@ -641,8 +671,7 @@ static long pipe_read_fd(FileHandle* h, void* buf, uint64_t count) {
             return (long)got;
         }
         if (p->writers == 0) return 0;         // EOF: the last writer has closed
-        if (p->rd_n < MAX_PIPE_WAITERS)
-            p->rd_wait[p->rd_n++] = Sched::current_task_id();
+        pipe_wait_add(p->rd_wait, &p->rd_n, Sched::current_task_id());
         Sched::block_until_woken();
         Sched::yield();                        // returns with interrupts on
         asm volatile("cli");
@@ -665,8 +694,7 @@ static long pipe_write_fd(FileHandle* h, const void* buf, uint64_t count) {
         }
         if (put > 0) pipe_wake(p->rd_wait, &p->rd_n);  // data available
         if (put == count) return (long)put;
-        if (p->wr_n < MAX_PIPE_WAITERS)
-            p->wr_wait[p->wr_n++] = Sched::current_task_id();
+        pipe_wait_add(p->wr_wait, &p->wr_n, Sched::current_task_id());
         Sched::block_until_woken();
         Sched::yield();
         asm volatile("cli");
