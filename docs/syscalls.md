@@ -121,20 +121,23 @@ front of it, optionally seeded from a host-made image, which is how a filesystem
 can be written and tested before any driver exists. It passes its own
 read/write/bounds self-test at boot.
 
-There is one disk image, and it is read-only end to end. `disk.img` is made on
-the host with `mke2fs` (`tools/mkext2.py`) and reaches the guest two ways: as a
-Limine module (alongside `files.tar` — see `src/kernel/dev/modules.h`) copied
-into a RAM disk, or as a real drive the kernel drives over **ATA PIO**
-(`src/kernel/dev/ata.cpp`) when the machine has one. The kernel prefers the real
-drive and falls back to the module, so the guest boots either way, and the mount
-above cannot tell which it got. It is then mounted as **ext2** at `/disk`
+There is one disk image, and it is writable. `disk.img` is made on the host with
+`mke2fs` (`tools/mkext2.py`) and reaches the guest two ways: as a Limine module
+(alongside `files.tar`, see `src/kernel/dev/modules.h`) copied into a RAM disk,
+or as a real drive the kernel drives over **ATA PIO** (`src/kernel/dev/ata.cpp`)
+or **virtio-blk**. The kernel prefers virtio, then a real ATA drive, then the
+module, so the guest boots either way, and the mount above cannot tell which it
+got. It is then mounted read-write as **ext2** at `/disk`
 (`src/kernel/dev/ext2.cpp`).
 
-The mount has no writer, so a `write` there fails at the VFS with `EROFS` — which
-is what a read-only filesystem should do. The reader covers the superblock, group
-descriptors, inode tables, directory records and the direct/indirect block
-pointers; it does not model symlinks, extents, extended attributes or 64-bit
-filesystems, and refuses a filesystem that would need them.
+The writer allocates and frees blocks and inodes through the group bitmaps,
+grows and truncates files across the direct and indirect pointers, and keeps
+directory records tidy. `FSYNC` flushes one descriptor's filesystem and `SYNC`
+flushes every mount, which is also what `poweroff` and `reboot` do before the
+machine stops; on a virtio drive that means a real `FLUSH` request when the host
+offers the feature. It does not model symlinks, extents, extended attributes or
+64-bit filesystems, and refuses a filesystem that would need them or that was
+not cleanly unmounted.
 
 The ATA driver is polled PIO on the primary channel's legacy task file: no
 interrupts, and a spin cap on every status poll so a device that never answers

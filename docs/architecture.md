@@ -98,8 +98,8 @@ test programs.
 The overlay is what makes `/` writable at all: a write to an image file is
 copied up first (or shadowed by `O_TRUNC`), a listing is the union of both
 layers, and deleting an image file leaves a `.wh.<name>` marker in the upper
-rather than touching the immutable tar. A read-only backend has no writer, so
-a write to `/disk` fails at the VFS with `EROFS`.
+rather than touching the immutable tar. `ext2` has a writer, so `/disk` takes
+ordinary writes; `sync` and `fsync` push them to the drive.
 
 ### Block layer and the disk
 

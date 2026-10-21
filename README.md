@@ -25,8 +25,8 @@ shell grammar is, all in code you can read and change.
 ## Highlights
 
 ### Boot and init
-- Limine loads three things: the kernel, a `files.tar` userland image, and a
-  read-only ext2 `disk.img`.
+- Limine loads three things: the kernel, a `files.tar` userland image, and an
+  ext2 `disk.img`.
 - The kernel starts one program, `/bin/init.elf`, and idles. `init.elf` runs a
   Lua manifest (`files/init.lua`) that spawns the shell, then the WM, then the
   terminal.
@@ -40,8 +40,9 @@ shell grammar is, all in code you can read and change.
   upper, with copy-up on write and `.wh.<name>` whiteouts on delete.
 - A node-shaped VFS with `ino`/type/size/mode/mtime, so `ls -l` works and
   `opendir`/`readdir` report real `d_ino`/`d_type`.
-- Read-only ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
-  PCI, split virtqueue, a 16 KB direct-map staging buffer).
+- Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
+  PCI, split virtqueue, a 16 KB direct-map staging buffer). The writer allocates
+  and frees blocks and inodes, and `sync`/`fsync` flush the drive's write cache.
 - The `Block::Device` contract is: a name, a size, and read/write of a 512-byte
   sector run, so a filesystem does not care where its bytes come from.
 
@@ -54,7 +55,7 @@ shell grammar is, all in code you can read and change.
 - Zero-copy shared-memory file mappings (`MAP_FILE`/`MUNMAP`, read-only views of
   immutable tarfs members) and refcounted shared regions
   (`SHM_CREATE`/`GRANT`/`MAP`/`CLOSE`).
-- 61 syscalls through `int $0x80` (numbers 0 to 62; two retired entries return
+- 63 syscalls through `int $0x80` (numbers 0 to 64; two retired entries return
   `-ENOSYS`), dispatched from a number→handler table.
 - A fault dumps the registers and a symbolised `RIP=0x... (main(int,
   char**)+0x2C)` from a build-time symbol table (`tools/mksyms.py`, about 6000
@@ -134,7 +135,7 @@ Limine ──▶ kernel (kmain) ──▶ init.elf ──▶ /init.lua ──▶
 
 `kmain` (`src/kernel/main.cpp`) brings up the C++ runtime, physical and virtual
 memory, the CPU and interrupts, a block-layer self-test, the overlay root, the
-read-only ext2 data disk, the console font and the symbol table, and then spawns
+read-write ext2 data disk, the console font and the symbol table, and then spawns
 `/bin/init.elf`. If that fails, the one fallback is a console shell.
 
 `init.elf` links in Lua and runs `/init.lua`. The shipped manifest starts
