@@ -122,6 +122,15 @@ a request that runs past the end moves nothing (a caller asking past the end is
 broken, and a short read would hide it). There is no syscall here; the layer is
 internal.
 
+`src/kernel/core/blockcache.cpp` sits directly above it: a 64-page (256 KiB),
+4 KB write-back page cache keyed by device and page. A miss fills a whole page
+in one device read, so a 1 KB ext2 block and its neighbours cost one command
+between them; dirty pages stay in the cache until `sync` or `fsync` writes them
+back, and only then is the drive's own write cache flushed. The table is static
+BSS, so the cache works at mount time and its cost is fixed and visible.
+Everything ext2 does goes through it, which is what makes the cache the single
+view of the disk.
+
 | device | source | notes |
 |---|---|---|
 | RAM disk | `src/kernel/dev/memblock.cpp` | heap buffer behind the contract; optionally seeded from a host image |
