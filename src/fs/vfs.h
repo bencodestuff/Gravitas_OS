@@ -126,7 +126,11 @@ struct Filesystem {
     int (*truncate)(void* priv, Node* node, uint64_t size);
 
     // Create an entry in 'dir'. Fills *out with a node the caller releases.
-    // nullptr when the filesystem is read-only. Returns 0 or -1.
+    // nullptr when the filesystem is read-only. Returns 0, or a negated errno
+    // so the reason survives: the VFS reports what the backend said rather than
+    // flattening every failure to one code. A backend that cannot tell (ramfs
+    // is never short of room) still has to pick one, and EEXIST, EINVAL and
+    // EIO are the codes it has.
     int (*create)(void* priv, Node* dir, const char* name, FileType type,
                   Node** out);
 
@@ -212,7 +216,13 @@ Node* node_walk(Filesystem* fs, const char* rel);
 // earlier ones as directories. Returns the final node (the caller releases) or
 // nullptr. This is what makes `open("a/b.txt", O_CREATE)` land in a real place
 // rather than nowhere.
-Node* node_create(Filesystem* fs, const char* rel, FileType final_type);
+//
+// On failure, *out_err (when given) is the negated errno the backend reported,
+// or EROFS/EIO for a filesystem that cannot create at all. That is what lets a
+// create that ran out of room reach the caller as ENOSPC instead of the bare
+// EIO this used to invent.
+Node* node_create(Filesystem* fs, const char* rel, FileType final_type,
+                  int* out_err = nullptr);
 
 // Split a filesystem-relative path into the parent's path and the final name.
 // False when there is no final name ("" or "/"), or when the name does not fit
@@ -283,7 +293,7 @@ long readdir_entries(const char* path, DirEntry* out, uint64_t max);
 long lseek_fd(int fd, long offset, int whence);
 
 // Create a directory / remove a file, by path. Return 0 or -errno
-// (ENOENT/EROFS/EIO).
+// (ENOENT/EROFS/EEXIST/ENOSPC; the backend's own code for a create failure).
 int mkdir(const char* path);
 int unlink(const char* path);
 

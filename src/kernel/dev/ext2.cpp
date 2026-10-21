@@ -1,6 +1,7 @@
 #include "kernel/dev/ext2.h"
 #include "kernel/core/block.h"
 #include "kernel/core/blockcache.h"
+#include "kernel/core/errno.h"
 #include "kernel/klib/klib.h"
 #include "kernel/dev/rtc.h"
 #include "fs/vfs.h"
@@ -959,9 +960,13 @@ static bool dir_find(Fs* f, Inode* dir, const char* name, uint32_t len,
 }
 
 // Add a record, splitting the first record with room or appending a block. The
-// directory's inode is updated in memory; the caller writes it.
-static bool dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
-                       uint32_t ino, uint8_t ftype) {
+// directory's inode is updated in memory; the caller writes it. Returns 0, or a
+// negated errno: ENOSPC when the directory needs another block and the disk has
+// none, EIO for a block that would not read or write. The reason has to survive
+// because the VFS reports it: a create that ran out of room is not the same as
+// one that failed on a bad block.
+static int dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
+                      uint32_t ino, uint8_t ftype) {
     uint32_t bs = f->dev->block_size;
     uint32_t needed = rec_used((uint8_t)len);
     uint32_t buf[MAX_BLOCK / 4];
@@ -971,7 +976,7 @@ static bool dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
         bool err = false;
         uint32_t blk = get_block(f, dir, b, false, &err);
         if (blk == 0) continue;
-        if (!read_block(f, blk, buf)) return false;
+        if (!read_block(f, blk, buf)) return -Errno::EIO;
         uint8_t* raw = (uint8_t*)buf;
         uint32_t p = 0;
         while (p + sizeof(RawDirEntry) <= bs) {
@@ -992,7 +997,7 @@ static bool dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
                 memset((uint8_t*)nd + sizeof(RawDirEntry), 0,
                        needed - sizeof(RawDirEntry));
                 memcpy((uint8_t*)nd + sizeof(RawDirEntry), name, len);
-                return write_block(f, blk, buf);
+                return write_block(f, blk, buf) ? 0 : -Errno::EIO;
             }
             p += de->rec_len;
         }
@@ -1002,7 +1007,7 @@ static bool dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
     // the block, so a fresh block holds exactly one record covering it all.
     bool grew = false;
     uint32_t blk = get_block(f, dir, nblocks, true, &grew);
-    if (blk == 0) return false;
+    if (blk == 0) return grew ? -Errno::ENOSPC : -Errno::EIO;
     memset(buf, 0, bs);
     RawDirEntry* de = (RawDirEntry*)buf;
     de->inode = ino;
@@ -1010,10 +1015,10 @@ static bool dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
     de->name_len = (uint8_t)len;
     de->file_type = ftype;
     memcpy((uint8_t*)buf + sizeof(RawDirEntry), name, len);
-    if (!write_block(f, blk, buf)) return false;
+    if (!write_block(f, blk, buf)) return -Errno::EIO;
 
     dir->size += bs;
-    return true;
+    return 0;
 }
 
 // Remove one record, merging it with a free neighbour so the block does not
@@ -1373,27 +1378,36 @@ static int e2_truncate(void* priv, VFS::Node* node, uint64_t size) {
 static int e2_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type,
                      VFS::Node** out) {
     Fs* f = (Fs*)priv;
-    if (!f->writable || dir->type != VFS::FT_DIR) return -1;
+    if (!f->writable) return -Errno::EROFS;
+    if (dir->type != VFS::FT_DIR) return -Errno::ENOTDIR;
     uint32_t len = 0;
-    if (!name_valid(name, &len)) return -1;
+    // A name this backend will not take: empty, "." or "..", or one containing
+    // a slash. A name that is merely too long is refused in the VFS path layer
+    // as ENAMETOOLONG before it gets here, so EINVAL is what is left.
+    if (!name_valid(name, &len)) return -Errno::EINVAL;
 
     uint64_t flags = irq_save();
 
     E2Node* d = (E2Node*)dir->priv;
     Inode din;
-    if (!read_inode(f, d->ino, &din)) { irq_restore(flags); return -1; }
-    if ((din.mode & S_IFDIR_BIT) == 0) { irq_restore(flags); return -1; }
+    if (!read_inode(f, d->ino, &din)) { irq_restore(flags); return -Errno::EIO; }
+    if ((din.mode & S_IFDIR_BIT) == 0) { irq_restore(flags); return -Errno::ENOTDIR; }
 
     // The VFS looks first, but the backend owns the namespace: a create must
     // not overwrite an entry that appeared in the meantime.
     if (dir_find(f, &din, name, len, nullptr, nullptr, nullptr, nullptr)) {
         irq_restore(flags);
-        return -1;
+        return -Errno::EEXIST;
     }
 
     bool is_dir = type == VFS::FT_DIR;
     uint32_t ino = alloc_inode(f, is_dir);
-    if (ino == 0) { irq_restore(flags); return -1; }
+    if (ino == 0) {
+        irq_restore(flags);
+        // alloc_inode reports 0 both for an empty inode bitmap and for an I/O
+        // failure on the bitmap; the free count tells the two apart.
+        return f->dev->free_inodes == 0 ? -Errno::ENOSPC : -Errno::EIO;
+    }
 
     Inode in;
     memset(&in, 0, sizeof(in));
@@ -1408,7 +1422,7 @@ static int e2_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType
         if (dir_blk == 0) {
             free_inode(f, ino, true);
             irq_restore(flags);
-            return -1;
+            return f->dev->free_blocks == 0 ? -Errno::ENOSPC : -Errno::EIO;
         }
         in.block[0] = dir_blk;
         in.size = f->dev->block_size;
@@ -1417,25 +1431,26 @@ static int e2_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType
             free_block(f, dir_blk);
             free_inode(f, ino, true);
             irq_restore(flags);
-            return -1;
+            return -Errno::EIO;
         }
     }
     if (!write_inode(f, ino, &in)) {
         if (dir_blk) free_block(f, dir_blk);
         free_inode(f, ino, is_dir);
         irq_restore(flags);
-        return -1;
+        return -Errno::EIO;
     }
 
     uint8_t ftype = f->dev->has_filetype ? (is_dir ? 2 : 1) : 0;
-    if (!dir_insert(f, &din, name, len, ino, ftype)) {
+    int ins = dir_insert(f, &din, name, len, ino, ftype);
+    if (ins != 0) {
         // dir_insert may have added a block to the parent first; keep the
         // parent's view consistent even on failure.
         write_inode(f, d->ino, &din);
         refresh_node(d, dir, &din);
         free_inode(f, ino, is_dir);
         irq_restore(flags);
-        return -1;
+        return ins;   // already a negated errno (ENOSPC or EIO)
     }
 
     if (is_dir) din.links_count++;   // the new directory's ".." names us
@@ -1447,7 +1462,7 @@ static int e2_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType
 
     VFS::Node* made = make_node(f, ino);
     irq_restore(flags);
-    if (made == nullptr) return -1;
+    if (made == nullptr) return -Errno::ENOMEM;
     *out = made;
     return 0;
 }
@@ -1611,7 +1626,7 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     // Insert first, then remove: a failure halfway leaves the name reachable in
     // the old place rather than nowhere.
     uint8_t ftype = f->dev->has_filetype ? (src_is_dir ? 2 : 1) : 0;
-    if (!dir_insert(f, tdir, to, tlen, src_ino, ftype)) {
+    if (dir_insert(f, tdir, to, tlen, src_ino, ftype) != 0) {
         irq_restore(flags);
         return -1;
     }

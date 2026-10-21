@@ -344,11 +344,18 @@ Node* node_walk(Filesystem* fs, const char* rel) {
     return cur;
 }
 
-Node* node_create(Filesystem* fs, const char* rel, FileType final_type) {
-    if (fs == nullptr || fs->root == nullptr || fs->create == nullptr)
+Node* node_create(Filesystem* fs, const char* rel, FileType final_type,
+                  int* out_err) {
+    if (out_err) *out_err = 0;
+    if (fs == nullptr || fs->root == nullptr || fs->create == nullptr) {
+        if (out_err) *out_err = -Errno::EROFS;
         return nullptr;
+    }
     Node* cur = fs->root(fs->priv);
-    if (cur == nullptr) return nullptr;
+    if (cur == nullptr) {
+        if (out_err) *out_err = -Errno::EIO;
+        return nullptr;
+    }
     if (rel == nullptr || rel[0] == '\0') return cur;
 
     char comp[NAME_MAX];
@@ -362,9 +369,14 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type) {
         Node* next = fs->lookup(fs->priv, cur, comp);
         if (next == nullptr) {
             Node* made = nullptr;
-            if (fs->create(fs->priv, cur, comp, last ? final_type : FT_DIR,
-                           &made) != 0) {
+            // The backend's negated errno is the answer, not a bare failure:
+            // "no room" and "that name is taken" are different outcomes and the
+            // caller can say so.
+            int err = fs->create(fs->priv, cur, comp, last ? final_type : FT_DIR,
+                                 &made);
+            if (err != 0) {
                 fs->release(fs->priv, cur);
+                if (out_err) *out_err = err;
                 return nullptr;
             }
             next = made;
@@ -372,7 +384,11 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type) {
         fs->release(fs->priv, cur);
         cur = next;
     }
-    if (r == COMP_TOO_LONG) { fs->release(fs->priv, cur); return nullptr; }
+    if (r == COMP_TOO_LONG) {
+        fs->release(fs->priv, cur);
+        if (out_err) *out_err = -Errno::ENAMETOOLONG;
+        return nullptr;
+    }
     return cur;
 }
 
@@ -558,8 +574,10 @@ int open_fd(const char* path, int flags) {
     if (node == nullptr) {
         if (!(flags & O_CREATE)) return -Errno::ENOENT;
         if (fs->create == nullptr) return -Errno::EROFS;
-        node = node_create(fs, rel, FT_FILE);
-        if (node == nullptr) return -Errno::EIO;
+        // The backend's own code: a full disk is ENOSPC here, not EIO.
+        int cerr = 0;
+        node = node_create(fs, rel, FT_FILE, &cerr);
+        if (node == nullptr) return cerr ? cerr : -Errno::EIO;
     } else if ((flags & O_CREATE) && (flags & O_EXCL)) {
         // O_EXCL promises to create: an entry already there (file or directory)
         // is exactly what it refuses to open.
@@ -910,7 +928,10 @@ int mkdir(const char* path) {
     Node* made = nullptr;
     int r = fs->create(fs->priv, dir, name, FT_DIR, &made);
     fs->release(fs->priv, dir);
-    if (r != 0) return -Errno::EEXIST;
+    // Pass the backend's reason through: an existing name is still EEXIST (the
+    // backend says so), while a full disk is ENOSPC rather than a misleading
+    // EEXIST that used to make `mkdir -p` treat a failed create as done.
+    if (r != 0) return r;
     fs->release(fs->priv, made);
     return 0;
 }
