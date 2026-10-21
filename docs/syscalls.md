@@ -90,11 +90,13 @@ empties one that exists, `O_APPEND` makes every write land at the current end
 refuses a file that is already there — the safe create, `EEXIST` rather than a
 truncate. `O_EXCL` without `O_CREATE` has no effect.
 
-The root is an **overlay**: the tar image is the read-only lower layer and a
-ramfs is the writable upper layer over it, so the whole tree is writable. A
-write to an image file is copied up first (or shadowed by `O_TRUNC`), the
+The root is an **overlay**: the tar image is the read-only lower layer and the
+writable upper is the image's `root` directory when a disk is present, so a
+write to an image file is copied up into ext2 and survives a reboot. The
 listing is the union of both layers, and deleting an image file leaves a
 whiteout marker (`.wh.<name>`) in the upper rather than touching the image.
+`/tmp` is a ramfs (volatile, 1 MB per file), and without a disk the upper is a
+ramfs as well.
 
 ## Environment
 
@@ -377,8 +379,8 @@ whoever owns them frees them.
   works when the backend can promise the bytes stay put: a tarfs member is a
   slice of the immutable image, so the mapping is just its physical frames —
   nothing is copied, and nothing can change under the reader. The overlay
-  forwards it to the lower layer, and refuses when the file has been copied up
-  (a ramfs buffer can be reallocated). A file rarely starts on a page boundary,
+  forwards it to the lower layer, and refuses once the file has been copied up
+  (an upper copy is not immutable). A file rarely starts on a page boundary,
   so the returned address points at its real first byte inside the mapping.
 - **A shared region** (`SHM_*`) is anonymous pages one task creates and others
   attach. The id is a handle, but knowing it is not enough: the owner *grants*

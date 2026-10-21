@@ -72,12 +72,14 @@ int main(int argc, char** argv) {
         close(fd);
     }
 
-    // 4. The listing. The image has big.bin, hello.txt, sub and the lost+found
-    //    mke2fs always makes (a twelve-block directory, so this walks past the
-    //    first block of a directory too).
+    // 4. The listing. The image has big.bin, hello.txt, sub, root and the
+    //    lost+found mke2fs always makes (a twelve-block directory, so this
+    //    walks past the first block of a directory too). root is the directory
+    //    the kernel mounts as the writable root's upper layer.
     DIR* d = opendir("/disk");
     check(d != 0, "opendir /disk");
-    int saw_hello = 0, saw_sub = 0, saw_big = 0, saw_lost = 0, count = 0;
+    int saw_hello = 0, saw_sub = 0, saw_big = 0, saw_lost = 0;
+    int saw_root = 0, count = 0;
     struct dirent* e;
     while (d && (e = readdir(d)) != 0) {
         count++;
@@ -85,11 +87,13 @@ int main(int argc, char** argv) {
         if (strcmp(e->d_name, "sub") == 0 && e->d_type == DT_DIR) saw_sub = 1;
         if (strcmp(e->d_name, "big.bin") == 0 && e->d_type == DT_REG) saw_big = 1;
         if (strcmp(e->d_name, "lost+found") == 0 && e->d_type == DT_DIR) saw_lost = 1;
+        if (strcmp(e->d_name, "root") == 0 && e->d_type == DT_DIR) saw_root = 1;
     }
     if (d) closedir(d);
     check(saw_hello && saw_sub && saw_big, "the listing has every entry");
     check(saw_lost, "the listing types lost+found as a directory");
-    check(count == 4, "the listing has exactly the four entries");
+    check(saw_root, "the listing has the persistent root's backing directory");
+    check(count == 5, "the listing has exactly the five entries");
 
     // 5. A file reached through a directory.
     fd = open("/disk/sub/nested.txt", O_RDONLY);
@@ -359,9 +363,10 @@ int main(int argc, char** argv) {
     check(sync() == 0, "sync returns 0");
 
     // 16. Everything this test made is gone, and the image's own entries are
-    //     still the only ones in the root.
+    //     still the only ones in the root. root is the directory the kernel
+    //     mounts as the writable root's upper layer.
     count = 0;
-    saw_hello = saw_sub = saw_big = saw_lost = 0;
+    saw_hello = saw_sub = saw_big = saw_lost = saw_root = 0;
     d = opendir("/disk");
     while (d && (e = readdir(d)) != 0) {
         count++;
@@ -369,9 +374,10 @@ int main(int argc, char** argv) {
         if (strcmp(e->d_name, "sub") == 0) saw_sub = 1;
         if (strcmp(e->d_name, "big.bin") == 0) saw_big = 1;
         if (strcmp(e->d_name, "lost+found") == 0) saw_lost = 1;
+        if (strcmp(e->d_name, "root") == 0) saw_root = 1;
     }
     if (d) closedir(d);
-    check(count == 4 && saw_hello && saw_sub && saw_big && saw_lost,
+    check(count == 5 && saw_hello && saw_sub && saw_big && saw_lost && saw_root,
           "the writer cleaned up after itself");
 
     if (fails == 0) { printf("ext2test: all checks pass\n"); return 0; }
