@@ -39,7 +39,7 @@ Limine ──▶ kernel (kmain) ──▶ init.elf ──▶ /init.lua ──▶
 |---|---|
 | `kernel_path: boot():/gravitas.elf` | the kernel |
 | `module_path: boot():/files.tar` | the userland image: `/bin`, `/fonts`, `/Pictures`, `/tmp`, `/env`, `/symbols.bin`, `/apps` |
-| `module_path: boot():/disk.img` | the read-only ext2 image mounted at `/disk` |
+| `module_path: boot():/disk.img` | the ext2 image mounted at `/disk` |
 
 The kernel side is one function, `kmain` in `src/kernel/main.cpp`. In order:
 
@@ -60,7 +60,7 @@ The kernel side is one function, `kmain` in `src/kernel/main.cpp`. In order:
    layer, the ramfs the writable upper.
 6. **Data disk.** `Ata::init` drives a real drive over PIO, or the kernel
    falls back to copying the `disk.img` module into a RAM disk; either way
-   `Ext2::mount` puts it, read-only, at `/disk`.
+   `Ext2::mount(dev, true)` puts it, read-write, at `/disk`.
 7. **Presentation and data.** The console font (`Font::load_from_disk`), the
    fault-handler symbol table (`/symbols.bin`), and the environment block
    (`/env`).
@@ -93,7 +93,7 @@ test programs.
 | tarfs | `src/fs/tar.cpp` | ustar archive from Limine, read-only lower layer |
 | ramfs | `src/fs/ramfs.cpp` | writable, in-memory upper layer; refcounted nodes |
 | overlay | `src/fs/overlay.cpp` | the writable root: ramfs over tarfs, copy-up on write, whiteouts on delete |
-| ext2 | `src/kernel/dev/ext2.cpp` | read-only ext2 on the data disk, mounted at `/disk` |
+| ext2 | `src/kernel/dev/ext2.cpp` | read-write ext2 on the data disk, mounted at `/disk` |
 
 The overlay is what makes `/` writable at all: a write to an image file is
 copied up first (or shadowed by `O_TRUNC`), a listing is the union of both
@@ -116,13 +116,15 @@ internal.
 | RAM disk | `src/kernel/dev/memblock.cpp` | heap buffer behind the contract; optionally seeded from a host image |
 | ATA PIO | `src/kernel/dev/ata.cpp` | polled PIO on the primary channel's legacy task file; no interrupts, LBA only, spin cap on every poll |
 | Limine modules | `src/kernel/dev/modules.cpp` | finds the `.tar` and `.img` modules |
-| ext2 | `src/kernel/dev/ext2.cpp` | read-only reader over a `Block::Device` |
+| ext2 | `src/kernel/dev/ext2.cpp` | read-write ext2 over a `Block::Device` |
 
 `disk.img` is made on the host with `tools/mkext2.py`. The kernel prefers a
 real ATA drive and falls back to the module, so the guest boots either way and
 the mount above cannot tell which it got. The ext2 reader covers the superblock,
 group descriptors, inode tables, directory records and the direct/indirect
-block pointers, and refuses a filesystem that would need symlinks, extents or
+block pointers. The writer allocates and frees blocks and inodes through the
+bitmaps and group counts, writes partial blocks, keeps directories' `rec_len`
+records tidy, and refuses a filesystem that would need symlinks, extents or
 64-bit support.
 
 ### Scheduler, tasks and file descriptors

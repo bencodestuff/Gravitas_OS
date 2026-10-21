@@ -36,10 +36,10 @@ def boot_identity(g):
     g.wait_for(r"\[IOAPIC\] [0-9]+ entries, [0-9]+ unmasked by the firmware, "
                r"now all masked")
 
-    # The read-only ext2 image: a real on-disk filesystem, mounted from a RAM
+    # The ext2 image: a real on-disk filesystem, mounted read-write from a RAM
     # disk seeded with the Limine module.
     g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
-               r"[0-9]+ group \(read-only\)")
+               r"[0-9]+ group \(read-write\)")
 
 
 @test

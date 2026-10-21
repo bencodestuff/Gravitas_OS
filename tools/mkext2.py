@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build the ext2 image the kernel mounts read-only at /disk.
+"""Build the ext2 image the kernel mounts at /disk.
 
 Made on the host with mke2fs, so the guest gets a real filesystem made by the
-same tools a user would use, and we do not reimplement ext2 *creation* — only
-reading, which is the part the kernel actually needs.
+same tools a user would use, and we do not reimplement ext2 *creation*: the
+kernel only has to read and update what mke2fs made.
 
 The contents are fixed here rather than in files/ so the image is reproducible
 and a test can assert on it byte for byte, including a file deliberately larger
@@ -15,8 +15,9 @@ quietly wrong.
     sub/nested.txt a file reached through a directory
     big.bin        20000 bytes of a pattern derived from the offset
 
-The mount is read-only, and the RAM disk copies the image, so the guest cannot
-change any of this — which is what makes asserting on it sane.
+The guest mounts it read-write, but the RAM disk copies the image and the test
+harness attaches the drive with snapshot=on, so the host image stays the
+starting state every boot and a test can assert on the files above.
 """
 import os
 import shutil
