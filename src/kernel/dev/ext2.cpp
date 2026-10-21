@@ -860,6 +860,11 @@ static uint32_t rec_used(uint8_t name_len) {
     return (8 + (uint32_t)name_len + 3) & ~3u;
 }
 
+// The smallest record e2fsck will accept, empty or not. Splitting a freed
+// record down to the bare 8-byte header is legal on paper but e2fsck calls the
+// directory corrupt, so a split never leaves an empty record shorter than this.
+static const uint32_t MIN_DIR_REC = 12;
+
 static bool name_valid(const char* name, uint32_t* out_len) {
     uint32_t len = 0;
     while (name[len]) {
@@ -970,7 +975,7 @@ static bool dir_insert(Fs* f, Inode* dir, const char* name, uint32_t len,
             RawDirEntry* de = (RawDirEntry*)(raw + p);
             if (de->rec_len < sizeof(RawDirEntry) || p + de->rec_len > bs) break;
 
-            uint32_t used = de->inode == 0 ? sizeof(RawDirEntry)
+            uint32_t used = de->inode == 0 ? MIN_DIR_REC
                                            : rec_used(de->name_len);
             if (de->rec_len >= used + needed) {
                 uint16_t old_rec = de->rec_len;
