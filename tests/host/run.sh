@@ -35,6 +35,14 @@ build_and_run "test_printf (formatter)" \
 build_and_run "test_libm_std (math + stdlib)" \
     test_libm_std tools/test_libm_std.c -fno-builtin -lm
 
+# Not a C program: the page cache is C++, and it links against block.h alone so
+# it can be driven over a fake sector device without booting the kernel.
+printf -- '-- test_blockcache (page cache over a fake device)\n'
+"${CXX:-c++}" -O2 -std=c++17 -Isrc -DBLOCKCACHE_HOST_TEST \
+    tools/test_blockcache.cpp src/kernel/core/blockcache.cpp \
+    -o "$ART/test_blockcache" || fail "test_blockcache: compile failed"
+"$ART/test_blockcache" || fail "test_blockcache: checks failed"
+
 # Not a C program: the kernel and the libc describe the same syscall records in
 # two headers that cannot include each other, so this is the only place they can
 # be compared.

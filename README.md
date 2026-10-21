@@ -45,7 +45,11 @@ shell grammar is, all in code you can read and change.
   `opendir`/`readdir` report real `d_ino`/`d_type`.
 - Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
   PCI, split virtqueue, a 16 KB direct-map staging buffer). The writer allocates
-  and frees blocks and inodes, and `sync`/`fsync` flush the drive's write cache.
+  and frees blocks and inodes, and `sync`/`fsync` write dirty pages back before
+  flushing the drive's write cache.
+- A 64-page (256 KiB) write-back page cache (`BlockCache`) between ext2 and the
+  block layer: a 1 KB block read fetches one 4 KB page and its neighbours become
+  hits, while `Block` itself stays a cacheless sector contract.
 - The `Block::Device` contract is: a name, a size, and read/write of a 512-byte
   sector run, so a filesystem does not care where its bytes come from.
 
@@ -246,7 +250,6 @@ subsystem landing with its own tests.
 
 Not done yet:
 
-- **A page cache.** Opportunistic; the `Block` layer is deliberately cacheless.
 - **`fork`/`exec`/`waitpid` and copy-on-write.** Spawn/exit/wait exist; the POSIX
   process model does not.
 - **Threads and TLS.** Everything is single-threaded and `errno` is a global.

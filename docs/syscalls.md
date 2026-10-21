@@ -135,11 +135,12 @@ got. It is then mounted read-write as **ext2** at `/disk`
 The writer allocates and frees blocks and inodes through the group bitmaps,
 grows and truncates files across the direct and indirect pointers, and keeps
 directory records tidy. `FSYNC` flushes one descriptor's filesystem and `SYNC`
-flushes every mount, which is also what `poweroff` and `reboot` do before the
-machine stops; on a virtio drive that means a real `FLUSH` request when the host
-offers the feature. It does not model symlinks, extents, extended attributes or
-64-bit filesystems, and refuses a filesystem that would need them or that was
-not cleanly unmounted.
+flushes every mount: dirty pages in the page cache go back to the device first,
+then the drive's own cache is flushed. That is also what `poweroff` and `reboot`
+do before the machine stops; on a virtio drive it means a real `FLUSH` request
+when the host offers the feature. It does not model symlinks, extents, extended
+attributes or 64-bit filesystems, and refuses a filesystem that would need them
+or that was not cleanly unmounted.
 
 The ATA driver is polled PIO on the primary channel's legacy task file: no
 interrupts, and a spin cap on every status poll so a device that never answers
@@ -229,8 +230,8 @@ value with a different meaning.
 | 60 | `DUP2` | `oldfd, newfd` | `newfd` now names `oldfd`'s description (closing what it held), or −1 |
 | 61 | `PIPE` | `fds*` | 0 and `fds = {read end, write end}`, or −1 |
 | 62 | `FSTAT` | `fd, out*` | 0/−1; the same `{size, is_dir, ino, mode, mtime}` as `STAT`, for an open descriptor |
-| 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; flushes every mounted filesystem |
-| 64 | `FSYNC` | `fd` | 0/−1; flushes the filesystem holding an open descriptor |
+| 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; writes dirty pages back and flushes every mounted filesystem |
+| 64 | `FSYNC` | `fd` | 0/−1; writes dirty pages back and flushes the filesystem holding an open descriptor |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
