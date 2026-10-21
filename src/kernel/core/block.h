@@ -27,6 +27,11 @@ struct Device {
     uint64_t (*read)(void* priv, uint64_t lba, uint64_t count, void* buf);
     uint64_t (*write)(void* priv, uint64_t lba, uint64_t count, const void* buf);
 
+    // Push the device's own write cache to the medium. nullptr when the device
+    // has no cache to flush (a RAM disk) or the driver has nothing to say, in
+    // which case a completed write is already as durable as it can be.
+    bool (*flush)(void* priv);
+
     void* priv;
 };
 
@@ -39,5 +44,9 @@ bool add(Device* dev);
 // back exactly what was there (it may hold a filesystem image). Returns whether
 // the device behaved; prints nothing.
 bool self_test(Device* dev);
+
+// Flush a device's write cache. True when the device has nothing to flush or
+// the flush succeeded; false when it has a cache and the flush failed.
+bool flush(Device* dev);
 
 } // namespace Block

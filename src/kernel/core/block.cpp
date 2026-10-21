@@ -44,4 +44,10 @@ bool self_test(Device* dev) {
     return dev->write(dev->priv, lba, 2, saved) == 2;
 }
 
+bool flush(Device* dev) {
+    if (dev == nullptr) return false;
+    if (dev->flush == nullptr) return true;   // nothing cached below this layer
+    return dev->flush(dev->priv);
+}
+
 } // namespace Block

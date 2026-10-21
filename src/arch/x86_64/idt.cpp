@@ -690,6 +690,17 @@ static void sys_statfs(IDT::Registers* regs) {
     regs->rax = (uint64_t)r;
 }
 
+// Make one file's filesystem durable, and make every mounted filesystem
+// durable. Neither touches user memory: the work is all in the kernel.
+static void sys_fsync(IDT::Registers* regs) {
+    regs->rax = (uint64_t)VFS::fsync_fd((int)regs->rdi);
+}
+
+static void sys_sync(IDT::Registers* regs) {
+    (void)regs;
+    regs->rax = (uint64_t)VFS::sync_all();
+}
+
 static void sys_unlink(IDT::Registers* regs) {
     if (!user_path(regs->rdi)) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::unlink((const char*)regs->rdi);
@@ -1007,6 +1018,8 @@ static const SyscallFn syscall_table[] = {
     /* 60 DUP2            */ sys_dup2,
     /* 61 PIPE            */ sys_pipe,
     /* 62 FSTAT           */ sys_fstat,
+    /* 63 SYNC            */ sys_sync,
+    /* 64 FSYNC           */ sys_fsync,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

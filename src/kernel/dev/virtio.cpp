@@ -327,6 +327,7 @@ static bool init_one(const Pci::Address& a) {
     dev->sectors = sectors;
     dev->read = blk_read;
     dev->write = blk_write;
+    dev->flush = nullptr;   // filled in when the flush request lands
     dev->priv = d;
     if (!Block::add(dev)) { outb(io + R_STATUS, 0); return false; }
 

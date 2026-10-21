@@ -38,6 +38,11 @@ int chdir(const char* path);
 char* getcwd(char* buf, size_t size);
 int access(const char* path, int mode);
 
+/* Durability. fsync() flushes the filesystem holding fd; sync() flushes every
+   mounted filesystem. Both return 0, or -1 with errno. */
+int fsync(int fd);
+int sync(void);
+
 unsigned int sleep(unsigned int seconds);
 int usleep(unsigned int usec);
 

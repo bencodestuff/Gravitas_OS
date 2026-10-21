@@ -33,6 +33,9 @@ off_t lseek(int fd, off_t offset, int whence) {
 int unlink(const char* path) { return grv_unlink(path); }
 int rmdir(const char* path)  { return grv_unlink(path); }  // empty dirs only
 
+int fsync(int fd) { return grv_fsync(fd); }
+int sync(void)    { return grv_sync(); }
+
 int chdir(const char* path) { return grv_chdir(path); }
 
 char* getcwd(char* buf, size_t size) {

@@ -62,6 +62,7 @@ Block::Device* create(const char* name, uint64_t sectors,
     d->sectors = sectors;
     d->read = mb_read;
     d->write = mb_write;
+    d->flush = nullptr;   // a RAM disk has no cache below it
     d->priv = d; // the device is its own private data
 
     if (!Block::add(d)) {

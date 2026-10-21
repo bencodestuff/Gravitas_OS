@@ -153,6 +153,11 @@ struct Filesystem {
     // immutable image can; a buffer that may be reallocated cannot), so it is
     // nullptr elsewhere. Returns 0 or -1.
     int (*map)(void* priv, Node* node, uint64_t* out_phys, uint64_t* out_size);
+
+    // Make this filesystem's writes durable. A backend that writes straight to
+    // a Block device flushes that device; one with nothing cached leaves this
+    // nullptr. Returns 0 or -1.
+    int (*sync)(void* priv);
 };
 
 // --- An open file (referenced by an fd) ---
@@ -305,6 +310,14 @@ int statfs_path(const char* path, StatFs* out);
 // A lookup, like stat/open (the search path applies). Returns 0, or -errno
 // (ENOENT; EROFS when the backend cannot promise the bytes stay put).
 int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size);
+
+// Make one open file durable: flush its filesystem (and, through it, the block
+// device). Returns 0, or -errno (EBADF).
+int fsync_fd(int fd);
+
+// Make every mounted filesystem durable. Returns 0, or -1 if any of them
+// reported a failed flush. Called before the machine leaves.
+int sync_all();
 
 // fd table plumbing (implemented against the current task in sched.cpp)
 void      fds_init_current();               // zero the table

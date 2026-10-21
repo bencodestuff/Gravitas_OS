@@ -1,6 +1,7 @@
 #include "kernel/core/power.h"
 #include "kernel/io.h"
 #include "kernel/klib/klib.h"
+#include "fs/vfs.h"
 
 // See power.h. Neither of these returns; if the hardware ignores us we halt
 // rather than carry on into a half-shut-down system.
@@ -18,6 +19,10 @@ namespace Power {
     }
 
     void poweroff() {
+        // Everything that can be made durable is made durable before the
+        // machine stops, or the last writes are whatever happened to reach the
+        // medium first.
+        VFS::sync_all();
         asm volatile("cli");
         // ACPI PM1a_CNT: SLP_EN (bit 13). QEMU takes this as S5 and exits.
         // The real port and sleep type come from the FADT.
@@ -30,6 +35,7 @@ namespace Power {
     }
 
     void reboot() {
+        VFS::sync_all();
         asm volatile("cli");
         // The 8042's pulse-reset line: the classic way to reset a PC.
         for (int i = 0; i < 100; i++) {

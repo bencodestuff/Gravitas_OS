@@ -42,6 +42,7 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from, VFS::Nod
 static void ov_release(void* priv, VFS::Node* node);
 static int ov_map(void* priv, VFS::Node* node, uint64_t* out_phys, uint64_t* out_size);
 static int ov_statfs(void* priv, VFS::StatFs* out);
+static int ov_sync(void* priv);
 
 static VFS::Filesystem fs = {
     .fs_type  = "overlay",
@@ -58,6 +59,7 @@ static VFS::Filesystem fs = {
     .release  = ov_release,
     .statfs   = ov_statfs,
     .map      = ov_map,
+    .sync     = ov_sync,
 };
 
 // --- small helpers -----------------------------------------------------
@@ -416,6 +418,14 @@ static int ov_statfs(void* priv, VFS::StatFs* out) {
     if (upper_fs != nullptr && upper_fs->statfs != nullptr)
         upper_fs->statfs(upper_fs->priv, out);
     return 0;
+}
+
+// The overlay has no cache of its own: durability belongs to the layer the
+// bytes actually live in, which is the upper for everything writable.
+static int ov_sync(void* priv) {
+    (void)priv;
+    if (upper_fs == nullptr || upper_fs->sync == nullptr) return 0;
+    return upper_fs->sync(upper_fs->priv);
 }
 
 void init(VFS::Filesystem* upper, VFS::Filesystem* lower) {

@@ -174,6 +174,8 @@ static bool flush(Drive* d) {
     return wait_ready(2000000);
 }
 
+static bool ata_flush(void* priv) { return flush((Drive*)priv); }
+
 // IDENTIFY DEVICE: 256 words describing the drive.
 static bool identify(Drive* d, uint16_t* words) {
     outb(IO_BASE + R_DRIVE, d->select);
@@ -300,6 +302,7 @@ static bool probe(uint8_t select, const char* name) {
     dev->sectors = sectors;
     dev->read = ata_read;
     dev->write = ata_write;
+    dev->flush = ata_flush;
     dev->priv = d;
 
     if (!Block::add(dev)) return false;

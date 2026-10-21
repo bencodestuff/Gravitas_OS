@@ -224,6 +224,8 @@ value with a different meaning.
 | 60 | `DUP2` | `oldfd, newfd` | `newfd` now names `oldfd`'s description (closing what it held), or −1 |
 | 61 | `PIPE` | `fds*` | 0 and `fds = {read end, write end}`, or −1 |
 | 62 | `FSTAT` | `fd, out*` | 0/−1; the same `{size, is_dir, ino, mode, mtime}` as `STAT`, for an open descriptor |
+| 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; flushes every mounted filesystem |
+| 64 | `FSYNC` | `fd` | 0/−1; flushes the filesystem holding an open descriptor |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table

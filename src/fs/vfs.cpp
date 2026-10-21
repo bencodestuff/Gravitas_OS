@@ -1059,6 +1059,33 @@ int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size) {
     return r == 0 ? 0 : -Errno::ENOENT;
 }
 
+// --- durability ---
+// A filesystem that writes through to its Block device names that device and
+// flushes it here; one that has no cache below it has nothing to do. Both are
+// reported as success, because "the bytes are on the medium" is the only thing
+// the caller asked for.
+int fsync_fd(int fd) {
+    FileHandle* h = fd_slot_get(fd);
+    if (h == nullptr) return -Errno::EBADF;
+    if (h->kind != FdKind::File) return -Errno::EINVAL;
+    Filesystem* fs = h->node->fs;
+    if (fs == nullptr || fs->sync == nullptr) return 0;
+    return fs->sync(fs->priv) == 0 ? 0 : -Errno::EIO;
+}
+
+int sync_all() {
+    int result = 0;
+    // The same filesystem may be mounted twice (the root's upper layer and the
+    // data mount can be one ext2 instance); flushing it twice is harmless, and
+    // a failed flush must not stop the others from being tried.
+    for (int i = 0; i < mount_count; i++) {
+        Filesystem* fs = mounts[i].fs;
+        if (fs != nullptr && fs->sync != nullptr && fs->sync(fs->priv) != 0)
+            result = -1;
+    }
+    return result;
+}
+
 // --- Whole-file read (spawn + kernel use) ---
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
     char fixed[PATH_MAX];

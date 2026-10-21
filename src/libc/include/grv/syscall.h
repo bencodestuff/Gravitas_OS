@@ -107,6 +107,8 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_DUP2           60
 #define GRV_SYSCALL_PIPE           61
 #define GRV_SYSCALL_FSTAT          62
+#define GRV_SYSCALL_SYNC           63
+#define GRV_SYSCALL_FSYNC          64
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -293,6 +295,17 @@ static inline int grv_stat(const char* path, struct grv_stat* out) {
    for a console or a pipe). */
 static inline int grv_fstat(int fd, struct grv_stat* out) {
     return (int)grv_err(syscall2(GRV_SYSCALL_FSTAT, (long)fd, (long)out));
+}
+
+/* Make one file durable (its filesystem and the block device under it).
+   Returns 0, or -1 with errno (EBADF). */
+static inline int grv_fsync(int fd) {
+    return (int)grv_err(syscall1(GRV_SYSCALL_FSYNC, (long)fd));
+}
+
+/* Make every mounted filesystem durable. Returns 0, or -1 when a flush failed. */
+static inline int grv_sync(void) {
+    return (int)grv_err(syscall1(GRV_SYSCALL_SYNC, 0));
 }
 
 /* How much room the filesystem holding 'path' has. 'total' is what the medium
