@@ -202,6 +202,8 @@ namespace Sched {
         new_task->kstack_mem = stack_bottom;
         new_task->waiting_on = -1;
         new_task->exit_code = 0;
+        new_task->fb_map_base = 0;  // no framebuffer mapping yet
+        new_task->fb_map_pages = 0;
 
         // 4. Add to the circular linked list
         new_task->next = ready_queue->next;
@@ -322,6 +324,8 @@ namespace Sched {
         new_task->user_rsp = new_rsp;
         new_task->brk = 0; // 0 = unset; brk syscall initializes on first use
         new_task->brk_limit = 0;
+        new_task->fb_map_base = 0;  // mapped on the first FBINFO call
+        new_task->fb_map_pages = 0;
         // CWD is inherited from the spawning process (Unix semantics) —
         // otherwise `cd /bin` + `ls` would list "/" in every child
         strcpy(new_task->cwd, current_task->cwd);

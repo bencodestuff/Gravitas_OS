@@ -135,6 +135,14 @@ namespace Sched {
     // Current task's address space (syscall layer needs it for fb mapping)
     uint64_t current_task_cr3();
 
+    // --- Framebuffer mapping cache ---
+    // The screen is mapped into a task at most once; the gfx layer records
+    // the address here so a repeated FBINFO returns the same pages rather
+    // than reserving a fresh range each call.
+    uint64_t current_task_fb_map_base();
+    uint64_t current_task_fb_map_pages();
+    void current_task_set_fb_map(uint64_t base, uint64_t pages);
+
     // Tear down the current task, wake whoever was waiting on it, and
     // switch to the next ready task. Never returns. 'code' is stored as
     // the task's exit code (readable by the parent once waitpid exists;
