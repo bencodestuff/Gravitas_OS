@@ -46,7 +46,9 @@ shell grammar is, all in code you can read and change.
 - Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
   PCI, split virtqueue, a 16 KB direct-map staging buffer). The writer allocates
   and frees blocks and inodes, and `sync`/`fsync` write dirty pages back before
-  flushing the drive's write cache.
+  flushing the drive's write cache. The image is 16 MB with 512 inodes, and `df`
+  reports the free inode count next to the free bytes, because a disk like this
+  runs out of inodes first.
 - A 64-page (256 KiB) write-back page cache (`BlockCache`) between ext2 and the
   block layer: a 1 KB block read fetches one 4 KB page and its neighbours become
   hits, while `Block` itself stays a cacheless sector contract.
