@@ -145,7 +145,53 @@ static VFS::Node* ensure_dir(VFS::Node** slot, const char* path) {
     return d;
 }
 
+// Drop a half-created upper entry. Releasing the node alone would not do: the
+// entry is already in the upper tree, and a zero-length or short upper would
+// shadow the lower file, which is exactly the truncation copy-up is meant to
+// avoid. The entry was created a moment ago in a directory the overlay owns, so
+// the unlink should succeed; if it does not, releasing the node is all that is
+// left.
+static void discard_upper(const char* path, VFS::Node* up) {
+    char parent[VFS::PATH_MAX];
+    char name[VFS::NAME_MAX];
+    if (upper_fs->unlink != nullptr && VFS::node_split(path, parent, name)) {
+        VFS::Node* dir = VFS::node_walk(upper_fs, parent);
+        if (dir != nullptr) {
+            upper_fs->unlink(upper_fs->priv, dir, name);
+            upper_fs->release(upper_fs->priv, dir);
+        }
+    }
+    upper_fs->release(upper_fs->priv, up);
+}
+
+// Copy a lower file's bytes into a freshly created upper entry. False when the
+// lower could not be read in full or the upper would not take every byte: a
+// full upper reports that by writing nothing, so a short copy is a real
+// failure, not the end of the file.
+static bool copy_up(OvNode* on, VFS::Node* up) {
+    if (on->lower == nullptr || on->lower->type != VFS::FT_FILE) return true;
+    if (on->lower->size == 0) return true;
+    if (on->lower->fs->read == nullptr || up->fs->write == nullptr) return false;
+
+    char buf[1024];
+    uint64_t off = 0;
+    while (off < on->lower->size) {
+        uint64_t want = on->lower->size - off;
+        if (want > sizeof(buf)) want = sizeof(buf);
+        uint64_t got = on->lower->fs->read(on->lower->fs->priv, on->lower,
+                                          buf, want, off);
+        if (got == 0 || got > want) return false;
+        uint64_t put = up->fs->write(up->fs->priv, up, buf, got, off);
+        if (put != got) return false;
+        off += got;
+    }
+    return true;
+}
+
 // Give an entry an upper counterpart, copying a lower file's bytes up with it.
+// The copy either lands whole or not at all: publishing a partial upper would
+// make the missing tail read as zeros for the rest of the session, and the
+// caller (a write) can then report ENOSPC instead.
 static bool make_upper(OvNode* on) {
     if (on->upper != nullptr) return true;
     if (upper_fs == nullptr || upper_fs->create == nullptr) return false;
@@ -153,19 +199,9 @@ static bool make_upper(OvNode* on) {
     VFS::Node* up = VFS::node_create(upper_fs, on->path, VFS::FT_FILE);
     if (up == nullptr) return false;
 
-    if (on->lower && on->lower->type == VFS::FT_FILE && on->lower->fs->read) {
-        char buf[1024];
-        uint64_t off = 0;
-        while (off < on->lower->size) {
-            uint64_t want = on->lower->size - off;
-            if (want > sizeof(buf)) want = sizeof(buf);
-            uint64_t got = on->lower->fs->read(on->lower->fs->priv, on->lower,
-                                              buf, want, off);
-            if (got == 0) break;
-            if (up->fs->write == nullptr) break;
-            up->fs->write(up->fs->priv, up, buf, got, off);
-            off += got;
-        }
+    if (!copy_up(on, up)) {
+        discard_upper(on->path, up);
+        return false;
     }
     on->upper = up;
     return true;
