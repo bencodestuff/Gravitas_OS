@@ -38,7 +38,7 @@ def virtio_boot(g):
 
     # The same ext2 image, now mounted read-write over virtio.
     g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
-               r"[0-9]+ group \(read-write\)")
+               r"[0-9]+ groups? \(read-write\)")
 
 
 @test
