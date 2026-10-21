@@ -6,8 +6,9 @@
 // A filesystem should not care whether its bytes come from a RAM buffer, a
 // Limine module or a real disk, so everything above this line talks in 512-byte
 // sectors through a Device. The layer is deliberately thin: a registry and a
-// contract, no cache (the cache worth having is a page cache, and that belongs
-// with the filesystem that knows what its pages mean).
+// contract, no cache. The cache worth having is a page cache and it lives
+// directly above this one, in BlockCache; a filesystem that wants cached
+// transfers should go through that, not add state here.
 //
 // Devices are registered at boot. There is no "primary" here on purpose: which
 // disk holds the data is a boot policy decision, so the caller keeps the device
