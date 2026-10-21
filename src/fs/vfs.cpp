@@ -892,6 +892,12 @@ int mkdir(const char* path) {
     if (fs == nullptr) return -err;
     if (fs->create == nullptr) return -Errno::EROFS;
 
+    // A filesystem's root already exists, and so does a mount point: "/tmp" is
+    // the root of its own mount once it is mounted there. `mkdir -p` creates
+    // every prefix and treats EEXIST as success, so this must say EEXIST rather
+    // than fall into node_split, which cannot split an empty path.
+    if (rel[0] == '\0') return -Errno::EEXIST;
+
     // The parent has to exist. `mkdir a/b` must not invent `a`: a typo would
     // create a tree, and a tree is not what one directory means. (`-p` is the
     // userland loop over the prefixes that POSIX says it is.)
