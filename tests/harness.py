@@ -66,11 +66,16 @@ class Guest:
     # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
     PACE = 0.03
 
-    def __init__(self, name, disk=True, scratch=False, virtio=False):
+    def __init__(self, name, disk=True, scratch=False, virtio=False,
+                 disk_image=None):
         self.name = name
         self.disk = disk
         self.scratch = scratch
         self.virtio = virtio
+        # A caller-supplied disk image is used as-is, with no snapshot: it owns
+        # a private copy, and writes landing in it is the point (see
+        # tests/kernel/persistence.py, which reboots onto the same file).
+        self.disk_image = disk_image
         self.art = os.path.join(ROOT, "test_artifacts", name)
         os.makedirs(self.art, exist_ok=True)
         self.log_path = os.path.join(self.art, "serial.log")
@@ -119,9 +124,20 @@ class Guest:
         # The data disk. It also ships inside the ISO as a Limine module, so the
         # guest boots without it; attaching it as a drive is what exercises a
         # real disk driver (ATA or virtio) instead of the RAM disk fallback.
-        disk = os.path.join(ROOT, "iso_root", "disk.img")
+        # A group may pass its own image instead (see BOOT in
+        # tests/kernel/persistence.py): that file is the drive, and since the
+        # caller owns a private copy there is no snapshot, so guest writes
+        # survive the run.
+        if self.disk_image is not None:
+            disk = self.disk_image
+            snap = ""
+        else:
+            disk = os.path.join(ROOT, "iso_root", "disk.img")
+            # snapshot=on because a driver bug must not be able to corrupt the
+            # image the build produced.
+            snap = ",snapshot=on"
         if self.disk and not os.path.exists(disk):
-            fail("iso_root/disk.img missing - run 'ninja iso' first")
+            fail("disk image missing: %s" % disk)
         if shutil.which("qemu-system-x86_64") is None:
             fail("qemu-system-x86_64 not installed")
         accel = ["-enable-kvm"] if os.path.exists("/dev/kvm") else []
@@ -142,7 +158,7 @@ class Guest:
             # (1.0) interface, whose registers sit behind PCI capabilities.
             if self.disk:
                 ctrl += [
-                    "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
+                    "-drive", "if=none,id=disk0,file=%s,format=raw%s" % (disk, snap),
                     "-device", "virtio-blk-pci,drive=disk0,"
                                "disable-modern=on,disable-legacy=off",
                 ]
@@ -157,11 +173,9 @@ class Guest:
             # the disk is then only the Limine module, which is the path a
             # machine without a disk takes.
             ctrl = [
-                # snapshot=on because a driver bug must not be able to corrupt
-                # the image the build produced.
                 "-device", "piix4-ide,id=ideb",
             ] + ([
-                "-drive", "if=none,id=disk0,file=%s,format=raw,snapshot=on" % disk,
+                "-drive", "if=none,id=disk0,file=%s,format=raw%s" % (disk, snap),
                 "-device", "ide-hd,drive=disk0,bus=ideb.0",
             ] if self.disk else [])
             # One drive is the realistic machine and the default; a second one
