@@ -71,6 +71,8 @@ namespace Sched {
         // broke in ways that took a scancode trace to find)
         current_task->brk = 0;
         current_task->brk_limit = 0;
+        current_task->fb_map_base = 0;
+        current_task->fb_map_pages = 0;
         current_task->exit_code = 0;
         current_task->waiting_on = -1;
         current_task->getc_waiting = false;
@@ -554,6 +556,21 @@ namespace Sched {
     // --- Stack guards ---
     uint64_t current_task_stack_guard() {
         return current_task ? current_task->user_stack_guard : 0;
+    }
+
+    // --- Framebuffer mapping cache ---
+    uint64_t current_task_fb_map_base() {
+        return current_task ? current_task->fb_map_base : 0;
+    }
+
+    uint64_t current_task_fb_map_pages() {
+        return current_task ? current_task->fb_map_pages : 0;
+    }
+
+    void current_task_set_fb_map(uint64_t base, uint64_t pages) {
+        if (current_task == nullptr) return;
+        current_task->fb_map_base = base;
+        current_task->fb_map_pages = pages;
     }
 
     void check_kernel_stack() {

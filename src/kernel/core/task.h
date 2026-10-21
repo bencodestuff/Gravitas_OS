@@ -50,6 +50,12 @@ namespace Sched {
         uint64_t cr3;           // this task's address space
         uint64_t brk;           // program break (malloc arena top), 0 = unset
         uint64_t brk_limit;     // end of the MAPPED brk region (page-aligned)
+        // --- Framebuffer user mapping cache (syscall 16) ---
+        // The screen is mapped once per task. Keeping the address here means
+        // a polling program reuses it instead of reserving a new VA range on
+        // every call; the pages live until the address space is torn down.
+        uint64_t fb_map_base;   // user VA of that mapping (0 = none yet)
+        uint64_t fb_map_pages;  // pages in it, so a mode change remaps
         VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
         char cwd[64];           // current working directory (starts "/")
         uint64_t exit_code;     // value passed to exit(), or a fault code
