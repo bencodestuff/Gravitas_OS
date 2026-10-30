@@ -38,6 +38,13 @@ LUA_LIB  = ["lauxlib", "lbaselib", "lcorolib", "ldblib", "liolib",
             "lutf8lib", "linit"]
 LUA_SOURCES = LUA_CORE + LUA_LIB + ["lua"]   # lua.c = the standalone interpreter
 
+# Third-party Limine: pinned to a tag *and* to the commit that tag named when
+# this was written. A git clone has no tarball checksum, so the commit check is
+# the integrity check: it fails if the tag is moved under us, and it keeps two
+# machines from configuring different bootloaders.
+LIMINE_TAG    = "v8.7.0-binary"
+LIMINE_COMMIT = "aad3edd370955449717a334f0289dee10e2c5f01"
+
 # Programs that exist to exercise the platform rather than to be used by a
 # user. They ship under /bin/tests so `ls /bin` reads like a real system;
 # everything else lands in /bin. (The VFS searches both directories for a
@@ -73,7 +80,6 @@ CFLAGS = [
     "-fno-builtin",
     "-fno-pie", "-fno-pic",
     "-mcmodel=kernel",
-    "-fno-stack-protector",
     "-fno-rtti",
     "-fno-exceptions",
     "-fstack-protector-strong",
@@ -150,12 +156,33 @@ def check_tools():
             print(f"  {tool}")
         sys.exit(1)
 
+def limine_commit():
+    """The checked-out Limine commit, or None when it is not a git checkout."""
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", "limine", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.strip()
+
 def ensure_limine():
     if os.path.exists("limine/limine"):
-        return 
+        if limine_commit() != LIMINE_COMMIT:
+            print("Error: limine/ is not the pinned Limine %s (%s).\n"
+                  "Remove limine/ and run configure.py again." %
+                  (LIMINE_TAG, LIMINE_COMMIT))
+            sys.exit(1)
+        return
     print("--- [Setup] Limine not found. Installing... ---")
     if not os.path.exists("limine"):
-        run_command("git clone https://github.com/limine-bootloader/limine.git --branch=v8.x-binary --depth=1")
+        run_command("git clone https://github.com/limine-bootloader/limine.git "
+                    f"--branch={LIMINE_TAG} --depth=1")
+    if limine_commit() != LIMINE_COMMIT:
+        print("Error: Limine %s is not commit %s.\n"
+              "Remove limine/ and run configure.py again." %
+              (LIMINE_TAG, LIMINE_COMMIT))
+        sys.exit(1)
     run_command("make", cwd="limine")
     shutil.copy("limine/limine.h", "src/limine.h")
 
@@ -324,7 +351,9 @@ def main():
         # uses: it boots in about half the time, because Limine's read of the
         # (tens of MB) tar module takes a faster path on the newer machine.
         accel = "-enable-kvm" if os.path.exists("/dev/kvm") else ""
-        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl -machine q35 {accel}\n")
+        # mon:stdio multiplexes the guest serial and the QEMU monitor on this
+        # terminal, so ctrl-a c reaches the monitor during a normal `ninja run`.
+        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial mon:stdio -display sdl -machine q35 {accel}\n")
         ninja.write(f"  description = RUN gravitas.iso\n")
         ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
@@ -340,6 +369,18 @@ def main():
         ninja.write(f"  command = ./tests/run.py $select\n")
         ninja.write(f"  description = TEST GROUPS\n")
         ninja.write(f"  pool = console\n\n")
+
+        # Regenerate the graph when configure.py itself changes. A flag edit or
+        # a change to the special-cased programs used to need a manual
+        # `python3 configure.py`, and forgetting it built a stale graph. Adding
+        # a source file is still a manual configure: ninja cannot see a file
+        # that is not in the graph yet. `generator = 1` tells ninja this edge
+        # writes build.ninja, so it reloads quietly instead of treating the
+        # change as a normal dependency.
+        ninja.write(f"rule configure\n")
+        ninja.write(f"  command = python3 configure.py\n")
+        ninja.write(f"  description = CONFIGURE (configure.py changed)\n")
+        ninja.write(f"  generator = 1\n\n")
 
         ninja.write(f"rule clean\n")
         ninja.write(f"  command = rm -rf bin obj iso_root gravitas.iso\n")
@@ -418,6 +459,10 @@ def main():
         ninja.write(f"build bin/init.elf: init_link src/user/init.cpp {crt0_obj} {' '.join(lua_lib_objs)} {' '.join(libc_objects)}\n")
         ninja.write(f"  base = {next_base:#x}\n")
         user_elfs.append("bin/init.elf")
+
+        # Keep the graph current automatically; `python3 configure.py` still
+        # works by hand when the tool checks need to run without ninja.
+        ninja.write(f"build build.ninja: configure configure.py\n")
 
         # The ISO needs the kernel AND every userland ELF (packed into the tar)
         ninja.write(f"build iso: iso {KERNEL_FILE} {' '.join(user_elfs)}\n")

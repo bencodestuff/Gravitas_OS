@@ -73,8 +73,9 @@ table.
 | `ENOSYS` | 38 | no such syscall (a retired hole or an unknown number) |
 
 A successful call never clears `errno` (check the return value, as in C).
-Not every syscall distinguishes every reason yet: the filesystem backends
-report 0/−1, so the VFS maps their failures to the closest code above.
+Not every syscall distinguishes every reason yet: `OPEN` and `MKDIR` pass the
+backend's code through, but `UNLINK`, `RENAME` and `FTRUNCATE` still map any
+failure to `ENOENT`, `ENOENT` and `ENOSPC`.
 
 ## Limits
 
@@ -183,8 +184,9 @@ flushes every mount: dirty pages in the page cache go back to the device first,
 then the drive's own cache is flushed. That is also what `poweroff` and `reboot`
 do before the machine stops; on a virtio drive it means a real `FLUSH` request
 when the host offers the feature. It does not model symlinks, extents, extended
-attributes or 64-bit filesystems, and refuses a filesystem that would need them
-or that was not cleanly unmounted.
+attributes or 64-bit filesystems, and refuses a filesystem that would need
+them. There is no journal and no clean/dirty check, so an image left by a power
+cut mounts if its superblock is intact even when its contents are inconsistent.
 
 The ATA driver is polled PIO on the primary channel's legacy task file: no
 interrupts, and a spin cap on every status poll so a device that never answers
@@ -440,9 +442,10 @@ describes, because adding it would move the addresses it names.
 `POWEROFF` and `REBOOT` are one-way: by the time the machine answered, it is
 already going down, so anything that needs flushing belongs *before* the call
 (`poweroff.elf` is the userland command; `poweroff -r` resets). On QEMU the
-shutdown is a write to ACPI's PM1a control register and the reset is the 8042's
-pulse-reset line; on real hardware the port and sleep type come from the FADT,
-which is a Phase 6 concern along with the flushing.
+shutdown is a write to the hardcoded PM1a control ports (`0x604`, then
+`0xB004`) and the reset is the 8042's pulse-reset line. The kernel does not
+walk the ACPI tables, so on a real machine the shutdown may be ignored; it
+prints a message and halts instead.
 
 ## Memory mappings
 

@@ -39,9 +39,10 @@ shell grammar is, all in code you can read and change.
 - `/` is an **overlay**: a read-only tarfs lower layer over a writable upper,
   with copy-up on write and `.wh.<name>` whiteouts on delete. The upper is the
   `root` directory on the data disk when one is present, so writes at `/`,
-  `/home` and the rest survive a reboot; `/tmp` is a volatile ramfs capped at
-  1 MB per file when a disk is present. Without a disk the writable root is a
-  ramfs, and `/tmp` is a directory in it, sharing its 8 MB of file data.
+  `/home` and the rest survive a reboot. With a disk, `/tmp` is a separate
+  ramfs: volatile, capped at 1 MB per file, and never spending the disk's room.
+  Without one, the whole root is a ramfs and `/tmp` is a directory in it, so
+  both share the same 8 MB of file data.
 - A node-shaped VFS with `ino`/type/size/mode/mtime, so `ls -l` works and
   `opendir`/`readdir` report real `d_ino`/`d_type`.
 - Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
@@ -53,6 +54,10 @@ shell grammar is, all in code you can read and change.
 - A 64-page (256 KiB) write-back page cache (`BlockCache`) between ext2 and the
   block layer: a 1 KB block read fetches one 4 KB page and its neighbours become
   hits, while `Block` itself stays a cacheless sector contract.
+- Writes are durable only once they are flushed: `sync`, `fsync` and `poweroff`
+  write dirty pages back before flushing the drive's cache. There is no journal
+  and no crash consistency, and a power cut can leave an image that `e2fsck`
+  repairs but the kernel cannot mount. Call `sync` before removing power.
 - The `Block::Device` contract is: a name, a size, and read/write of a 512-byte
   sector run, so a filesystem does not care where its bytes come from.
 
@@ -87,8 +92,8 @@ shell grammar is, all in code you can read and change.
   `CONSOLE_ATTACH`/`READ`/`WRITE`; the kernel never learns what a terminal is.
 
 ### libc, language and shell
-- A from-scratch C library covering the C functions Lua 5.4.9 needs (about 90
-  symbols): string/ctype, `FILE*` stdio with `printf`, `malloc` over `brk`, libm,
+- A from-scratch C library covering the C functions Lua 5.4.9 needs:
+  string/ctype, `FILE*` stdio with `printf`, `malloc` over `brk`, libm,
   `setjmp`, time.
 - A deliberately partial POSIX facade (`unistd`, `stat`, `dirent`, `fcntl`):
   ownership and link counts are not modelled, so those fields read zero.
@@ -105,6 +110,9 @@ shell grammar is, all in code you can read and change.
   hang (40 boots catch a one-in-fifteen hang about 94% of the time).
 - A host test (`tools/check_syscalls.py`) asserts the syscall header, the kernel
   dispatcher and `docs/syscalls.md` all agree.
+- A GitHub Actions job runs `python3 configure.py` and `ninja check` on every
+  push and pull request. The guest groups stay local: they need QEMU and a
+  KVM-capable runner.
 - The soak found a roughly one-in-fifteen boot hang: the PIC was being
   reprogrammed with interrupts enabled. A longer run (`tests/soak.py -n 240`)
   then proved the fix over 336 consecutive clean boots.
@@ -183,7 +191,7 @@ Host tools, with the package that provides each on Arch as an example:
 | `ld.lld` | `lld` | linking |
 | `xorriso` | `xorriso` | making the ISO |
 | `tar` | `tar` | packing the image |
-| `mke2fs` | `e2fsprogs` | making the ext2 test image |
+| `mke2fs` | `e2fsprogs` | making the ext2 test image; 1.47.1 or newer gives a reproducible image, older versions still build one but stamp it with the current time |
 | `ninja` | `ninja` | running the build |
 | `python3` | `python` | configure.py, the build helpers, the tests |
 | `qemu-system-x86_64` | `qemu-system-x86` | running and testing (not needed to build) |
@@ -227,7 +235,8 @@ ninja soak          # boot the machine 40 times, checking for a boot hang
 `ninja check` runs the libc pieces that build and run natively plus
 `tools/check_syscalls.py`, which checks the syscall ABI against its
 documentation. The guest groups are documented in
-[`tests/README.md`](tests/README.md).
+[`tests/README.md`](tests/README.md), and a failing boot or test is diagnosed
+with [`docs/debugging.md`](docs/debugging.md).
 
 ## Layout
 
@@ -242,6 +251,7 @@ documentation. The guest groups are documented in
 | `tools/` | host-side build helpers |
 | [`docs/architecture.md`](docs/architecture.md) | how the OS is put together: the boot path and the major subsystems |
 | [`docs/adding-an-app.md`](docs/adding-an-app.md) | a new program: one `.cpp` and a line in `files/apps` |
+| [`docs/debugging.md`](docs/debugging.md) | QEMU, the serial log, GDB, fault dumps, F12 and `mon` |
 | [`docs/syscalls.md`](docs/syscalls.md) | the syscall ABI and the mechanisms below it |
 | [`docs/limits.md`](docs/limits.md) | every fixed capacity, where it is enforced, and what happens at the edge |
 | [`tests/`](tests/) | the test suite; see [`tests/README.md`](tests/README.md) |
@@ -260,9 +270,6 @@ Not done yet:
 - **`poll`/`select`.** The mailbox model covers Lua's single `recv` loop.
 - **SMP.** The system is idle- and I/O-bound; this is the largest rewrite
   available.
-- **CI.** There is no GitHub Actions job yet. `ninja check` needs no QEMU and
-  takes about two seconds, so it could run in one today; the guest suite still
-  has to be run locally.
 - **`panic()`.** A kernel-mode fault already dumps registers and a symbolised
   `RIP` and halts; what is missing is a call-stack trace (there is no unwinder)
   and a `panic()` entry point.
@@ -274,7 +281,8 @@ Not done yet:
 Gravitas' own code is BSD 3-Clause (below). The built image also bundles:
 
 - **Limine.** The bootloader, fetched by `configure.py` and pinned to the
-  `v8.x-binary` branch. Its binaries are BSD 2-Clause; the checked-in
+  `v8.7.0-binary` tag and the commit it named (`aad3edd`). Its binaries are
+  BSD 2-Clause; the checked-in
   `src/limine.h` is 0BSD.
 - **Lua 5.4.9.** MIT licensed, fetched by `configure.py` and compiled into
   `bin/lua.elf` and `bin/init.elf`.

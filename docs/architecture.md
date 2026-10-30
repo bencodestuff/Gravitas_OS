@@ -66,9 +66,10 @@ The kernel side is one function, `kmain` in `src/kernel/main.cpp`. In order:
    second time with the image's `root` directory as the root inode: that mount
    is the overlay's upper layer, so writes to `/` are ext2 writes and survive a
    reboot. The directory is created if the image predates it. If the disk is
-   missing or is not ext2, the upper stays a ramfs. With a disk, `/tmp` is a
-   separate ramfs mount, volatile and capped at 1 MB per file; without one it is
-   a directory in the root ramfs and shares that ramfs's 8 MB of file data.
+   missing or is not ext2, the upper stays a ramfs. When the upper is on the
+   disk, `/tmp` is a separate ramfs mount, volatile and capped at 1 MB per
+   file; without a disk it is an ordinary directory in the root ramfs and
+   shares that ramfs's 8 MB budget.
 7. **Presentation and data.** The console font (`Font::load_from_disk`), the
    fault-handler symbol table (`/symbols.bin`), and the environment block
    (`/env`).
@@ -110,9 +111,9 @@ rather than touching the immutable tar. When a disk is present the upper is
 the image's `root` directory, so a copy-up, a new directory or a whiteout is
 an ordinary ext2 write and outlives the reboot; `sync` and `fsync` flush the
 drive. Without a disk the upper is a ramfs and the tree lasts for the session.
-`/tmp` is RAM-backed whenever it is separate, so temporary files never spend
-the disk's room and keep the 1 MB per-file cap; a diskless boot has no separate
-`/tmp` mount, so its files share the root ramfs's 8 MB budget.
+With a disk, `/tmp` is a separate ramfs, so temporary files never spend the
+disk's room and keep the 1 MB per-file cap. Without a disk the whole root is a
+ramfs, `/tmp` is a directory in it, and the same 8 MB budget backs both.
 
 ### Block layer and the disk
 
@@ -141,13 +142,34 @@ view of the disk.
 | ext2 | `src/kernel/dev/ext2.cpp` | read-write ext2 over a `Block::Device` |
 
 `disk.img` is made on the host with `tools/mkext2.py`. The kernel prefers a
-real ATA drive and falls back to the module, so the guest boots either way and
-the mount above cannot tell which it got. The ext2 reader covers the superblock,
+virtio-blk device, then a real ATA drive, then the module copied into a RAM
+disk, so the guest boots either way and the mount above cannot tell which it
+got. The ext2 reader covers the superblock,
 group descriptors, inode tables, directory records and the direct/indirect
 block pointers. The writer allocates and frees blocks and inodes through the
 bitmaps and group counts, writes partial blocks, keeps directories' `rec_len`
 records tidy, and refuses a filesystem that would need symlinks, extents or
 64-bit support.
+
+### Durability and crash consistency
+
+There is no journal, and there is no crash consistency. ext2 metadata and data
+share the same write-back page cache, so LRU eviction can put an inode, a
+directory record or a bitmap on the medium before the data block it points at.
+A power cut or a reset in the middle of a write can therefore leave a
+filesystem that `e2fsck` repairs but this kernel cannot. Mount does not refuse
+an unclean image: it checks the superblock magic, the geometry and the feature
+flags (and refuses a journal that needs recovery, extents or 64-bit block
+numbers), but not the clean/dirty state, so a machine that lost power boots the
+damaged image.
+
+What is guaranteed is narrower. `sync`, `fsync` and `poweroff` write dirty
+pages back before flushing the drive's write cache, so data that has been
+synced is on the medium, and a clean shutdown leaves an `e2fsck`-clean image.
+Call `sync` before removing power, or use `poweroff`, which does it for you.
+The persistence test powers off cleanly and runs `e2fsck` afterwards; it does
+not kill the guest mid-write, so this boundary is untested as well as
+unprotected.
 
 ### Scheduler, tasks and file descriptors
 
@@ -202,7 +224,9 @@ surface the kernel posts a message to the authority with `type` =
 `GRV_EVT_SURFACE_ADDED` / `GRV_EVT_SURFACE_REMOVED`. Closing a window is
 `KILL`ing its owner; the kernel's teardown removes the surface.
 
-The **window manager** itself is userland: `src/user/wm.cpp`. It draws the
+The **window manager** itself is userland: `src/user/wm.cpp` plus
+`wm_windows.cpp`, `wm_taskbar.cpp`, `wm_menu.cpp` and `wm_input.cpp`, with
+`src/user/wm_internal.h` as the private seam. It draws the
 taskbar, the decorations and the launcher, hit-tests the pointer and turns it
 into `GRV_EV_MOUSE` messages with window-local coordinates, implements Alt+Tab,
 and speaks the WM protocol in `<grv/wm.h>` (`GRV_WM_HELLO`, `SET_TITLE`,
@@ -303,5 +327,5 @@ same thing: `grv` is small, stable and mirrored by a host test, while
 | `src/libc/` | the C library, the POSIX facade, and the `gravity` library; `include/grv/` is the ABI surface |
 | `src/user/` | userland programs (one `.cpp` per program) |
 | `files/` | what is packed into the image root: `bin/` is built into it, plus `apps`, `init.lua`, `env`, `fonts/`, `Pictures/`, `lua/` |
-| `docs/` | this file, `syscalls.md`, and `adding-an-app.md` |
+| `docs/` | this file, `syscalls.md`, `adding-an-app.md`, and `debugging.md` |
 | `tests/` | the test suite; see `tests/README.md` |

@@ -118,3 +118,12 @@ library does not wrap, drop to the matching `<grv/...>` header — see the
   `/init.lua` in the overlay, to change a running machine without rebuilding).
 - Host tests (no QEMU): `ninja check`. The tree must stay green before a
   commit.
+
+## Debugging it
+
+If it does not appear, check the serial log first: `ninja run` leaves the log in
+the terminal, and a guest test leaves it in
+`test_artifacts/<group>/serial.log`. F12 dumps the task table, F11 puts the
+console above the windows, and `run mon` prints tasks, surfaces and the last
+fault. [`debugging.md`](debugging.md) covers those, the fault dump format, and
+attaching GDB to QEMU with `-s -S`.
