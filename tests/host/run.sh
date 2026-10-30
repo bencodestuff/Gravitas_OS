@@ -14,10 +14,16 @@ mkdir -p "$ART"
 fail() { echo "FAIL: $*"; exit 1; }
 
 # build_and_run <label> <binary> <source> [cc flags...]
+#
+# Options come after the source on purpose. Linkers that default to --as-needed
+# (Ubuntu, and so CI) drop a library that appears before the object files that
+# need it, so `-lm` ahead of the input left sqrt and friends unresolved. With
+# the source first, a genuinely missing library fails on every host instead of
+# only on the runner.
 build_and_run() {
     label="$1"; bin="$2"; src="$3"; shift 3
     printf -- '-- %s\n' "$label"
-    $CC -O2 $* "$src" -o "$ART/$bin" || fail "$label: compile failed"
+    $CC -O2 "$src" $* -o "$ART/$bin" || fail "$label: compile failed"
     "$ART/$bin" || fail "$label: checks failed"
 }
 
