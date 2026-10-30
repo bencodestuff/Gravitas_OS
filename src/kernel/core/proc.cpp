@@ -218,9 +218,23 @@ namespace Sched {
     }
 
 
+    // Ownership rule for create_user_task: on success the task is linked into
+    // ready_queue and owns everything it was given. On -1 nothing was linked,
+    // so this function releases the Task, its kernel stack and any user VA
+    // reservation itself; 'cr3' and the mappings in it remain the caller's to
+    // destroy. A failed attempt still consumes its task id.
+    static void discard_unlinked_task(Task* t) {
+        delete[] t->kstack_mem;
+        delete t;
+    }
+
     int create_user_task(uint64_t rip, const char* name, int argc,
                          const char* const* argv, uint64_t cr3) {
         Task* new_task = new Task;
+        if (new_task == nullptr) {
+            kprint("[Sched] Out of memory for a task!\n");
+            return -1;
+        }
         new_task->id = ++task_counter;
         new_task->state = READY;
         new_task->wake_timestamp = 0;
@@ -241,6 +255,11 @@ namespace Sched {
         // so a deep syscall (printf -> PUTS -> kprint -> compositor present)
         // plus a nested IRQ cannot overrun it.
         uint64_t* stack_bottom = new uint64_t[4096];
+        if (stack_bottom == nullptr) {
+            kprint("[Sched] Out of memory for a kernel stack!\n");
+            delete new_task; // no stack yet, so discard_unlinked_task cannot help
+            return -1;
+        }
         stack_bottom[0] = KSTACK_CANARY; // verified each tick (see sched.cpp)
         uint64_t* stack_top = stack_bottom + 4096;
         new_task->kstack_top = (uint64_t)stack_top;
@@ -261,7 +280,10 @@ namespace Sched {
         if (stack_base == 0) {
             kprint("[Sched] Out of user VA for stack!\n");
             if (switched) VMM::switch_pml4(old_cr3);
-            // NOTE: caller must clean up the task on failure (id already used)
+            // alloc_user_range reserved nothing when it returned 0, so there
+            // is no VA range to hand back. stage_spawn destroys the address
+            // space; the Task and kernel stack are ours to release here.
+            discard_unlinked_task(new_task);
             return -1;
         }
         new_task->user_stack_guard = stack_base; // the unmapped guard page
@@ -270,8 +292,8 @@ namespace Sched {
         // comfortable floor; bigger programs put multi-KB frames on it.
         // A failed allocation must not be mapped: physical 0 is reserved
         // memory, and mapping it would let the later space teardown free it.
-        // Undo this attempt (mappings and frames), then fail; the caller
-        // disposes of the task, as the NOTE below says.
+        // Undo this attempt (mappings and frames), then fail; the Task and
+        // kernel stack are ours to release, the address space is the caller's.
         uint64_t mapped = 0;   // pages successfully mapped after the guard
         bool oom = false;
         for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {
@@ -293,7 +315,10 @@ namespace Sched {
             VMM::unmap_and_free_user_range(new_task->cr3, stack_base + 4096, mapped);
             VMM::unmap_user_range(new_task->cr3, stack_base, 1); // guard marker
             if (switched) VMM::switch_pml4(old_cr3);
-            // NOTE: caller must clean up the task on failure (id already used)
+            // The guard marker and the frames above it are gone, so no VA
+            // reservation is left for the caller. Only the Task and its
+            // kernel stack still need releasing.
+            discard_unlinked_task(new_task);
             return -1;
         }
         if (switched) VMM::switch_pml4(old_cr3);

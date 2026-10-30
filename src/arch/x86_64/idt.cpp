@@ -225,6 +225,11 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     int child = Sched::create_user_task(entry, staged_name, argc, argv_copy, child_cr3);
     VMM::switch_pml4(old_cr3);
     if (child < 0) {
+        // Ownership on failure: create_user_task has already released the
+        // Task, its kernel stack and its user-stack VA reservation, and it
+        // never links the task into the run queue. child_cr3 was still ours
+        // throughout (the call only borrows it), so it is the one thing left
+        // to destroy here. The task id stays consumed.
         VMM::destroy_user_space(child_cr3);
         return -(int)Errno::ENOMEM;
     }

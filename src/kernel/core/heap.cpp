@@ -9,8 +9,20 @@ namespace Heap {
         SegmentHeader* next;   // Pointer to next segment
         SegmentHeader* prev;   // Pointer to previous segment
         bool is_free;          // Is this chunk available?
+        uint8_t reserved[7];   // explicit: keeps 'magic' 8-byte aligned
         uint64_t magic;        // Safety check (0xDEADBEEF)
+        // Explicit trailing padding, not compiler padding: sizeof must be a
+        // multiple of the payload alignment so the next header stays aligned.
+        uint8_t padding[8];
     };
+
+    // C++ operator new promises __STDCPP_DEFAULT_NEW_ALIGNMENT__, which is 16
+    // on x86-64. The header starts 16-aligned and is a multiple of 16 bytes,
+    // and every request is rounded up to 16, so every payload and every later
+    // header is 16-aligned.
+    constexpr size_t PAYLOAD_ALIGN = 16;
+    static_assert(sizeof(SegmentHeader) % PAYLOAD_ALIGN == 0,
+                  "the heap header must preserve payload alignment");
 
     SegmentHeader* first_segment;
 
@@ -21,6 +33,12 @@ namespace Heap {
     static uint64_t total_bytes = 0;
 
     void init(void* start_addr, size_t size) {
+        // The first payload is start_addr + sizeof(SegmentHeader), so the base
+        // must itself be 16-aligned. main.cpp passes HEAP_PHYS_BASE through
+        // the HHDM, both page-aligned, which satisfies this.
+        if (((uint64_t)start_addr & (PAYLOAD_ALIGN - 1)) != 0)
+            kprint("[Heap] WARNING: heap base is not 16-byte aligned!\n");
+
         // Create the first huge segment covering the whole heap
         first_segment = (SegmentHeader*)start_addr;
         first_segment->length = size - sizeof(SegmentHeader);
@@ -41,6 +59,15 @@ namespace Heap {
     uint64_t total() { return total_bytes; }
 
     void* malloc(size_t size) {
+        // Round the request up so the payload is 16-byte aligned like C++
+        // operator new requires. A request whose rounding wraps would produce
+        // a tiny block for a huge object, so refuse it outright.
+        if (size > (size_t)-1 - (PAYLOAD_ALIGN - 1)) {
+            kprint("[Heap] OOM (Out of Memory)!\n");
+            return nullptr;
+        }
+        size = (size + (PAYLOAD_ALIGN - 1)) & ~(size_t)(PAYLOAD_ALIGN - 1);
+
         SegmentHeader* current = first_segment;
         
         // Walk the list to find a free spot
