@@ -80,12 +80,14 @@ static void region_unref(Region* r) {
 
 // Map whole pages of physical memory into a task's space. Read-only unless
 // 'writable', and always PTE_SHARED: the frames are not the task's to free.
-static void map_pages(uint64_t cr3, uint64_t va, uint64_t phys, uint64_t pages,
+static bool map_pages(uint64_t cr3, uint64_t va, uint64_t phys, uint64_t pages,
                       bool writable) {
     uint64_t flags = VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_SHARED;
     if (writable) flags |= VMM::PTE_WRITABLE;
     for (uint64_t p = 0; p < pages; p++)
-        VMM::map_page_in(cr3, phys + p * 4096, va + p * 4096, flags);
+        if (!VMM::map_page_in(cr3, phys + p * 4096, va + p * 4096, flags))
+            return false;
+    return true;
 }
 
 // --- shared regions ---
@@ -161,10 +163,19 @@ int attach(int id, uint64_t* out_addr, uint64_t* out_size) {
     // The frames came from alloc_page one at a time, so they are a scatter
     // list: map each one at its own offset rather than assuming frames[0] is
     // followed by its neighbours in physical memory.
+    bool mapped_all = true;
     uint64_t flags = VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_SHARED |
                      VMM::PTE_WRITABLE;
-    for (uint64_t p = 0; p < r->pages; p++)
-        VMM::map_page_in(cr3, r->frames[p], va + p * 4096, flags);
+    for (uint64_t p = 0; p < r->pages; p++) {
+        if (!VMM::map_page_in(cr3, r->frames[p], va + p * 4096, flags)) {
+            mapped_all = false;
+            break;
+        }
+    }
+    if (!mapped_all) {
+        VMM::unmap_user_range(cr3, va, r->pages);
+        return -1;
+    }
     r->refs++;
 
     m->used = true;
@@ -207,7 +218,10 @@ int map_file(const char* path, uint64_t* out_addr, uint64_t* out_size) {
     uint64_t va = VMM::alloc_user_range(cr3, pages);
     if (va == 0) return -1;
 
-    map_pages(cr3, va, base, pages, false); // the image is read-only
+    if (!map_pages(cr3, va, base, pages, false)) { // the image is read-only
+        VMM::unmap_user_range(cr3, va, pages);
+        return -1;
+    }
 
     m->used = true;
     m->task = Sched::current_task_id();

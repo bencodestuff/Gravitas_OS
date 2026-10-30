@@ -98,8 +98,15 @@ namespace ELF {
                     if (phys == 0) { kprint("[ELF] OOM!\n"); return 0; }
 
                     // B. Map it to User Mode (0x07 = User | RW | Present)
-                    // We map it RWX (Read/Write/Execute) for simplicity
-                    VMM::map_page(phys, curr, 0x07);
+                    // We map it RWX (Read/Write/Execute) for simplicity.
+                    // A refused mapping (no table frame, or a leaf already
+                    // there) must not be followed by the zero/copy below:
+                    // that would write through a physical alias while the
+                    // user VA stayed unmapped.
+                    if (!VMM::map_page(phys, curr, 0x07)) {
+                        PMM::free_page(phys);
+                        return 0;   // the caller tears the whole space down
+                    }
 
                     // C. Calculate the "Backdoor" address to write to
                     // (Physical Address + HHDM Offset)

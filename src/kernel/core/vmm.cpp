@@ -116,7 +116,7 @@ namespace VMM {
         return (leaf_pte_in(current_pml4(), virtual_addr) & PTE_PRESENT) != 0;
     }
 
-    void map_page_in(uint64_t pml4_phys, uint64_t physical_addr,
+    bool map_page_in(uint64_t pml4_phys, uint64_t physical_addr,
                      uint64_t virtual_addr, uint64_t flags) {
         uint64_t pml4_idx = (virtual_addr >> 39) & 0x1FF;
         uint64_t pdp_idx  = (virtual_addr >> 30) & 0x1FF;
@@ -126,7 +126,13 @@ namespace VMM {
         bool user = (flags & PTE_USER) != 0;
 
         uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, true, user);
-        if (!pt) return;
+        if (!pt) return false;
+
+        // Refuse to replace a live leaf. Silently overwriting it orphans the
+        // old frame (nothing records it) and destroys whatever the mapping
+        // held, so the caller must learn that the address was taken. A guard
+        // PTE is deliberately not present and is meant to be mapped over.
+        if (pt[pt_idx] & PTE_PRESENT) return false;
 
         // Apply flags to the final page
         uint64_t phys_frame = physical_addr & 0x000FFFFFFFFFF000;
@@ -135,10 +141,11 @@ namespace VMM {
         // Flush TLB for this specific address immediately (harmless if the
         // address belongs to a space that isn't currently active)
         asm volatile("invlpg (%0)" :: "r"(virtual_addr) : "memory");
+        return true;
     }
 
-    void map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags) {
-        map_page_in(current_pml4(), physical_addr, virtual_addr, flags);
+    bool map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags) {
+        return map_page_in(current_pml4(), physical_addr, virtual_addr, flags);
     }
 
     void init(struct limine_memmap_response* map) {
@@ -193,6 +200,7 @@ namespace VMM {
 
     uint64_t clone_kernel_space() {
         uint64_t new_pml4_phys = PMM::alloc_page();
+        if (new_pml4_phys == 0) return 0; // caller reports ENOMEM
         uint64_t* new_pml4 = (uint64_t*)(new_pml4_phys + hhdm_offset);
         memset(new_pml4, 0, 4096);
 
@@ -208,8 +216,8 @@ namespace VMM {
 
     // --- User VA allocator (walk-the-tables, no metadata) ---
     // Region: 256MB .. 1GB. ELF code loads at 0x400000 below it; the
-    // kernel's upper half is above.
-    constexpr uint64_t USER_VA_BASE = 0x10000000; // 256MB
+    // kernel's upper half is above. USER_VA_BASE lives in vmm.h because brk
+    // has to stop before the allocator's arena.
     constexpr uint64_t USER_VA_END  = 0x40000000; // 1GB
 
     // Is the page range unmapped in this space? (creates nothing)
@@ -275,6 +283,35 @@ namespace VMM {
             pt[pt_idx] = 0;
             // Only the active space has cached translations to drop; a
             // switch to any other space flushes the TLB wholesale.
+            if (current) asm volatile("invlpg (%0)" :: "r"(va) : "memory");
+        }
+    }
+
+    bool user_range_free(uint64_t pml4_phys, uint64_t virtual_addr,
+                         uint64_t pages) {
+        return range_free(pml4_phys, virtual_addr, pages);
+    }
+
+    void unmap_and_free_user_range(uint64_t pml4_phys, uint64_t virtual_addr,
+                                   uint64_t pages) {
+        bool current = (pml4_phys == current_pml4());
+        for (uint64_t p = 0; p < pages; p++) {
+            uint64_t va = virtual_addr + p * 4096;
+            uint64_t pml4_idx = (va >> 39) & 0x1FF;
+            uint64_t pdp_idx  = (va >> 30) & 0x1FF;
+            uint64_t pd_idx   = (va >> 21) & 0x1FF;
+            uint64_t pt_idx   = (va >> 12) & 0x1FF;
+
+            uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, false, false);
+            if (pt == nullptr) continue;
+            uint64_t pte = pt[pt_idx];
+            if (!(pte & PTE_PRESENT)) continue;
+
+            // Shared frames belong to an image, a region or a device. The
+            // task owns everything else it mapped here, so free that.
+            if (!(pte & PTE_SHARED))
+                PMM::free_page(pte & 0x000FFFFFFFFFF000);
+            pt[pt_idx] = 0;
             if (current) asm volatile("invlpg (%0)" :: "r"(va) : "memory");
         }
     }

@@ -143,8 +143,19 @@ int surface_create(uint64_t w, uint64_t h) {
         return -1;
     }
 
+    bool mapped_all = true;
     for (uint64_t p = 0; p < pages; p++) {
-        VMM::map_page_in(owner_cr3, frames[p], va + p * 4096, 0x07); // P|W|U
+        if (!VMM::map_page_in(owner_cr3, frames[p], va + p * 4096, 0x07)) { // P|W|U
+            mapped_all = false;
+            break;
+        }
+    }
+    if (!mapped_all) {
+        for (uint64_t p = 0; p < pages; p++) PMM::free_page(frames[p]);
+        VMM::unmap_user_range(owner_cr3, va, pages);
+        if (old_cr3 != owner_cr3) VMM::switch_pml4(old_cr3);
+        Heap::free(frames);
+        return -1;
     }
     if (old_cr3 != owner_cr3) VMM::switch_pml4(old_cr3);
 
@@ -215,8 +226,21 @@ int surface_resize(int id, uint64_t w, uint64_t h) {
         return -1;
     }
 
-    for (uint64_t p = 0; p < pages; p++)
-        VMM::map_page_in(owner_cr3, frames[p], va + p * 4096, 0x07); // P|W|U
+    bool mapped_all = true;
+    for (uint64_t p = 0; p < pages; p++) {
+        if (!VMM::map_page_in(owner_cr3, frames[p], va + p * 4096, 0x07)) { // P|W|U
+            mapped_all = false;
+            break;
+        }
+    }
+    if (!mapped_all) {
+        // Keep the old surface exactly as it was.
+        for (uint64_t p = 0; p < pages; p++) PMM::free_page(frames[p]);
+        VMM::unmap_user_range(owner_cr3, va, pages);
+        if (old_cr3 != owner_cr3) VMM::switch_pml4(old_cr3);
+        Heap::free(frames);
+        return -1;
+    }
 
     uint64_t old_va = s->va, old_pages = s->page_count, old_w = s->w, old_h = s->h;
     uint64_t* old_frames = s->frames;

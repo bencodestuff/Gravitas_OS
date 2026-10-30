@@ -948,43 +948,68 @@ static void sys_brk(IDT::Registers* regs) {
 
     if (want == 0) {
         regs->rax = Sched::current_task_brk();
-    } else if (want < BRK_BASE) {
+        return;
+    }
+    if (want < BRK_BASE || want > VMM::USER_VA_BASE) {
         regs->rax = (uint64_t)-Errno::EINVAL;
-    } else {
-        // Grow [brk_limit, round_up(want)); brk_limit is the true mapped top,
-        // so nothing is skipped when brk is not page-aligned. (Shrink is
-        // accepted but pages stay mapped.)
-        uint64_t limit = Sched::current_task_brk_limit();
-        uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
+        return;
+    }
+    // Round up without wrapping: the cap above already keeps 'want' small,
+    // but the explicit check documents the arithmetic the old code got wrong.
+    if (want > UINT64_MAX - 0xFFF) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
+    // The page allocator owns every VA from USER_VA_BASE upward. Stop before
+    // it even when rounding crosses the boundary.
+    if (new_top > VMM::USER_VA_BASE) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+
+    uint64_t limit = Sched::current_task_brk_limit();
+    uint64_t pml4 = VMM::current_pml4();
+
+    if (new_top < limit) {
+        // Shrink: brk_limit is the mapped top, so the pages above the new top
+        // are ours and go back to the PMM. Leaving them mapped made every
+        // later grow replace live PTEs and leak their frames.
+        VMM::unmap_and_free_user_range(pml4, new_top, (limit - new_top) / 4096);
+    } else if (new_top > limit) {
+        uint64_t pages = (new_top - limit) / 4096;
+        // Never map over a leaf that belongs to someone else (a stack, a
+        // surface, a shared region, or an ELF segment). The brk arena ends
+        // below the VA allocator, but this also catches a caller that somehow
+        // got there.
+        if (!VMM::user_range_free(pml4, limit, pages)) {
+            regs->rax = (uint64_t)-Errno::ENOMEM;
+            return;
+        }
+
         uint64_t va = limit;
         for (; va < new_top; va += 4096) {
-            uint64_t phys = PMM::alloc_page();
+            // A fresh user page must not expose whatever the frame held.
+            uint64_t phys = PMM::alloc_page_zeroed();
             if (phys == 0) break;
-            VMM::map_page(phys, va, 0x07);   // P|W|U
-            // map_page cannot report failure: it gives up silently when a
-            // page table cannot be allocated, so ask the tables instead.
-            if (!VMM::is_mapped(va)) {
+            if (!VMM::map_page(phys, va, 0x07)) { // P|W|U
                 PMM::free_page(phys);
                 break;
             }
         }
         if (va < new_top) {
-            // A frame ran out part way through. Take back everything this
-            // call mapped and leave brk where it was, so a failed call has
-            // no effect and the caller can retry after freeing memory.
-            uint64_t pml4 = VMM::current_pml4();
-            for (uint64_t undo = limit; undo < va; undo += 4096) {
-                uint64_t pte = VMM::leaf_pte_in(pml4, undo);
-                if (pte & VMM::PTE_PRESENT) PMM::free_page(pte & ~0xFFFull);
-            }
-            VMM::unmap_user_range(pml4, limit, (va - limit) / 4096);
+            // A frame or a page table ran out part way through. Take back
+            // everything this call mapped and leave brk where it was, so a
+            // failed call has no effect and the caller can retry.
+            VMM::unmap_and_free_user_range(pml4, limit, (va - limit) / 4096);
             regs->rax = (uint64_t)-Errno::ENOMEM;
             return;
         }
-        Sched::current_task_set_brk(want);
-        Sched::current_task_set_brk_limit(new_top);
-        regs->rax = want;
     }
+
+    Sched::current_task_set_brk(want);
+    Sched::current_task_set_brk_limit(new_top);
+    regs->rax = want;
 }
 
 // Number -> handler. A nullptr entry is a retired number.
