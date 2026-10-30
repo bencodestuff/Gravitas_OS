@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 
+#include "fs/path.h"
+
 // --- Virtual filesystem layer ---
 // Design: filesystems are self-contained backends registered into a mount
 // table. Everything above this line works in *nodes*, not path strings: a node
@@ -22,14 +24,16 @@ constexpr int MAX_HANDLES = 64;   // open files kernel-wide
 // The longest absolute path the VFS will carry. It has to be comfortably more
 // than NAME_MAX: a maximal 255-byte name still needs room for the directory it
 // lives in, and a path that does not fit is refused rather than cut down.
-// (The CWD is separate and much smaller — see the scheduler.)
-constexpr int PATH_MAX = 512;
+// (The CWD is separate and much smaller — see the scheduler.) The value itself
+// lives with the rest of the pure path logic, so the VFS and its host test
+// cannot disagree about it.
+constexpr int PATH_MAX = FsPath::PATH_MAX;
 
 // The longest single name any backend may hand back (and the ABI's ceiling).
 // ext2 permits 255 bytes, so 256 is the smallest value that can hold one: a
 // smaller cap would silently truncate a real filesystem's names, and a name that
 // lists but cannot be opened is worse than a refusal.
-constexpr int NAME_MAX = 256;
+constexpr int NAME_MAX = FsPath::NAME_MAX;
 
 // The most a single write may ask a backend to take. No file this kernel can
 // hold comes close (the ramfs cap is 1 MB), while a count past this is not a

@@ -6,13 +6,17 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-// pathtest — the path and name limits.
+// pathtest — the path rule and the name limits.
 //
 // A component or a path that does not fit must be *refused*. It must never be
 // silently cut down, because a shortened path names a different file: a path
 // three components too deep used to resolve to its own prefix, and a name longer
 // than the cap used to match whatever its first 127 bytes spelled. Both were
 // real, and neither is visible from userland except as "the wrong file opened".
+//
+// The same file also pins the other half of the rule: a relative path in mkdir,
+// unlink or rename resolves against the CWD, never against '/' and never through
+// the /bin search path.
 
 static int fails = 0;
 static void check(int ok, const char* what) {
@@ -129,6 +133,56 @@ int main(int argc, char** argv) {
     errno = 0;
     check(stat(toolong, &st) != 0 && errno == ENAMETOOLONG,
           "stat agrees");
+
+    // --- 4. creation, removal and rename use the CWD ----------------------
+    // A relative path used to go straight to resolve(), which roots it at '/':
+    // `cd /tmp; mkdir d` made /d, and `rm notes.txt` could delete /notes.txt.
+    // The VFS now joins a relative path to the CWD exactly as open() does, with
+    // no /bin search. Every step is paired with the path at '/' it must not
+    // have touched.
+    check(chdir("/tmp") == 0, "chdir /tmp");
+
+    errno = 0;
+    check(mkdir("ptrel", 0755) == 0, "mkdir with a relative path");
+    check(stat("/ptrel", &st) != 0, "mkdir did not create /ptrel");
+    check(stat("ptrel", &st) == 0 && S_ISDIR(st.st_mode),
+          "mkdir created the directory under the CWD");
+
+    fd = open("ptrel/f.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "create a file with a relative path");
+    if (fd >= 0) {
+        write(fd, "relative", 8);
+        close(fd);
+    }
+    check(stat("/tmp/ptrel/f.txt", &st) == 0,
+          "the relative create landed under /tmp");
+    check(stat("/ptrel/f.txt", &st) != 0,
+          "and not under /ptrel");
+
+    // The deletion bug, directly: a file at '/' with this name must survive a
+    // relative unlink from /tmp, which names a different file.
+    fd = open("/pathtest-guard.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "create a guard file at /");
+    if (fd >= 0) close(fd);
+    errno = 0;
+    check(unlink("pathtest-guard.txt") != 0,
+          "a relative unlink does not reach the same name at /");
+    check(stat("/pathtest-guard.txt", &st) == 0,
+          "and the file at / is still there");
+
+    check(rename("ptrel/f.txt", "ptrel/g.txt") == 0,
+          "rename with relative paths");
+    check(stat("ptrel/g.txt", &st) == 0, "the new relative name exists");
+    check(stat("ptrel/f.txt", &st) != 0, "the old relative name is gone");
+
+    check(unlink("ptrel/g.txt") == 0, "unlink with a relative path");
+    check(stat("ptrel/g.txt", &st) != 0, "the file is gone");
+
+    check(rmdir("ptrel") == 0, "rmdir with a relative path");
+    check(stat("/ptrel", &st) != 0, "/ptrel never appeared");
+
+    check(chdir("/") == 0, "chdir back to /");
+    unlink("/pathtest-guard.txt");
 
     if (fails == 0) { printf("pathtest: all checks pass\n"); return 0; }
     printf("pathtest: %d check(s) failed\n", fails);
