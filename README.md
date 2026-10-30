@@ -279,7 +279,8 @@ Not done yet:
 Gravitas' own code is BSD 3-Clause (below). The built image also bundles:
 
 - **Limine.** The bootloader, fetched by `configure.py` and pinned to the
-  `v8.x-binary` branch. Its binaries are BSD 2-Clause; the checked-in
+  `v8.7.0-binary` tag and the commit it named (`aad3edd`). Its binaries are
+  BSD 2-Clause; the checked-in
   `src/limine.h` is 0BSD.
 - **Lua 5.4.9.** MIT licensed, fetched by `configure.py` and compiled into
   `bin/lua.elf` and `bin/init.elf`.
