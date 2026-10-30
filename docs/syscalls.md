@@ -149,8 +149,9 @@ flushes every mount: dirty pages in the page cache go back to the device first,
 then the drive's own cache is flushed. That is also what `poweroff` and `reboot`
 do before the machine stops; on a virtio drive it means a real `FLUSH` request
 when the host offers the feature. It does not model symlinks, extents, extended
-attributes or 64-bit filesystems, and refuses a filesystem that would need them
-or that was not cleanly unmounted.
+attributes or 64-bit filesystems, and refuses a filesystem that would need
+them. There is no journal and no clean/dirty check, so an image left by a power
+cut mounts if its superblock is intact even when its contents are inconsistent.
 
 The ATA driver is polled PIO on the primary channel's legacy task file: no
 interrupts, and a spin cap on every status poll so a device that never answers

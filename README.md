@@ -52,6 +52,10 @@ shell grammar is, all in code you can read and change.
 - A 64-page (256 KiB) write-back page cache (`BlockCache`) between ext2 and the
   block layer: a 1 KB block read fetches one 4 KB page and its neighbours become
   hits, while `Block` itself stays a cacheless sector contract.
+- Writes are durable only once they are flushed: `sync`, `fsync` and `poweroff`
+  write dirty pages back before flushing the drive's cache. There is no journal
+  and no crash consistency, and a power cut can leave an image that `e2fsck`
+  repairs but the kernel cannot mount. Call `sync` before removing power.
 - The `Block::Device` contract is: a name, a size, and read/write of a 512-byte
   sector run, so a filesystem does not care where its bytes come from.
 

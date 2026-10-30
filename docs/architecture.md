@@ -147,6 +147,26 @@ bitmaps and group counts, writes partial blocks, keeps directories' `rec_len`
 records tidy, and refuses a filesystem that would need symlinks, extents or
 64-bit support.
 
+### Durability and crash consistency
+
+There is no journal, and there is no crash consistency. ext2 metadata and data
+share the same write-back page cache, so LRU eviction can put an inode, a
+directory record or a bitmap on the medium before the data block it points at.
+A power cut or a reset in the middle of a write can therefore leave a
+filesystem that `e2fsck` repairs but this kernel cannot. Mount does not refuse
+an unclean image: it checks the superblock magic, the geometry and the feature
+flags (and refuses a journal that needs recovery, extents or 64-bit block
+numbers), but not the clean/dirty state, so a machine that lost power boots the
+damaged image.
+
+What is guaranteed is narrower. `sync`, `fsync` and `poweroff` write dirty
+pages back before flushing the drive's write cache, so data that has been
+synced is on the medium, and a clean shutdown leaves an `e2fsck`-clean image.
+Call `sync` before removing power, or use `poweroff`, which does it for you.
+The persistence test powers off cleanly and runs `e2fsck` afterwards; it does
+not kill the guest mid-write, so this boundary is untested as well as
+unprotected.
+
 ### Scheduler, tasks and file descriptors
 
 `src/kernel/core/sched.h` (public API), `task.h` (the `Task` object),
