@@ -350,7 +350,9 @@ def main():
         # uses: it boots in about half the time, because Limine's read of the
         # (tens of MB) tar module takes a faster path on the newer machine.
         accel = "-enable-kvm" if os.path.exists("/dev/kvm") else ""
-        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial stdio -display sdl -machine q35 {accel}\n")
+        # mon:stdio multiplexes the guest serial and the QEMU monitor on this
+        # terminal, so ctrl-a c reaches the monitor during a normal `ninja run`.
+        ninja.write(f"  command = qemu-system-x86_64 -cdrom gravitas.iso -m 512M -serial mon:stdio -display sdl -machine q35 {accel}\n")
         ninja.write(f"  description = RUN gravitas.iso\n")
         ninja.write(f"  pool = console\n\n")  # This allows interactive output!
 
