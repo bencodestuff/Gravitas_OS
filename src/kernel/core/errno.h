@@ -11,6 +11,8 @@ namespace Errno {
     constexpr long EPERM   = 1;  // operation not permitted
     constexpr long ENOENT  = 2;  // no such file or directory / no such task
     constexpr long EIO     = 5;  // backend failure that has no better code
+    constexpr long E2BIG   = 7;  // argument list or image too large
+    constexpr long ENOEXEC = 8;  // not an executable image
     constexpr long EBADF   = 9;  // bad file descriptor
     constexpr long EAGAIN  = 11; // would block (mailbox full / empty)
     constexpr long ENOMEM  = 12; // out of memory

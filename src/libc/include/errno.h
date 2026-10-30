@@ -13,6 +13,8 @@ extern int errno;
 #define EPERM    1  /* operation not permitted              */
 #define ENOENT   2  /* no such file or directory / task     */
 #define EIO      5  /* I/O error                            */
+#define E2BIG    7  /* argument list or image too large     */
+#define ENOEXEC  8  /* not an executable image              */
 #define EBADF    9  /* bad file descriptor                  */
 #define EAGAIN  11  /* would block (mailbox full/empty)     */
 #define ENOMEM  12  /* out of memory                        */

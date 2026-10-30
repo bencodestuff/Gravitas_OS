@@ -26,8 +26,16 @@
 #include "kernel/core/user_ptr.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
-// (0x500000+). Grows upward in whole pages.
-#define BRK_BASE 0x8000000
+// (0x500000+). Grows upward in whole pages, and stops at VMM::USER_VA_BASE:
+// past that the per-space VA allocator owns the addresses.
+static constexpr uint64_t BRK_BASE = 0x8000000; // 128 MiB
+
+// A spawned image is copied into the kernel heap, which is 32 MB (HEAP_SIZE in
+// main.cpp). Keep the staging copy well below that so the ELF load itself and
+// the rest of the kernel still have room; every shipped program is far
+// smaller, and a sparse or corrupt inode reporting a huge size is refused
+// before a byte is read.
+static constexpr uint64_t MAX_SPAWN_IMAGE_BYTES = 16ull << 20; // 16 MiB
 
 // Boot mounts the tarfs here; bare filenames resolve through it (embryonic
 // PATH: "ls.elf" -> /bin/ls.elf)
@@ -168,17 +176,26 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     // Read the program's ELF image through the VFS (bare names resolve
     // through /bin). Heap buffer, freed after the load.
     int fd = VFS::open_fd(staged_name, VFS::O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
+    if (fd < 0) return fd;   // already a negated errno
 
     uint64_t fsize = VFS::fd_size(fd);
+    if (fsize == 0 || fsize > MAX_SPAWN_IMAGE_BYTES) {
+        VFS::close_fd(fd);
+        return fsize == 0 ? -(int)Errno::ENOEXEC : -(int)Errno::E2BIG;
+    }
     char* data = new char[fsize];
+    if (data == nullptr) {
+        VFS::close_fd(fd);
+        return -(int)Errno::ENOMEM;
+    }
     long got = VFS::read_fd(fd, data, fsize);
     VFS::close_fd(fd);
     if (got != (long)fsize) {
+        // A short read is an I/O failure, not an invalid image; a negative
+        // result is already the backend's errno.
+        int err = got < 0 ? (int)got : -(int)Errno::EIO;
         delete[] data;
-        return -1;
+        return err;
     }
 
     // Build the child in its OWN address space. This switches CR3 by hand,
@@ -190,6 +207,10 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     asm volatile("cli");
     uint64_t old_cr3 = VMM::current_pml4();
     uint64_t child_cr3 = VMM::clone_kernel_space();
+    if (child_cr3 == 0) {
+        delete[] data;
+        return -(int)Errno::ENOMEM;
+    }
     VMM::switch_pml4(child_cr3);
 
     uint64_t entry = ELF::load_elf((uint8_t*)data, fsize);
@@ -197,7 +218,7 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     if (entry == 0) {
         VMM::switch_pml4(old_cr3);
         VMM::destroy_user_space(child_cr3);
-        return -1;
+        return -(int)Errno::ENOEXEC;
     }
 
     // create_user_task switches to the child space itself and stages the
@@ -206,7 +227,7 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     VMM::switch_pml4(old_cr3);
     if (child < 0) {
         VMM::destroy_user_space(child_cr3);
-        return -1;
+        return -(int)Errno::ENOMEM;
     }
     return child;
 }
@@ -775,7 +796,14 @@ static void spawn_impl(IDT::Registers* regs, bool background) {
     spawn_namebuf[ni] = '\0';
 
     int child = stage_spawn(regs, spawn_namebuf);   // returns with IRQs off
-    if (child < 0) { asm volatile("sti"); regs->rax = (uint64_t)-1; return; }
+    if (child < 0) {
+        // stage_spawn's failures are negated errnos; pass them through so the
+        // caller can tell an oversized image (E2BIG) from a bad one (ENOEXEC)
+        // or an out-of-memory condition (ENOMEM).
+        asm volatile("sti");
+        regs->rax = (uint64_t)(long)child;
+        return;
+    }
 
     if (!background) {
         // Foreground: the child takes over the console the parent is using

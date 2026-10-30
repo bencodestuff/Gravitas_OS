@@ -720,6 +720,10 @@ static long pipe_write_fd(FileHandle* h, const void* buf, uint64_t count) {
 }
 
 long read_fd(int fd, void* buf, uint64_t count) {
+    // Defence in depth: no backend may write through a null kernel buffer.
+    // The syscall boundary already rejects one from ring 3; this catches a
+    // kernel-side staging buffer whose allocation failed.
+    if (buf == nullptr && count > 0) return -Errno::EFAULT;
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;
     if (h->kind == FdKind::Console) return console_read_fd(buf, count);
