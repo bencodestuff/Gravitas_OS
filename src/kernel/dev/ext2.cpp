@@ -187,6 +187,23 @@ struct Track {
 // accept at mount time, so one block always fits.
 constexpr uint32_t MAX_BLOCK = 4096;
 
+// Is this a block number the filesystem can name? Every block number that comes
+// off the disk goes through here before it reaches the block cache: a corrupt
+// image must not be able to steer a read or a write at an arbitrary sector of
+// the device, even one that happens to lie inside it. Block 0 holds the boot
+// block and is never metadata or file data.
+static bool valid_blk(const Fs* f, uint32_t blk) {
+    return blk != 0 && blk < f->dev->blocks_count;
+}
+
+// A group descriptor names three metadata blocks; all of them must be real.
+// Checked once when the descriptor is read, so no caller has to remember it.
+static bool valid_gd(const Fs* f, const GroupDesc* gd) {
+    return valid_blk(f, gd->block_bitmap) &&
+           valid_blk(f, gd->inode_bitmap) &&
+           valid_blk(f, gd->inode_table);
+}
+
 // The timer can preempt a syscall halfway through a directory or bitmap update,
 // so mutations run with interrupts off. Everything below that takes this lock is
 // a top-level operation; the helpers assume it is already held.
@@ -284,10 +301,12 @@ static bool write_bytes(Fs* f, uint64_t off, const void* src, uint32_t n) {
 }
 
 static bool read_block(Fs* f, uint32_t blk, void* buf) {
+    if (!valid_blk(f, blk)) return false;
     return read_bytes(f, (uint64_t)blk * f->dev->block_size, buf, f->dev->block_size);
 }
 
 static bool write_block(Fs* f, uint32_t blk, const void* buf) {
+    if (!valid_blk(f, blk)) return false;
     return write_bytes(f, (uint64_t)blk * f->dev->block_size, buf, f->dev->block_size);
 }
 
@@ -295,6 +314,7 @@ static bool write_block(Fs* f, uint32_t blk, const void* buf) {
 // sector at a time so this does not need a second block-sized buffer; the page
 // cache coalesces the sectors into one dirty page and so one device write.
 static bool zero_block(Fs* f, uint32_t blk) {
+    if (!valid_blk(f, blk)) return false;
     uint8_t zero[Block::SECTOR];
     memset(zero, 0, sizeof(zero));
     uint64_t off = (uint64_t)blk * f->dev->block_size;
@@ -315,11 +335,17 @@ static uint64_t gd_offset(Fs* f, uint32_t group) {
 
 static bool read_gd(Fs* f, uint32_t group, GroupDesc* out) {
     if (group >= f->dev->groups) return false;
-    return read_bytes(f, gd_offset(f, group), out, sizeof(GroupDesc));
+    uint64_t off = gd_offset(f, group);
+    if (off + sizeof(GroupDesc) >
+        (uint64_t)f->dev->blocks_count * f->dev->block_size)
+        return false;
+    if (!read_bytes(f, off, out, sizeof(GroupDesc))) return false;
+    return valid_gd(f, out);
 }
 
 static bool write_gd(Fs* f, uint32_t group, const GroupDesc* gd) {
     if (group >= f->dev->groups) return false;
+    if (!valid_gd(f, gd)) return false;
     return write_bytes(f, gd_offset(f, group), gd, sizeof(GroupDesc));
 }
 
@@ -344,6 +370,11 @@ static bool read_inode(Fs* f, uint32_t ino, Inode* out) {
 
     uint64_t off = (uint64_t)gd.inode_table * f->dev->block_size
                  + (uint64_t)index * f->dev->inode_size;
+    // An inode number inside inodes_count can still name a slot past the end of
+    // the table when the image lies about the two; the whole inode must lie
+    // inside the filesystem.
+    if (off + sizeof(Inode) > (uint64_t)f->dev->blocks_count * f->dev->block_size)
+        return false;
     // Only the standard prefix: the rest of a 256-byte inode belongs to the
     // fields this kernel does not model and must not be overwritten.
     return read_bytes(f, off, out, sizeof(Inode));
@@ -360,6 +391,8 @@ static bool write_inode(Fs* f, uint32_t ino, const Inode* in) {
 
     uint64_t off = (uint64_t)gd.inode_table * f->dev->block_size
                  + (uint64_t)index * f->dev->inode_size;
+    if (off + sizeof(Inode) > (uint64_t)f->dev->blocks_count * f->dev->block_size)
+        return false;
     return write_bytes(f, off, in, sizeof(Inode));
 }
 
@@ -389,11 +422,13 @@ static uint32_t alloc_block(Fs* f) {
         if (!read_block(f, gd.block_bitmap, buf)) return 0;
 
         uint8_t* map = (uint8_t*)buf;
-        uint32_t base = d->first_data_block + g * d->blocks_per_group;
+        uint64_t base = (uint64_t)d->first_data_block +
+                        (uint64_t)g * d->blocks_per_group;
         uint32_t limit = d->block_size * 8;
         if (limit > d->blocks_per_group) limit = d->blocks_per_group;
         for (uint32_t i = 0; i < limit; i++) {
-            uint32_t blk = base + i;
+            uint64_t blk = base + i;
+            if (blk == 0) continue;   // the boot block is never allocatable
             if (blk >= d->blocks_count) break;
             if (bitmap_bit(map, i)) continue;
 
@@ -403,8 +438,8 @@ static uint32_t alloc_block(Fs* f) {
             if (!write_gd(f, g, &gd)) return 0;
             d->free_blocks--;
             save_counts(f);
-            if (!zero_block(f, blk)) return 0;
-            return blk;
+            if (!zero_block(f, (uint32_t)blk)) return 0;
+            return (uint32_t)blk;
         }
     }
     return 0;   // out of room
@@ -412,11 +447,17 @@ static uint32_t alloc_block(Fs* f) {
 
 static void free_block(Fs* f, uint32_t blk) {
     Dev* d = f->dev;
-    if (blk < d->first_data_block || blk >= d->blocks_count) return;
+    if (blk == 0 || blk < d->first_data_block || blk >= d->blocks_count) return;
 
     uint32_t rel = blk - d->first_data_block;
     uint32_t g = rel / d->blocks_per_group;
     uint32_t i = rel % d->blocks_per_group;
+
+    // The same clamp alloc_block uses. A blocks_per_group the bitmap cannot
+    // describe would otherwise index a 4 KB stack buffer out of bounds.
+    uint32_t limit = d->block_size * 8;
+    if (limit > d->blocks_per_group) limit = d->blocks_per_group;
+    if (i >= limit) return;
 
     GroupDesc gd;
     if (!read_gd(f, g, &gd)) return;
@@ -448,8 +489,8 @@ static uint32_t alloc_inode(Fs* f, bool is_dir) {
         uint32_t limit = d->block_size * 8;
         if (limit > d->inodes_per_group) limit = d->inodes_per_group;
         for (uint32_t i = 0; i < limit; i++) {
-            uint32_t ino = g * d->inodes_per_group + i + 1;
-            if (ino > d->inodes_count) break;
+            uint64_t ino64 = (uint64_t)g * d->inodes_per_group + i + 1;
+            if (ino64 > d->inodes_count) break;
             if (bitmap_bit(map, i)) continue;
 
             bitmap_set(map, i);
@@ -464,8 +505,8 @@ static uint32_t alloc_inode(Fs* f, bool is_dir) {
             // are left as the image made them.
             Inode zin;
             memset(&zin, 0, sizeof(zin));
-            if (!write_inode(f, ino, &zin)) return 0;
-            return ino;
+            if (!write_inode(f, (uint32_t)ino64, &zin)) return 0;
+            return (uint32_t)ino64;
         }
     }
     return 0;
@@ -504,6 +545,12 @@ static void free_inode(Fs* f, uint32_t ino, bool is_dir) {
 
     uint32_t g = (ino - 1) / d->inodes_per_group;
     uint32_t i = (ino - 1) % d->inodes_per_group;
+
+    // Clamp the way alloc_inode does: an inodes_per_group larger than the
+    // bitmap describes would index past the 4 KB stack buffer below.
+    uint32_t limit = d->block_size * 8;
+    if (limit > d->inodes_per_group) limit = d->inodes_per_group;
+    if (i >= limit) return;
 
     // Free the blocks first. Each free updates the group descriptor, so reading
     // it before this loop and writing it afterwards would put the old block
@@ -548,7 +595,7 @@ static uint32_t map_block(Fs* f, const uint32_t* bp, uint32_t idx) {
 
     if (idx < ptrs) {
         if (bp[12] == 0) return 0;
-        if (!read_bytes(f, (uint64_t)bp[12] * f->dev->block_size, buf, f->dev->block_size))
+        if (!read_block(f, bp[12], buf))
             return 0;
         return buf[idx];
     }
@@ -556,11 +603,11 @@ static uint32_t map_block(Fs* f, const uint32_t* bp, uint32_t idx) {
 
     if (idx < ptrs * ptrs) {
         if (bp[13] == 0) return 0;
-        if (!read_bytes(f, (uint64_t)bp[13] * f->dev->block_size, buf, f->dev->block_size))
+        if (!read_block(f, bp[13], buf))
             return 0;
         uint32_t mid = buf[idx / ptrs];
         if (mid == 0) return 0;
-        if (!read_bytes(f, (uint64_t)mid * f->dev->block_size, buf, f->dev->block_size))
+        if (!read_block(f, mid, buf))
             return 0;
         return buf[idx % ptrs];
     }
@@ -899,7 +946,7 @@ static bool walk_dir(Fs* f, E2Node* d, F visit) {
     for (uint32_t b = 0; b < nblocks; b++) {
         uint32_t blk = map_block(f, d->block, b);
         if (blk == 0) continue;
-        if (!read_bytes(f, (uint64_t)blk * f->dev->block_size, buf, f->dev->block_size))
+        if (!read_block(f, blk, buf))
             return false;
 
         uint8_t* raw = (uint8_t*)buf;
@@ -1255,6 +1302,9 @@ static uint64_t e2_read(void* priv, VFS::Node* node, void* buf,
             done += chunk;
             continue;
         }
+        // A pointer past blocks_count is a corrupt image, not a hole: stop
+        // rather than read a sector that belongs to something else.
+        if (!valid_blk(f, blk)) break;
         if (!read_bytes(f, (uint64_t)blk * bs + boff, dst + done, chunk))
             break;
         done += chunk;
@@ -1759,10 +1809,39 @@ VFS::Filesystem* mount(Block::Device* dev, bool writable, uint32_t root_ino) {
         if (sb.rev_level >= 1 && (sb.feature_incompat & INCOMPAT_64BIT))
             return nullptr;
 
+        // Geometry, checked once here rather than trusted by every path below.
+        // These fields are attacker-controlled on a hostile image, and every
+        // later block address, inode offset and bitmap index is derived from
+        // them; a value the format cannot describe is refused, not clamped.
+        if (sb.log_block_size > 2) return nullptr;   // 1K, 2K or 4K
         uint32_t bs = 1024u << sb.log_block_size;
-        if (bs < 512 || bs > MAX_BLOCK || sb.blocks_per_group == 0 ||
-            sb.inodes_per_group == 0 || sb.blocks_count == 0)
+        if (bs < 512 || bs > MAX_BLOCK) return nullptr;
+        if (sb.blocks_count == 0 || sb.blocks_per_group == 0 ||
+            sb.inodes_per_group == 0 || sb.inodes_count == 0)
             return nullptr;
+        // A bitmap block has block_size * 8 bits, so a group cannot have more
+        // entries than that many.
+        if (sb.blocks_per_group > bs * 8 || sb.inodes_per_group > bs * 8)
+            return nullptr;
+        // The block holding the group descriptors comes after the superblock's
+        // block, so both numbers must be inside the filesystem.
+        if (sb.first_data_block >= sb.blocks_count ||
+            sb.first_data_block + 1 >= sb.blocks_count)
+            return nullptr;
+
+        uint32_t inode_size = sizeof(Inode);
+        if (sb.rev_level >= 1) {
+            inode_size = sb.inode_size;
+            if (inode_size < sizeof(Inode) || inode_size > bs ||
+                (inode_size & (inode_size - 1)) != 0)
+                return nullptr;
+        }
+
+        // Ceil without adding, since both operands are attacker-controlled and
+        // the sum could wrap uint32_t.
+        uint32_t groups = sb.blocks_count / sb.blocks_per_group +
+                          (sb.blocks_count % sb.blocks_per_group ? 1 : 0);
+        if (groups == 0) return nullptr;
 
         probe.block_size = bs;
         probe.first_data_block = sb.first_data_block;
@@ -1770,10 +1849,8 @@ VFS::Filesystem* mount(Block::Device* dev, bool writable, uint32_t root_ino) {
         probe.inodes_per_group = sb.inodes_per_group;
         probe.inodes_count = sb.inodes_count;
         probe.blocks_count = sb.blocks_count;
-        probe.inode_size = (sb.rev_level >= 1 && sb.inode_size >= sizeof(Inode))
-                               ? sb.inode_size : sizeof(Inode);
-        probe.groups = (sb.blocks_count + sb.blocks_per_group - 1) /
-                       sb.blocks_per_group;
+        probe.inode_size = inode_size;
+        probe.groups = groups;
         probe.free_blocks = sb.free_blocks_count;
         probe.free_inodes = sb.free_inodes_count;
         probe.feature_incompat = sb.rev_level >= 1 ? sb.feature_incompat : 0;
