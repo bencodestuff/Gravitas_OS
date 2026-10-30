@@ -64,9 +64,17 @@ static uint32_t sectors_in_page(Block::Device* dev, uint64_t page) {
 // Read the page from the device in one request. A device whose size is not a
 // whole number of pages has a short tail page; the bytes past the end are
 // zeroed so they read as holes rather than as whatever an old page held.
+//
+// A device that fails partway through answers with a short count. The sectors
+// before the failure may have landed in the slot, but the rest of the page is
+// not data from this read, so the slot is cleared as well as refused: a later
+// partial write must not inherit a partially loaded page as if it were valid.
 static bool load_page(Block::Device* dev, uint64_t page, Entry* e) {
     uint32_t n = sectors_in_page(dev, page);
-    if (dev->read(dev->priv, page * PAGE_SECTORS, n, e->data) != n) return false;
+    if (dev->read(dev->priv, page * PAGE_SECTORS, n, e->data) != n) {
+        memset(e->data, 0, PAGE_SIZE);
+        return false;
+    }
     if (n < PAGE_SECTORS)
         memset(e->data + (uint64_t)n * Block::SECTOR, 0,
                PAGE_SIZE - (uint64_t)n * Block::SECTOR);
@@ -75,6 +83,9 @@ static bool load_page(Block::Device* dev, uint64_t page, Entry* e) {
 
 // Put a dirty page back on its device. A short tail page is written short; the
 // bytes the cache zeroed past the device end are not ours to write.
+//
+// A short or failed write leaves the page dirty. The caller is told, and the
+// next flush or eviction retries the page instead of publishing it as clean.
 static bool writeback(Entry* e) {
     uint32_t n = sectors_in_page(e->dev, e->page);
     if (e->dev->write(e->dev->priv, e->page * PAGE_SECTORS, n, e->data) != n)
@@ -132,7 +143,11 @@ static Entry* touch(Block::Device* dev, uint64_t page, bool load) {
     if (e == nullptr) return nullptr;
 
     if (load && !load_page(dev, page, e)) {
-        e->valid = false;   // nothing was installed, so do not hand it out
+        // Nothing was installed, so the slot is not handed out. Clear the rest
+        // of its state too, in case a partially loaded page left it looking
+        // reusable while still carrying old bytes.
+        e->valid = false;
+        e->dirty = false;
         return nullptr;
     }
 

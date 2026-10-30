@@ -132,7 +132,10 @@ between them; dirty pages stay in the cache until `sync` or `fsync` writes them
 back, and only then is the drive's own write cache flushed. The table is static
 BSS, so the cache works at mount time and its cost is fixed and visible.
 Everything ext2 does goes through it, which is what makes the cache the single
-view of the disk.
+view of the disk. A device that answers a page transfer short, which is how a
+mid-command ATA error surfaces, fails the cache operation: the partly loaded
+page is not installed, and a partly written page stays dirty so the next flush
+retries it instead of declaring it clean.
 
 | device | source | notes |
 |---|---|---|
