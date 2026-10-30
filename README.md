@@ -39,8 +39,9 @@ shell grammar is, all in code you can read and change.
 - `/` is an **overlay**: a read-only tarfs lower layer over a writable upper,
   with copy-up on write and `.wh.<name>` whiteouts on delete. The upper is the
   `root` directory on the data disk when one is present, so writes at `/`,
-  `/home` and the rest survive a reboot; `/tmp` is a separate ramfs (volatile,
-  1 MB per file). Without a disk the upper is a ramfs too.
+  `/home` and the rest survive a reboot; `/tmp` is a volatile ramfs capped at
+  1 MB per file when a disk is present. Without a disk the writable root is a
+  ramfs, and `/tmp` is a directory in it, sharing its 8 MB of file data.
 - A node-shaped VFS with `ino`/type/size/mode/mtime, so `ls -l` works and
   `opendir`/`readdir` report real `d_ino`/`d_type`.
 - Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
@@ -242,6 +243,7 @@ documentation. The guest groups are documented in
 | [`docs/architecture.md`](docs/architecture.md) | how the OS is put together: the boot path and the major subsystems |
 | [`docs/adding-an-app.md`](docs/adding-an-app.md) | a new program: one `.cpp` and a line in `files/apps` |
 | [`docs/syscalls.md`](docs/syscalls.md) | the syscall ABI and the mechanisms below it |
+| [`docs/limits.md`](docs/limits.md) | every fixed capacity, where it is enforced, and what happens at the edge |
 | [`tests/`](tests/) | the test suite; see [`tests/README.md`](tests/README.md) |
 
 ## Status

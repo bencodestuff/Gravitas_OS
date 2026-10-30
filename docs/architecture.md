@@ -66,8 +66,9 @@ The kernel side is one function, `kmain` in `src/kernel/main.cpp`. In order:
    second time with the image's `root` directory as the root inode: that mount
    is the overlay's upper layer, so writes to `/` are ext2 writes and survive a
    reboot. The directory is created if the image predates it. If the disk is
-   missing or is not ext2, the upper stays a ramfs. `/tmp` is a ramfs mount,
-   volatile and capped at 1 MB per file.
+   missing or is not ext2, the upper stays a ramfs. With a disk, `/tmp` is a
+   separate ramfs mount, volatile and capped at 1 MB per file; without one it is
+   a directory in the root ramfs and shares that ramfs's 8 MB of file data.
 7. **Presentation and data.** The console font (`Font::load_from_disk`), the
    fault-handler symbol table (`/symbols.bin`), and the environment block
    (`/env`).
@@ -109,8 +110,9 @@ rather than touching the immutable tar. When a disk is present the upper is
 the image's `root` directory, so a copy-up, a new directory or a whiteout is
 an ordinary ext2 write and outlives the reboot; `sync` and `fsync` flush the
 drive. Without a disk the upper is a ramfs and the tree lasts for the session.
-`/tmp` is always a ramfs, so temporary files never spend the disk's room and
-keep the 1 MB per-file cap.
+`/tmp` is RAM-backed whenever it is separate, so temporary files never spend
+the disk's room and keep the 1 MB per-file cap; a diskless boot has no separate
+`/tmp` mount, so its files share the root ramfs's 8 MB budget.
 
 ### Block layer and the disk
 

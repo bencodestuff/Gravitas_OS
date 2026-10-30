@@ -320,9 +320,11 @@ extern "C" void kmain(void) {
     kprint(store ? "[VFS] Mounted / (overlay: ext2 /disk/root over tarfs).\n"
                  : "[VFS] Mounted / (overlay: ramfs over tarfs).\n");
 
-    // 5. The data disk under its own name, then volatile scratch space. /tmp is
-    //    RAM on purpose: it is this system's tmpfs, and the ramfs per-file cap
-    //    (ENOSPC at 1 MB) is the ceiling the file tests expect to hit.
+    // 5. The data disk under its own name, then volatile scratch space when a
+    //    disk is present. /tmp is RAM on purpose: it is this system's tmpfs,
+    //    and the ramfs per-file cap (ENOSPC at 1 MB) is the ceiling the file
+    //    tests expect to hit. Without a disk /tmp is a directory in the root
+    //    ramfs, not a separate mount.
     if (data != nullptr && !VFS::mount("/disk", data))
         kprint("[Ext2] no room in the mount table\n");
     if (store && !VFS::mount("/tmp", RamFS::instance()))
