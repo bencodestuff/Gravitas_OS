@@ -154,11 +154,14 @@ struct Filesystem {
     int (*create)(void* priv, Node* dir, const char* name, FileType type,
                   Node** out);
 
-    // Remove an entry from 'dir' (nullptr when read-only). Returns 0 or -1.
+    // Remove an entry from 'dir' (nullptr when read-only). Returns 0, or a
+    // negated errno (ENOENT, EISDIR, EIO, ...): the VFS passes the reason to
+    // the caller rather than flattening every failure to one code.
     int (*unlink)(void* priv, Node* dir, const char* name);
 
     // Move 'from' in 'from_dir' to 'to' in 'to_dir' (nullptr when read-only).
-    // Both directories belong to this filesystem. Returns 0 or -1.
+    // Both directories belong to this filesystem. Returns 0, or a negated
+    // errno (ENOENT, EINVAL, EISDIR, ...).
     int (*rename)(void* priv, Node* from_dir, const char* from,
                   Node* to_dir, const char* to);
 
@@ -323,12 +326,12 @@ long readdir_entries(const char* path, DirEntry* out, uint64_t max);
 long lseek_fd(int fd, long offset, int whence);
 
 // Create a directory / remove a file, by path. Return 0 or -errno
-// (ENOENT/EROFS/EEXIST/ENOSPC; the backend's own code for a create failure).
+// (ENOENT/EROFS/EEXIST/ENOSPC/EISDIR; the backend's own code for a failure).
 int mkdir(const char* path);
 int unlink(const char* path);
 
 // Rename/move a path. Both sides must live on the same filesystem. Returns 0
-// or -errno (ENOENT/EINVAL/EROFS).
+// or -errno (ENOENT/EINVAL/EISDIR/EROFS; the backend's own code).
 int rename(const char* from, const char* to);
 
 // Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO).

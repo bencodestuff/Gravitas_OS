@@ -373,8 +373,12 @@ int main(int argc, char** argv) {
     check(mkdir("/disk/rwtestdir6", 0755) == 0, "mkdir rwtestdir6");
     fd = open("/disk/rwtestdir6/keep.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd >= 0) { write(fd, "k", 1); close(fd); }
-    check(rename("/disk/rwtestdir5", "/disk/rwtestdir6") == -1,
-          "rename refuses to replace a non-empty directory");
+    errno = 0;
+    check(unlink("/disk/rwtestdir6") == -1 && errno == EISDIR,
+          "unlink a non-empty directory -> EISDIR");
+    errno = 0;
+    check(rename("/disk/rwtestdir5", "/disk/rwtestdir6") == -1 && errno == EISDIR,
+          "rename over a non-empty directory -> EISDIR");
     check(stat("/disk/rwtestdir5", &st) == 0 && S_ISDIR(st.st_mode) &&
           stat("/disk/rwtestdir6", &st) == 0 && S_ISDIR(st.st_mode),
           "both directories are still there");

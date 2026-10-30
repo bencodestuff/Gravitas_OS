@@ -470,9 +470,10 @@ static int ov_unlink(void* priv, VFS::Node* dir, const char* name) {
 
     if (u != nullptr) {
         upper_fs->release(upper_fs->priv, u);
-        if (upper_fs->unlink(upper_fs->priv, d->upper, name) != 0) {
+        int r = upper_fs->unlink(upper_fs->priv, d->upper, name);
+        if (r != 0) {
             if (made) remove_whiteout(d->upper, name);
-            return -Errno::EIO;
+            return r;   // the upper's reason, not a flat EIO
         }
     }
     return 0;
@@ -491,9 +492,11 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (!join(fd->path, from, from_path, sizeof(from_path)))
         return -Errno::ENAMETOOLONG;
 
-    VFS::Node* fup = ensure_dir(&fd->upper, fd->path, nullptr);
-    VFS::Node* tup = ensure_dir(&td->upper, td->path, nullptr);
-    if (fup == nullptr || tup == nullptr) return -Errno::EIO;
+    int fderr = 0, tderr = 0;
+    VFS::Node* fup = ensure_dir(&fd->upper, fd->path, &fderr);
+    VFS::Node* tup = ensure_dir(&td->upper, td->path, &tderr);
+    if (fup == nullptr) return fderr ? fderr : -Errno::EIO;
+    if (tup == nullptr) return tderr ? tderr : -Errno::EIO;
 
     // What the two layers hold under the old and the new name. A whited-out
     // lower name is not there as far as the overlay is concerned.
@@ -555,8 +558,9 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (lower_from) r = add_whiteout(fup, from, &made_from);
     if (r == 0 && lower_to) r = add_whiteout(tup, to, &made_to);
     if (r == 0) {
+        // Keep the upper's reason: a rename that could not be recorded is not
+        // a missing file, and EIO would hide the difference.
         r = upper_fs->rename(upper_fs->priv, fup, from, tup, to);
-        if (r != 0) r = -Errno::EIO;
     }
     if (r != 0) {
         if (made_from) remove_whiteout(fup, from);

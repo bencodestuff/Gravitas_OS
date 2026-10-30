@@ -880,7 +880,10 @@ int unlink(const char* path) {
     if (dir == nullptr) return -Errno::ENOENT;
     int r = fs->unlink(fs->priv, dir, name);
     fs->release(fs->priv, dir);
-    return r == 0 ? 0 : -Errno::ENOENT;
+    // The backend's reason, as create already does: a stale name is ENOENT,
+    // an unemptied directory is EISDIR, a failed write is EIO. Flattening them
+    // to ENOENT made `rm` of a non-empty directory look like a missing file.
+    return r;
 }
 
 // Rename resolves like mkdir/unlink: against the CWD (or an absolute path)
@@ -912,7 +915,9 @@ int rename(const char* from, const char* to) {
     int r = from_fs->rename(from_fs->priv, fdir, from_name, tdir, to_name);
     from_fs->release(from_fs->priv, fdir);
     from_fs->release(from_fs->priv, tdir);
-    return r == 0 ? 0 : -Errno::ENOENT;
+    // The backend's reason: ENOENT for a missing source, EINVAL for a move
+    // into the tree's own subtree, EISDIR for a directory case it refuses.
+    return r;
 }
 
 int ftruncate_fd(int fd, uint64_t size) {

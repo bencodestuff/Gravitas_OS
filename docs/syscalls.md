@@ -73,9 +73,9 @@ table.
 | `ENOSYS` | 38 | no such syscall (a retired hole or an unknown number) |
 
 A successful call never clears `errno` (check the return value, as in C).
-Not every syscall distinguishes every reason yet: `OPEN` and `MKDIR` pass the
-backend's code through, but `UNLINK`, `RENAME` and `FTRUNCATE` still map any
-failure to `ENOENT`, `ENOENT` and `ENOSPC`.
+Not every syscall distinguishes every reason yet: `OPEN`, `MKDIR`, `UNLINK` and
+`RENAME` pass the backend's code through, while `FTRUNCATE` still maps any
+failure to `ENOSPC`.
 
 ## Limits
 
@@ -130,6 +130,16 @@ filesystem has no room for another entry (or block), `EEXIST` when the name is
 taken, `EINVAL` for a name the backend will not take, and `EIO` for a real I/O
 failure. `MKDIR` passes the same code through, so `mkdir -p` can tell "already
 there" (which it ignores) from "no room" (which it reports).
+
+`UNLINK` removes a file or an empty directory, and reports why it could not:
+`ENOENT` when the name is not there, `EISDIR` when the directory still has
+entries (empty it first), `EROFS` on a read-only filesystem, and `EIO` when the
+backend could not finish the removal. `RENAME` moves a name within one
+filesystem and reports the backend's reason too: `ENOENT`, `EINVAL` for a move
+into the tree's own subtree or a name it will not accept, `EISDIR` for a
+directory case it refuses (including a non-empty destination directory), and
+`EROFS`. A caller can therefore tell a missing name from a move that is merely
+not allowed; neither call invents `ENOENT` any more.
 
 The root is an **overlay**: the tar image is the read-only lower layer and the
 writable upper is the image's `root` directory when a disk is present, so a
@@ -257,10 +267,10 @@ value with a different meaning.
 | 41 | `LSEEK` | `fd, offset, whence` | new offset, or −1 |
 | 42 | `STAT` | `path, out*` | 0/−1; fills `{size, is_dir, ino, mode, mtime}` |
 | 43 | `MKDIR` | `path` | 0 or −1 |
-| 44 | `UNLINK` | `path` | 0 or −1 |
+| 44 | `UNLINK` | `path` | 0 or −1 (ENOENT, EISDIR, ENOTDIR, EROFS, EIO) |
 | 45 | `FTRUNCATE` | `fd, size` | 0 or −1 |
 | 46 | `TIMER_SET` | `ms` (0 cancels) | 0; posts `GRV_EV_TIMER` on expiry |
-| 47 | `RENAME` | `from, to` | 0 or −1 (both sides must be on the same filesystem) |
+| 47 | `RENAME` | `from, to` | 0 or −1 (ENOENT, EINVAL, EISDIR, ENOTDIR, EROFS; both sides must be on the same filesystem) |
 | 48 | `TIME` | — | wall-clock seconds since the Unix epoch (RTC-anchored) |
 | 49 | `SURFACE_RESIZE` | `id, w, h, out*` | 0 or −1 (owner only; the buffer is reallocated, so the caller must re-bind to the new `address`) |
 | 50 | `MAP_FILE` | `path, out*` | 0 or −1; fills `{address, size}` with a read-only, zero-copy mapping |

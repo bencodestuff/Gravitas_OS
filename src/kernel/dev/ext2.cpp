@@ -1543,33 +1543,35 @@ static void inode_put(Fs* f, uint32_t ino, bool is_dir) {
 
 static int e2_unlink(void* priv, VFS::Node* dir, const char* name) {
     Fs* f = (Fs*)priv;
-    if (!f->writable || dir->type != VFS::FT_DIR) return -1;
+    if (!f->writable) return -Errno::EROFS;
+    if (dir->type != VFS::FT_DIR) return -Errno::ENOTDIR;
     uint32_t len = 0;
-    if (!name_valid(name, &len)) return -1;
+    if (!name_valid(name, &len)) return -Errno::EINVAL;
 
     uint64_t flags = irq_save();
 
     E2Node* d = (E2Node*)dir->priv;
     Inode din;
-    if (!read_inode(f, d->ino, &din)) { irq_restore(flags); return -1; }
+    if (!read_inode(f, d->ino, &din)) { irq_restore(flags); return -Errno::EIO; }
 
     uint32_t ino = 0;
     if (!dir_find(f, &din, name, len, &ino, nullptr, nullptr, nullptr)) {
         irq_restore(flags);
-        return -1;
+        return -Errno::ENOENT;
     }
 
     Inode in;
-    if (!read_inode(f, ino, &in)) { irq_restore(flags); return -1; }
+    if (!read_inode(f, ino, &in)) { irq_restore(flags); return -Errno::EIO; }
     bool is_dir = (in.mode & S_IFDIR_BIT) != 0;
 
     // A directory only goes when it is empty, and only through its own entry,
-    // never through "." or ".." (name_valid already refused those).
-    if (is_dir && !dir_is_empty(f, &in)) { irq_restore(flags); return -1; }
+    // never through "." or ".." (name_valid already refused those). EISDIR is
+    // what tells the caller to empty it rather than that the name is missing.
+    if (is_dir && !dir_is_empty(f, &in)) { irq_restore(flags); return -Errno::EISDIR; }
 
     if (!dir_remove(f, &din, name, len, nullptr, nullptr)) {
         irq_restore(flags);
-        return -1;
+        return -Errno::EIO;
     }
 
     uint32_t now = (uint32_t)Rtc::seconds_now();
@@ -1594,16 +1596,17 @@ static int e2_unlink(void* priv, VFS::Node* dir, const char* name) {
 static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
                      VFS::Node* to_dir, const char* to) {
     Fs* f = (Fs*)priv;
-    if (!f->writable || from_dir->type != VFS::FT_DIR || to_dir->type != VFS::FT_DIR) {
-        return -1;
+    if (!f->writable) return -Errno::EROFS;
+    if (from_dir->type != VFS::FT_DIR || to_dir->type != VFS::FT_DIR) {
+        return -Errno::ENOTDIR;
     }
 
     uint32_t flen = 0, tlen = 0;
     if (!name_valid(from, &flen) || !name_valid(to, &tlen)) {
-        return -1;
+        return -Errno::EINVAL;
     }
     if (flen == 1 && from[0] == '.') {
-        return -1;
+        return -Errno::EINVAL;
     }
 
     uint64_t flags = irq_save();
@@ -1613,7 +1616,7 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     Inode fdin, tdin;
     if (!read_inode(f, fdn->ino, &fdin) || !read_inode(f, tdn->ino, &tdin)) {
         irq_restore(flags);
-        return -1;
+        return -Errno::EIO;
     }
     bool same_dir = fdn->ino == tdn->ino;
     // When both names live in one directory, a single inode object is the truth:
@@ -1624,7 +1627,7 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     uint32_t src_ino = 0;
     if (!dir_find(f, &fdin, from, flen, &src_ino, nullptr, nullptr, nullptr)) {
         irq_restore(flags);
-        return -1;
+        return -Errno::ENOENT;
     }
     if (same_dir && flen == tlen && name_eq(from, to, flen)) {
         irq_restore(flags);
@@ -1632,17 +1635,18 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     }
 
     Inode src;
-    if (!read_inode(f, src_ino, &src)) { irq_restore(flags); return -1; }
+    if (!read_inode(f, src_ino, &src)) { irq_restore(flags); return -Errno::EIO; }
     bool src_is_dir = (src.mode & S_IFDIR_BIT) != 0;
 
     // A directory cannot be moved into its own subtree: walking up from the new
     // parent through ".." must not pass through the source. This catches both
     // "move into itself" and "move into a child", either of which would leave a
-    // cycle no later path walk could escape.
+    // cycle no later path walk could escape. EINVAL is the same refusal ramfs
+    // gives for the same move.
     if (src_is_dir) {
         uint32_t p = tdn->ino;
         for (uint32_t depth = 0; depth < 4096; depth++) {
-            if (p == src_ino) { irq_restore(flags); return -1; }
+            if (p == src_ino) { irq_restore(flags); return -Errno::EINVAL; }
             if (p == f->root_ino) break;
             Inode pin;
             if (!read_inode(f, p, &pin)) break;
@@ -1657,14 +1661,20 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (dst_exists) {
         if (dst_ino == src_ino) { irq_restore(flags); return 0; }   // same inode
         Inode dst;
-        if (!read_inode(f, dst_ino, &dst)) { irq_restore(flags); return -1; }
+        if (!read_inode(f, dst_ino, &dst)) { irq_restore(flags); return -Errno::EIO; }
         bool dst_is_dir = (dst.mode & S_IFDIR_BIT) != 0;
-        if (src_is_dir != dst_is_dir) { irq_restore(flags); return -1; }
-        if (dst_is_dir && !dir_is_empty(f, &dst)) { irq_restore(flags); return -1; }
+        if (src_is_dir != dst_is_dir) {
+            irq_restore(flags);
+            return dst_is_dir ? -Errno::EISDIR : -Errno::ENOTDIR;
+        }
+        if (dst_is_dir && !dir_is_empty(f, &dst)) {
+            irq_restore(flags);
+            return -Errno::EISDIR;
+        }
 
         if (!dir_remove(f, tdir, to, tlen, nullptr, nullptr)) {
             irq_restore(flags);
-            return -1;
+            return -Errno::EIO;
         }
         if (dst_is_dir) {
             // The replaced directory's ".." was one of this parent's links.
@@ -1686,20 +1696,22 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         tdin.links_count++;
         if (!set_dotdot(f, &src, tdn->ino)) {
             irq_restore(flags);
-            return -1;
+            return -Errno::EIO;
         }
     }
 
     // Insert first, then remove: a failure halfway leaves the name reachable in
-    // the old place rather than nowhere.
+    // the old place rather than nowhere. dir_insert already reports why (ENOSPC
+    // when the directory needs a block it cannot have).
     uint8_t ftype = f->dev->has_filetype ? (src_is_dir ? 2 : 1) : 0;
-    if (dir_insert(f, tdir, to, tlen, src_ino, ftype) != 0) {
+    int ierr = dir_insert(f, tdir, to, tlen, src_ino, ftype);
+    if (ierr != 0) {
         irq_restore(flags);
-        return -1;
+        return ierr;
     }
     if (!dir_remove(f, &fdin, from, flen, nullptr, nullptr)) {
         irq_restore(flags);
-        return -1;
+        return -Errno::EIO;
     }
 
     uint32_t now = (uint32_t)Rtc::seconds_now();

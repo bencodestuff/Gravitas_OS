@@ -284,6 +284,22 @@ int main(int argc, char** argv) {
     grv_close(fd);
     check(grv_unlink(after) == 0, "clean up the heap check");
 
+    // --- directory failures keep their reason ---
+    // A non-empty directory is EISDIR, not ENOENT, so a caller can tell "empty
+    // it first" from "no such name".
+    const char* ne = "/tmp/ftdir/ne";
+    grv_unlink(ne);
+    check(grv_mkdir(ne) == 0, "mkdir for the non-empty unlink");
+    fd = grv_open("/tmp/ftdir/ne/child.txt", GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "create a file inside it");
+    grv_close(fd);
+    errno = 0;
+    check(grv_unlink(ne) == -1 && errno == EISDIR,
+          "unlink a non-empty directory -> EISDIR");
+
+    check(grv_unlink("/tmp/ftdir/ne/child.txt") == 0 &&
+          grv_unlink(ne) == 0, "clean up the directory checks");
+
     if (fails == 0) { printf("filetest: all checks pass\n"); return 0; }
     printf("filetest: %d check(s) failed\n", fails);
     return 1;

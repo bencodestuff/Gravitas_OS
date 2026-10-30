@@ -177,8 +177,11 @@ int main(int argc, char** argv) {
     check(unlink("/overlay-both-moved.txt") == 0, "unlink the moved file");
 
     // 10. unlink doubles as rmdir, but a directory the image owns is never
-    //     hidden: its subtree would become unreachable.
-    check(unlink("/fonts") != 0, "unlink a non-empty lower directory is refused");
+    //     hidden: its subtree would become unreachable. The reason survives
+    //     the VFS, so a caller can tell EISDIR from a missing name.
+    errno = 0;
+    check(unlink("/fonts") == -1 && errno == EISDIR,
+          "unlink a non-empty lower directory -> EISDIR");
     check(stat("/fonts", &st) == 0 && S_ISDIR(st.st_mode), "the directory survives");
     check(stat("/fonts/bizcat.psf", &st) == 0, "and so does its subtree");
 

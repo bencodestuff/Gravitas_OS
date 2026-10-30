@@ -300,11 +300,14 @@ static int ram_create(void* priv, VFS::Node* dir, const char* name,
 static int ram_unlink(void* priv, VFS::Node* dir, const char* name) {
     (void)priv;
     RamNode* d = (RamNode*)dir->priv;
-    if (!d->is_dir) return -1;
+    if (!d->is_dir) return -Errno::ENOTDIR;
 
     RamNode* c = find_child(d, name);
-    if (c == nullptr) return -1;
-    if (c->is_dir && c->first_child) return -1;   // non-empty dir
+    if (c == nullptr) return -Errno::ENOENT;
+    // unlink doubles as rmdir here, but only an empty directory goes. Saying
+    // EISDIR rather than ENOENT is what lets a caller tell a wrong name from a
+    // directory it has to empty first.
+    if (c->is_dir && c->first_child) return -Errno::EISDIR;
 
     detach(d, c);
     node_unref(c); // the tree's reference; a live VFS::Node keeps the node alive
@@ -319,18 +322,18 @@ static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
     (void)priv;
     RamNode* fdir = (RamNode*)from_dir_node->priv;
     RamNode* tdir = (RamNode*)to_dir_node->priv;
-    if (!fdir->is_dir || !tdir->is_dir) return -1;
-    if (from[0] == '\0' || to[0] == '\0') return -1;
+    if (!fdir->is_dir || !tdir->is_dir) return -Errno::ENOTDIR;
+    if (from[0] == '\0' || to[0] == '\0') return -Errno::EINVAL;
     // Refuse a destination that would be cut down; a shortened name would move
     // the file somewhere the caller cannot find it.
     if (name_too_long(to)) return -Errno::ENAMETOOLONG;
 
     RamNode* src = find_child(fdir, from);
-    if (src == nullptr) return -1;
+    if (src == nullptr) return -Errno::ENOENT;
 
     RamNode* dst = find_child(tdir, to);
     if (dst != nullptr && dst != src) {
-        if (dst->is_dir && dst->first_child) return -1;   // non-empty dir
+        if (dst->is_dir && dst->first_child) return -Errno::EISDIR; // non-empty dir
         detach(tdir, dst);
         node_unref(dst); // as in unlink: a live VFS::Node keeps it alive
     }
