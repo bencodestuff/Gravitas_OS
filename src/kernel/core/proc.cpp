@@ -165,59 +165,6 @@ namespace Sched {
         return 0;
     }
 
-    void create_task(void(*entry_point)()) {
-        // 1. Allocate a new Task struct
-        Task* new_task = new Task;
-        new_task->id = ++task_counter;
-        new_task->state = READY;
-        new_task->wake_timestamp = 0;
-        new_task->getc_waiting = false;
-        new_task->event_input = false;
-        new_task->console_owner = -1;
-        new_task->con_in_head = new_task->con_in_tail = 0;
-        new_task->con_out_head = new_task->con_out_tail = 0;
-        new_task->con_notified = false;
-        new_task->timer_deadline = 0;
-        new_task->timer_armed = false;
-        copy_name(new_task->name, "kernel-thread", (int)sizeof(new_task->name));
-
-        // 2. Allocate a Stack for this thread (32KB: deep syscalls + nested
-        //    IRQs live here). The forged frame goes at the very top of the
-        //    allocation, so the canary below it sees any overrun.
-        uint64_t* stack_bottom = new uint64_t[4096];
-        stack_bottom[0] = KSTACK_CANARY; // verified each tick (see sched.cpp)
-        uint64_t* stack_top = stack_bottom + 4096;
-        new_task->user_stack_guard = 0; // kernel threads have no user stack
-
-        new_task->kstack_top = (uint64_t)stack_top;
-
-        // 3. Forge the Stack!
-        // We need to match exactly what 'switch_context' expects to pop.
-        // Order: RBX, RBP, R12, R13, R14, R15, RIP (Return Address)
-        
-        stack_top--; *stack_top = (uint64_t)entry_point; // RIP (where to start)
-        stack_top--; *stack_top = 0; // R15
-        stack_top--; *stack_top = 0; // R14
-        stack_top--; *stack_top = 0; // R13
-        stack_top--; *stack_top = 0; // R12
-        stack_top--; *stack_top = 0; // RBP
-        stack_top--; *stack_top = 0; // RBX
-
-        new_task->rsp = (uint64_t)stack_top;
-        new_task->kstack_mem = stack_bottom;
-        new_task->waiting_on = -1;
-        new_task->exit_code = 0;
-        new_task->fb_map_base = 0;  // no framebuffer mapping yet
-        new_task->fb_map_pages = 0;
-
-        // 4. Add to the circular linked list
-        new_task->next = ready_queue->next;
-        ready_queue->next = new_task;
-        
-        kprint("[Sched] Task Created.\n");
-    }
-
-
     // Ownership rule for create_user_task: on success the task is linked into
     // ready_queue and owns everything it was given. On -1 nothing was linked,
     // so this function releases the Task, its kernel stack and any user VA

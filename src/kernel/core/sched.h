@@ -5,7 +5,6 @@
 
 namespace Sched {
     void init();
-    void create_task(void(*entry_point)());
     void yield(); // Voluntarily give up CPU
 
     // Returns the current task's fd table (array of MAX_FDS pointers)
