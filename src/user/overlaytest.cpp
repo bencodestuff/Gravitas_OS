@@ -64,6 +64,31 @@ int main(int argc, char** argv) {
     if (lfd >= 0) close(lfd);
     check(unlink(live) == 0, "clean up the live-size file");
 
+    // 1c. A file that lives only in the image, opened three times before anyone
+    //     writes: the first write copies it up, the second must copy nothing (a
+    //     second copy-up would put the image's stale bytes back over the first
+    //     writer's), and the reader, opened while the file was lower-only, must
+    //     find the upper now that it exists. /overlay-both.txt is the image's
+    //     spare file for this test; step 9 uses it again afterwards.
+    const char* shared = "/overlay-both.txt";   // "lower layer\n", 12 bytes
+    int ws1 = open(shared, O_WRONLY);
+    int ws2 = open(shared, O_WRONLY);
+    int rs  = open(shared, O_RDONLY);
+    check(ws1 >= 0 && ws2 >= 0 && rs >= 0, "open a lower-only file three times");
+    if (ws1 >= 0 && ws2 >= 0 && rs >= 0) {
+        check(write(ws1, "AAAA", 4) == 4, "write through the first copy-up");
+        check(lseek(ws2, 6, SEEK_SET) == 6, "seek the second writer");
+        check(write(ws2, "BB", 2) == 2, "write through the second descriptor");
+        check(read(rs, buf, sizeof(buf)) == 12 &&
+              memcmp(buf, "AAAAr BByer\n", 12) == 0,
+              "the second write kept the first writer's bytes");
+        check(fstat(rs, &st) == 0 && st.st_size == 12,
+              "a reader opened before the copy-up sees the upper's length");
+    }
+    if (rs >= 0) close(rs);
+    if (ws2 >= 0) close(ws2);
+    if (ws1 >= 0) close(ws1);
+
     // 2. mkdir in "/", and use the new directory.
     unlink("/overlay-dir/inner.txt");
     unlink("/overlay-dir");

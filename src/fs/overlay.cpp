@@ -246,14 +246,16 @@ static void discard_upper(const char* path, VFS::Node* up) {
     upper_fs->release(upper_fs->priv, up);
 }
 
-// Copy a lower file's bytes into a freshly created upper entry. False when the
-// lower could not be read in full or the upper would not take every byte: a
-// full upper reports that by writing nothing, so a short copy is a real
-// failure, not the end of the file.
-static bool copy_up(OvNode* on, VFS::Node* up) {
-    if (on->lower == nullptr || on->lower->type != VFS::FT_FILE) return true;
-    if (on->lower->size == 0) return true;
-    if (on->lower->fs->read == nullptr || up->fs->write == nullptr) return false;
+// Copy a lower file's bytes into a freshly created upper entry. 0 when the
+// upper holds every byte, -ENOSPC when it would not take them (a full backend
+// reports that by writing less, not by stopping at the end of the file) and
+// -EIO when the lower could not be read in full. Keeping the two apart is what
+// lets a caller tell a full disk from a failure of the image.
+static int copy_up(OvNode* on, VFS::Node* up) {
+    if (on->lower == nullptr || on->lower->type != VFS::FT_FILE) return 0;
+    if (on->lower->size == 0) return 0;
+    if (on->lower->fs->read == nullptr || up->fs->write == nullptr)
+        return -Errno::EIO;
 
     char buf[1024];
     uint64_t off = 0;
@@ -262,31 +264,102 @@ static bool copy_up(OvNode* on, VFS::Node* up) {
         if (want > sizeof(buf)) want = sizeof(buf);
         uint64_t got = on->lower->fs->read(on->lower->fs->priv, on->lower,
                                           buf, want, off);
-        if (got == 0 || got > want) return false;
+        if (got == 0 || got > want) return -Errno::EIO;
         uint64_t put = up->fs->write(up->fs->priv, up, buf, got, off);
-        if (put != got) return false;
+        if (put != got) return -Errno::ENOSPC;
         off += got;
     }
-    return true;
+    return 0;
 }
 
 // Give an entry an upper counterpart, copying a lower file's bytes up with it.
 // The copy either lands whole or not at all: publishing a partial upper would
 // make the missing tail read as zeros for the rest of the session, and the
-// caller (a write) can then report ENOSPC instead.
-static bool make_upper(OvNode* on) {
-    if (on->upper != nullptr) return true;
-    if (upper_fs == nullptr || upper_fs->create == nullptr) return false;
+// caller can then report the reason instead.
+//
+// An upper entry that is already there is the authority, not a place to copy
+// into: another descriptor may have copied the file up already, or this overlay
+// may have created and written it. Copying the lower bytes over it would throw
+// that newer content away, so it is adopted as on->upper and nothing is copied.
+//
+// Returns 0, or the reason the entry could not be materialised: ENOSPC when the
+// upper would not take the bytes, EIO when the lower could not be read or the
+// upper entry could not be created, EROFS when the upper cannot create at all.
+static int make_upper(OvNode* on) {
+    if (on->upper != nullptr) return 0;
+    if (upper_fs == nullptr || upper_fs->create == nullptr) return -Errno::EROFS;
 
-    VFS::Node* up = VFS::node_create(upper_fs, on->path, VFS::FT_FILE);
-    if (up == nullptr) return false;
+    // Already there before this call: adopt it. Its live size is checked for
+    // the entry node_create may find too, since a name that appeared between
+    // this lookup and that create is just as materialised.
+    VFS::Node* up = VFS::node_walk(upper_fs, on->path);
+    if (up != nullptr) {
+        // A directory under this name is not a copy of the file the node names.
+        if (up->type != VFS::FT_FILE) {
+            upper_fs->release(upper_fs->priv, up);
+            return -Errno::EISDIR;
+        }
+        on->upper = up;
+        return 0;
+    }
 
-    if (!copy_up(on, up)) {
+    int err = 0;
+    up = VFS::node_create(upper_fs, on->path, VFS::FT_FILE, &err);
+    if (up == nullptr) return err ? err : -Errno::EIO;
+
+    // node_create hands back an existing entry as readily as a new one. Content
+    // means materialised, and the lower bytes must not go over it. An empty one
+    // is the entry this call made, which still needs the lower's bytes; asking
+    // the backend for the length rather than trusting the node's snapshot is
+    // what makes that check see a write from another descriptor.
+    if (VFS::node_size(up) != 0) {
+        on->upper = up;
+        return 0;
+    }
+
+    int r = copy_up(on, up);
+    if (r != 0) {
         discard_upper(on->path, up);
-        return false;
+        return r;
     }
     on->upper = up;
-    return true;
+    return 0;
+}
+
+// Attach the upper view when another descriptor has copied this file up since
+// this node was made. Without it a lower-only node would go on reading the
+// image's bytes (and reporting its length) for the rest of the session, even
+// though the upper is now the authoritative copy. Nothing is copied here: the
+// upper entry exists because a copy-up already happened, so this only stops the
+// node looking through the lower layer. A miss is not an error; it means the
+// lower is still the view.
+static void revalidate(OvNode* on) {
+    if (on->upper != nullptr || upper_fs == nullptr) return;
+    if (on->lower == nullptr || on->lower->type != VFS::FT_FILE) return;
+
+    char parent[VFS::PATH_MAX];
+    char name[VFS::NAME_MAX];
+    if (!VFS::node_split(on->path, parent, name)) return;
+
+    // The same name under the same parent, never a partial path: a lookup that
+    // had to walk somewhere else would be looking at a different entry.
+    VFS::Node* dir = VFS::node_walk(upper_fs, parent);
+    if (dir == nullptr) return;
+
+    VFS::Node* up = nullptr;
+    // A marker means the name was deleted after this descriptor opened it, so
+    // whatever sits there now is a different file and must not be adopted: this
+    // descriptor still names the bytes it opened.
+    if (!whited_out(dir, name))
+        up = upper_fs->lookup(upper_fs->priv, dir, name);
+    upper_fs->release(upper_fs->priv, dir);
+    if (up == nullptr) return;
+
+    if (up->type != VFS::FT_FILE) {
+        upper_fs->release(upper_fs->priv, up);
+        return;
+    }
+    on->upper = up;
 }
 
 // --- the ops -----------------------------------------------------------
@@ -351,6 +424,7 @@ static uint64_t ov_read(void* priv, VFS::Node* node, void* buf,
                         uint64_t count, uint64_t offset) {
     (void)priv;
     OvNode* on = (OvNode*)node->priv;
+    revalidate(on);
     VFS::Node* src = on->upper ? on->upper : on->lower;
     if (src == nullptr || src->fs->read == nullptr) return 0;
     return src->fs->read(src->fs->priv, src, buf, count, offset);
@@ -360,7 +434,8 @@ static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf,
                          uint64_t count, uint64_t offset) {
     (void)priv;
     OvNode* on = (OvNode*)node->priv;
-    if (!make_upper(on)) return 0;
+    // A failed copy-up writes nothing, which the VFS reports as a short write.
+    if (make_upper(on) != 0) return 0;
     if (on->upper->fs->write == nullptr) return 0;
     return on->upper->fs->write(on->upper->fs->priv, on->upper, buf, count, offset);
 }
@@ -368,12 +443,12 @@ static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf,
 // The length of the view a read would use: the upper copy once a file has been
 // copied up, the lower entry otherwise. Asking the layer rather than copying
 // its snapshot at lookup is what keeps two descriptors on one overlay file in
-// agreement after either of them writes. (A lower-only file that another
-// descriptor has just copied up still reads through this node's lower view;
-// the size reported here matches the bytes this node can actually see.)
+// agreement after either of them writes, and the revalidation is what lets a
+// descriptor opened before another's copy-up reach the upper at all.
 static uint64_t ov_size(void* priv, VFS::Node* node) {
     (void)priv;
     OvNode* on = (OvNode*)node->priv;
+    revalidate(on);
     VFS::Node* src = on->upper ? on->upper : on->lower;
     if (src == nullptr) return 0;
     return VFS::node_size(src);
@@ -382,8 +457,11 @@ static uint64_t ov_size(void* priv, VFS::Node* node) {
 static int ov_truncate(void* priv, VFS::Node* node, uint64_t size) {
     (void)priv;
     OvNode* on = (OvNode*)node->priv;
-    if (!make_upper(on)) return -1;
-    if (on->upper->fs->truncate == nullptr) return -1;
+    // The copy-up's reason travels on: a full upper is ENOSPC, a lower the
+    // overlay could not read is EIO, and neither is a flat "could not".
+    int r = make_upper(on);
+    if (r != 0) return r;
+    if (on->upper->fs->truncate == nullptr) return -Errno::EROFS;
     return on->upper->fs->truncate(on->upper->fs->priv, on->upper, size);
 }
 
@@ -542,11 +620,11 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
         }
         tmp.upper = nullptr;
         tmp.lower = l;
-        bool ok = make_upper(&tmp);
+        int up_err = make_upper(&tmp);
         if (tmp.upper) upper_fs->release(upper_fs->priv, tmp.upper);
-        if (!ok) {
+        if (up_err != 0) {
             lower_fs->release(lower_fs->priv, l);
-            return -Errno::EIO;
+            return up_err;
         }
     }
 
