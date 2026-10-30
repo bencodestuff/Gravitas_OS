@@ -14,6 +14,14 @@
 
 namespace MemMap {
 
+// The geometry of a mapping, the record MAP_FILE and SHM_MAP copy out.
+// Mirrors struct grv_map in grv/syscall.h; tools/test_abi.cpp pins the two
+// together.
+struct Mapping {
+    uint64_t address;   // first byte of the mapping in the caller's space
+    uint64_t size;      // bytes
+};
+
 // --- shared regions ---
 // Create a region of 'size' bytes (rounded up to pages), zeroed. Returns its id
 // (the caller's handle), or -1.

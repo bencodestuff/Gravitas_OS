@@ -39,14 +39,14 @@ constexpr uint8_t PACKET_BTN_MIDDLE = 0x04;
 namespace Mouse {
 
     // --- circular packet buffer (same pattern as the keyboard driver) ---
-    struct Packet {
+    struct BufferedPacket {
         int16_t dx, dy;
         int8_t  dz;       // wheel: positive = up/away, negative = down/toward
         uint8_t buttons;
     };
 
     #define BUFFER_SIZE 32
-    static Packet packet_buffer[BUFFER_SIZE];
+    static BufferedPacket packet_buffer[BUFFER_SIZE];
     static volatile int write_ptr = 0;
     static volatile int read_ptr = 0;
 
@@ -235,7 +235,7 @@ namespace Mouse {
 
             int next_write = (write_ptr + 1) % BUFFER_SIZE;
             if (next_write != read_ptr) {
-                Packet p;
+                BufferedPacket p;
                 p.dx = dx;
                 p.dy = dy;
                 p.dz = dz;
@@ -252,7 +252,7 @@ namespace Mouse {
 
     bool read_packet(int16_t* dx, int16_t* dy, uint8_t* buttons, int8_t* dz) {
         if (read_ptr == write_ptr) return false;
-        Packet p = packet_buffer[read_ptr];
+        BufferedPacket p = packet_buffer[read_ptr];
         read_ptr = (read_ptr + 1) % BUFFER_SIZE;
         if (dx) *dx = p.dx;
         if (dy) *dy = p.dy;

@@ -332,12 +332,20 @@ static void sys_sleep(IDT::Registers* regs) {
     Sched::yield();
 }
 
+// Mirrors struct grv_mouse_packet in grv/syscall.h. The host test pins that
+// side's offsets; this pins ours to the same numbers.
+static_assert(sizeof(Mouse::Packet) == 6 &&
+              offsetof(Mouse::Packet, dx) == 0 &&
+              offsetof(Mouse::Packet, dy) == 2 &&
+              offsetof(Mouse::Packet, buttons) == 4 &&
+              offsetof(Mouse::Packet, dz) == 5,
+              "Mouse::Packet must match struct grv_mouse_packet");
+
 static void sys_mouse_read(IDT::Registers* regs) {
     // Non-blocking; rax = 1 if a packet was drained, 0 if none. Once a display
     // authority exists the pointer is its alone (the WM brokers it).
-    struct MousePkt { int16_t dx, dy; uint8_t buttons; int8_t dz; };
-    MousePkt* out = (MousePkt*)regs->rdi;
-    if (!user_out(regs->rdi, sizeof(MousePkt))) { sys_efault(regs); return; }
+    Mouse::Packet* out = (Mouse::Packet*)regs->rdi;
+    if (!user_out(regs->rdi, sizeof(Mouse::Packet))) { sys_efault(regs); return; }
     int16_t dx, dy; uint8_t buttons; int8_t dz;
     if (Compositor::has_authority() && !Compositor::is_authority()) {
         regs->rax = 0;
@@ -349,17 +357,21 @@ static void sys_mouse_read(IDT::Registers* regs) {
     }
 }
 
+// Mirrors struct grv_fb_info in grv/syscall.h. The host test pins that side's
+// offsets; this pins ours to the same numbers.
+static_assert(sizeof(Framebuffer::Info) == 48 &&
+              offsetof(Framebuffer::Info, address) == 32 &&
+              offsetof(Framebuffer::Info, size) == 40,
+              "Framebuffer::Info must match struct grv_fb_info");
+
 static void sys_fb_info(IDT::Registers* regs) {
     // Maps the framebuffer into the CALLING task's address space at a fresh
     // user VA; returns the geometry and that address.
-    struct FbPkt { uint64_t w, h, pitch, bpp, address, size; };
-    FbPkt* out = (FbPkt*)regs->rdi;
-    if (!user_out(regs->rdi, sizeof(FbPkt))) { sys_efault(regs); return; }
+    Framebuffer::Info* out = (Framebuffer::Info*)regs->rdi;
+    if (!user_out(regs->rdi, sizeof(Framebuffer::Info))) { sys_efault(regs); return; }
     Framebuffer::Info info;
     if (Framebuffer::get_info_and_map(Sched::current_task_cr3(), &info)) {
-        out->w = info.width; out->h = info.height;
-        out->pitch = info.pitch; out->bpp = info.bpp;
-        out->address = info.address; out->size = info.size;
+        *out = info;
         regs->rax = 0;
     } else {
         regs->rax = (uint64_t)-1;
@@ -369,6 +381,14 @@ static void sys_fb_info(IDT::Registers* regs) {
 static void sys_ticks(IDT::Registers* regs) {
     regs->rax = Timer::get_ticks();
 }
+
+// Mirrors struct grv_surface_info in grv/syscall.h. The host test pins that
+// side's offsets; this pins ours to the same numbers.
+static_assert(sizeof(Compositor::Info) == 64 &&
+              offsetof(Compositor::Info, id) == 24 &&
+              offsetof(Compositor::Info, x) == 40 &&
+              offsetof(Compositor::Info, z) == 56,
+              "Compositor::Info must match struct grv_surface_info");
 
 static void sys_surface_create(IDT::Registers* regs) {
     // The optional geometry packet is written only after the surface exists,
@@ -428,13 +448,17 @@ static void sys_surface_resize(IDT::Registers* regs) {
 // --- memory mappings (see kernel/core/memmap.h) ---
 // A mapping's geometry comes back in the caller's struct, the same shape
 // SURFACE_RESIZE uses, so the calls stay three-argument.
-struct MapOut { uint64_t address, size; };
+// Mirrors struct grv_map in grv/syscall.h.
+static_assert(sizeof(MemMap::Mapping) == 16 &&
+              offsetof(MemMap::Mapping, address) == 0 &&
+              offsetof(MemMap::Mapping, size) == 8,
+              "MemMap::Mapping must match struct grv_map");
 
 static void sys_map_file(IDT::Registers* regs) {
-    MapOut* out = (MapOut*)regs->rsi;
+    MemMap::Mapping* out = (MemMap::Mapping*)regs->rsi;
     uint64_t addr = 0, size = 0;
     if (!user_path(regs->rdi) ||
-        (regs->rsi && !user_out(regs->rsi, sizeof(MapOut)))) {
+        (regs->rsi && !user_out(regs->rsi, sizeof(MemMap::Mapping)))) {
         sys_efault(regs);
         return;
     }
@@ -459,9 +483,9 @@ static void sys_shm_grant(IDT::Registers* regs) {
 }
 
 static void sys_shm_map(IDT::Registers* regs) {
-    MapOut* out = (MapOut*)regs->rsi;
+    MemMap::Mapping* out = (MemMap::Mapping*)regs->rsi;
     uint64_t addr = 0, size = 0;
-    if (regs->rsi && !user_out(regs->rsi, sizeof(MapOut))) {
+    if (regs->rsi && !user_out(regs->rsi, sizeof(MemMap::Mapping))) {
         sys_efault(regs);
         return;
     }
@@ -508,11 +532,25 @@ static void sys_surface_list(IDT::Registers* regs) {
         (Compositor::Info*)regs->rdi, regs->rsi);
 }
 
+// Mirrors struct grv_sysinfo in grv/syscall.h. The host test pins that side's
+// offsets; this pins ours to the same numbers (17 eight-byte fields).
+static_assert(sizeof(SysInfo) == 136 &&
+              offsetof(SysInfo, cursor_y) == 120 &&
+              offsetof(SysInfo, abi_version) == 128,
+              "SysInfo must match struct grv_sysinfo");
+
 static void sys_sysinfo(IDT::Registers* regs) {
     if (!user_out(regs->rdi, sizeof(SysInfo))) { sys_efault(regs); return; }
     Sysinfo::get((SysInfo*)regs->rdi);
     regs->rax = 0;
 }
+
+// Mirrors struct grv_taskinfo in grv/syscall.h.
+static_assert(sizeof(Sched::TaskInfo) == 48 &&
+              offsetof(Sched::TaskInfo, cr3) == 8 &&
+              offsetof(Sched::TaskInfo, waiting_on) == 24 &&
+              offsetof(Sched::TaskInfo, name) == 32,
+              "Sched::TaskInfo must match struct grv_taskinfo");
 
 static void sys_task_list(IDT::Registers* regs) {
     int max = (int)regs->rsi;
@@ -526,6 +564,13 @@ static void sys_task_list(IDT::Registers* regs) {
     regs->rax = (uint64_t)(long)Sched::task_snapshot(
         (Sched::TaskInfo*)regs->rdi, max);
 }
+
+// Mirrors struct grv_fault_record in grv/syscall.h.
+static_assert(sizeof(Fault::Record) == 208 &&
+              offsetof(Fault::Record, task_name) == 16 &&
+              offsetof(Fault::Record, vector) == 32 &&
+              offsetof(Fault::Record, r15) == 200,
+              "Fault::Record must match struct grv_fault_record");
 
 static void sys_fault_last(IDT::Registers* regs) {
     if (!user_out(regs->rdi, sizeof(Fault::Record))) { sys_efault(regs); return; }
@@ -822,6 +867,14 @@ static void sys_wait(IDT::Registers* regs) {
 static void sys_kill(IDT::Registers* regs) {
     regs->rax = (uint64_t)Sched::kill_task((int)regs->rdi, regs->rsi);
 }
+
+// Mirrors struct grv_msg in grv/syscall.h.
+static_assert(sizeof(Ipc::Msg) == 32 &&
+              offsetof(Ipc::Msg, from) == 0 &&
+              offsetof(Ipc::Msg, type) == 8 &&
+              offsetof(Ipc::Msg, a) == 16 &&
+              offsetof(Ipc::Msg, b) == 24,
+              "Ipc::Msg must match struct grv_msg");
 
 static void sys_send(IDT::Registers* regs) {
     // The kernel stamps 'from' with OUR id — senders cannot pose as someone
