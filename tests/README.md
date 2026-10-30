@@ -17,7 +17,7 @@ run the guest groups before a commit.
 
 A *group* is a Python module that registers tests with `@test`. Running it boots
 one guest and runs the tests in order, so a group that wedges or crashes the
-machine cannot hide the others.
+machine cannot hide the others. There are twelve:
 
     tests/kernel/console.py     the boot log, the console, the shell's echo
     tests/kernel/contracts.py   surfaces and the compositor, on unmanaged surfaces
@@ -25,6 +25,7 @@ machine cannot hide the others.
     tests/kernel/faults.py      the fault contract (the kernel kills the task)
     tests/kernel/init.py        the userland init and its Lua boot manifest
     tests/kernel/lua.py         the interpreter, REPL and scripts
+    tests/kernel/persistence.py the writable root and /disk survive a reboot
     tests/kernel/power.py       leaving: poweroff and reset end the guest
     tests/kernel/tasks.py       scheduling, IPC, the fd/VFS surface, mappings
     tests/kernel/virtio.py      the virtio-blk DMA driver (no IDE controller)

@@ -39,8 +39,9 @@ shell grammar is, all in code you can read and change.
 - `/` is an **overlay**: a read-only tarfs lower layer over a writable upper,
   with copy-up on write and `.wh.<name>` whiteouts on delete. The upper is the
   `root` directory on the data disk when one is present, so writes at `/`,
-  `/home` and the rest survive a reboot; `/tmp` is a separate ramfs (volatile,
-  1 MB per file). Without a disk the upper is a ramfs too.
+  `/home` and the rest survive a reboot. With a disk, `/tmp` is a separate
+  ramfs (volatile, 1 MB per file); without one, `/tmp` is a directory in the
+  root ramfs, which is volatile too and shares its 8 MB budget.
 - A node-shaped VFS with `ino`/type/size/mode/mtime, so `ls -l` works and
   `opendir`/`readdir` report real `d_ino`/`d_type`.
 - Read-write ext2 mounted at `/disk`, driven over ATA PIO or virtio-blk (DMA on
@@ -90,8 +91,8 @@ shell grammar is, all in code you can read and change.
   `CONSOLE_ATTACH`/`READ`/`WRITE`; the kernel never learns what a terminal is.
 
 ### libc, language and shell
-- A from-scratch C library covering the C functions Lua 5.4.9 needs (about 90
-  symbols): string/ctype, `FILE*` stdio with `printf`, `malloc` over `brk`, libm,
+- A from-scratch C library covering the C functions Lua 5.4.9 needs:
+  string/ctype, `FILE*` stdio with `printf`, `malloc` over `brk`, libm,
   `setjmp`, time.
 - A deliberately partial POSIX facade (`unistd`, `stat`, `dirent`, `fcntl`):
   ownership and link counts are not modelled, so those fields read zero.

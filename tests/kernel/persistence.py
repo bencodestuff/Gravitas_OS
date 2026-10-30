@@ -142,14 +142,12 @@ def disk_writes_survive_reboot(g):
         if re.search(r"^gone\.txt$", listing, re.M):
             g2.fail("the removed file came back:\n%s" % listing.strip())
 
-        # Still writable after a reboot. The new file goes under deep/ rather
-        # than into the directory rm emptied a slot in: the kernel's
-        # dir_insert splits a freed record leaving an 8-byte one, which is
-        # below ext2's minimum record size, so e2fsck would rightly call the
-        # result corrupt. That is a directory-allocation bug, not a
-        # persistence one; this group is about the bytes surviving.
-        run(g2, "cp /disk/hello.txt /disk/persist/deep/after-reboot.txt")
-        cat(g2, "/disk/persist/deep/after-reboot.txt", "Hello from the ext2 disk")
+        # Still writable after a reboot, into the directory rm emptied a slot
+        # in. That used to split a freed record below ext2's 12-byte minimum
+        # (fixed in a39e6b0); writing here keeps the fixed path covered, and
+        # the e2fsck run below is what catches a regression.
+        run(g2, "cp /disk/hello.txt /disk/persist/after-reboot.txt")
+        cat(g2, "/disk/persist/after-reboot.txt", "Hello from the ext2 disk")
         leave(g2, "second boot")
     finally:
         g2.close()

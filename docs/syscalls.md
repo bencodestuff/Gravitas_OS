@@ -49,8 +49,9 @@ table.
 | `ENOSYS` | 38 | no such syscall (a retired hole or an unknown number) |
 
 A successful call never clears `errno` (check the return value, as in C).
-Not every syscall distinguishes every reason yet: the filesystem backends
-report 0/−1, so the VFS maps their failures to the closest code above.
+Not every syscall distinguishes every reason yet: `OPEN` and `MKDIR` pass the
+backend's code through, but `UNLINK`, `RENAME` and `FTRUNCATE` still map any
+failure to `ENOENT`, `ENOENT` and `ENOSPC`.
 
 ## Bad addresses
 
@@ -375,9 +376,10 @@ describes, because adding it would move the addresses it names.
 `POWEROFF` and `REBOOT` are one-way: by the time the machine answered, it is
 already going down, so anything that needs flushing belongs *before* the call
 (`poweroff.elf` is the userland command; `poweroff -r` resets). On QEMU the
-shutdown is a write to ACPI's PM1a control register and the reset is the 8042's
-pulse-reset line; on real hardware the port and sleep type come from the FADT,
-which is a Phase 6 concern along with the flushing.
+shutdown is a write to the hardcoded PM1a control ports (`0x604`, then
+`0xB004`) and the reset is the 8042's pulse-reset line. The kernel does not
+walk the ACPI tables, so on a real machine the shutdown may be ignored; it
+prints a message and halts instead.
 
 ## Memory mappings
 

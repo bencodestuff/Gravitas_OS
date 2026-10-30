@@ -66,8 +66,10 @@ The kernel side is one function, `kmain` in `src/kernel/main.cpp`. In order:
    second time with the image's `root` directory as the root inode: that mount
    is the overlay's upper layer, so writes to `/` are ext2 writes and survive a
    reboot. The directory is created if the image predates it. If the disk is
-   missing or is not ext2, the upper stays a ramfs. `/tmp` is a ramfs mount,
-   volatile and capped at 1 MB per file.
+   missing or is not ext2, the upper stays a ramfs. When the upper is on the
+   disk, `/tmp` is a separate ramfs mount, volatile and capped at 1 MB per
+   file; without a disk it is an ordinary directory in the root ramfs and
+   shares that ramfs's 8 MB budget.
 7. **Presentation and data.** The console font (`Font::load_from_disk`), the
    fault-handler symbol table (`/symbols.bin`), and the environment block
    (`/env`).
@@ -109,8 +111,9 @@ rather than touching the immutable tar. When a disk is present the upper is
 the image's `root` directory, so a copy-up, a new directory or a whiteout is
 an ordinary ext2 write and outlives the reboot; `sync` and `fsync` flush the
 drive. Without a disk the upper is a ramfs and the tree lasts for the session.
-`/tmp` is always a ramfs, so temporary files never spend the disk's room and
-keep the 1 MB per-file cap.
+With a disk, `/tmp` is a separate ramfs, so temporary files never spend the
+disk's room and keep the 1 MB per-file cap. Without a disk the whole root is a
+ramfs, `/tmp` is a directory in it, and the same 8 MB budget backs both.
 
 ### Block layer and the disk
 
@@ -139,8 +142,9 @@ view of the disk.
 | ext2 | `src/kernel/dev/ext2.cpp` | read-write ext2 over a `Block::Device` |
 
 `disk.img` is made on the host with `tools/mkext2.py`. The kernel prefers a
-real ATA drive and falls back to the module, so the guest boots either way and
-the mount above cannot tell which it got. The ext2 reader covers the superblock,
+virtio-blk device, then a real ATA drive, then the module copied into a RAM
+disk, so the guest boots either way and the mount above cannot tell which it
+got. The ext2 reader covers the superblock,
 group descriptors, inode tables, directory records and the direct/indirect
 block pointers. The writer allocates and frees blocks and inodes through the
 bitmaps and group counts, writes partial blocks, keeps directories' `rec_len`
@@ -220,7 +224,9 @@ surface the kernel posts a message to the authority with `type` =
 `GRV_EVT_SURFACE_ADDED` / `GRV_EVT_SURFACE_REMOVED`. Closing a window is
 `KILL`ing its owner; the kernel's teardown removes the surface.
 
-The **window manager** itself is userland: `src/user/wm.cpp`. It draws the
+The **window manager** itself is userland: `src/user/wm.cpp` plus
+`wm_windows.cpp`, `wm_taskbar.cpp`, `wm_menu.cpp` and `wm_input.cpp`, with
+`src/user/wm_internal.h` as the private seam. It draws the
 taskbar, the decorations and the launcher, hit-tests the pointer and turns it
 into `GRV_EV_MOUSE` messages with window-local coordinates, implements Alt+Tab,
 and speaks the WM protocol in `<grv/wm.h>` (`GRV_WM_HELLO`, `SET_TITLE`,
