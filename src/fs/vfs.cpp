@@ -62,78 +62,18 @@ void init() {
     console_handle.refs = 1;   // never freed; the count is only for clarity
 }
 
-// --- Path normalization ---
-// Canonicalizes a path into 'out': absolute, no trailing slash, resolves
-// '.' and '..'. Returns false when the path cannot be represented at all (more
-// components than can be tracked, or too long for 'out'). Dropping a component
-// silently would name a *different* file, which is the one failure mode worth
-// being loud about.
-static bool normalize(const char* path, char* out, uint64_t out_max) {
-    // component starts, as offsets into out — on the stack, like every other
-    // buffer on this path: a syscall can be preempted by the timer, so a static
-    // would be shared with whatever task runs next.
-    uint64_t starts[32];
-    int depth = 0;
-    uint64_t len = 0;
-
-    out[0] = '\0';
-    if (path == nullptr) return false;
-
-    const char* p = path;
-    while (*p) {
-        while (*p == '/') p++;              // collapse slashes
-        if (*p == '\0') break;
-
-        // component = [p, end)
-        const char* end = p;
-        while (*end && *end != '/') end++;
-        uint64_t clen = (uint64_t)(end - p);
-
-        if (clen == 1 && p[0] == '.') {
-            // skip
-        } else if (clen == 2 && p[0] == '.' && p[1] == '.') {
-            if (depth > 0) { len = starts[--depth]; out[len] = '\0'; }
-        } else {
-            if (depth >= (int)(sizeof(starts) / sizeof(starts[0]))) return false;
-            if (len + clen + 2 >= out_max) return false;
-            starts[depth++] = len;
-            out[len++] = '/';
-            for (uint64_t i = 0; i < clen; i++) out[len++] = p[i];
-            out[len] = '\0';
-        }
-        p = end;
-    }
-
-    if (len == 0) { out[0] = '/'; out[1] = '\0'; }
-    return true;
-}
+// --- Path normalisation ---
+// The mechanics live in fs/path.cpp: normalise ('.'/'..'/slashes), the relative
+// join, component splitting, the name limit and mount-prefix matching. This
+// unit supplies the policy (the CWD and the program search path) and the mount
+// table. Keeping the two apart is what lets the pure half run on the host.
 
 // --- Mount resolution: longest matching prefix wins ---
 static Mount* find_mount(const char* canon_path) {
-    Mount* best = nullptr;
-    uint64_t best_len = 0;
-    for (int i = 0; i < mount_count; i++) {
-        const char* mp = mounts[i].path;
-        uint64_t ml = 0;
-        while (mp[ml]) ml++;
-        bool matches = true;
-        for (uint64_t j = 0; j < ml; j++) {
-            if (canon_path[j] != mp[j]) { matches = false; break; }
-        }
-        // prefix must end at a boundary: "/bin" matches "/bin", "/bin/x",
-        // but not "/binary". Exception: the root mount "/" matches every
-        // absolute path (its prefix IS the leading slash).
-        if (ml == 1 && mp[0] == '/') {
-            matches = true;
-        } else if (matches && canon_path[ml] != '/' && canon_path[ml] != '\0') {
-            matches = false;
-        }
-        if (matches && ml >= best_len) {
-            best = &mounts[i];
-            best_len = ml;
-        }
-    }
-    return best;
+    const char* paths[MAX_MOUNTS];
+    for (int i = 0; i < mount_count; i++) paths[i] = mounts[i].path;
+    int i = FsPath::longest_mount(canon_path, paths, mount_count);
+    return i < 0 ? nullptr : &mounts[i];
 }
 
 // Resolve a path to a filesystem, writing the fs-relative path into 'rel_out'
@@ -145,7 +85,7 @@ static Mount* find_mount(const char* canon_path) {
 static Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max,
                            int* err) {
     char canon[PATH_MAX];
-    if (!normalize(path, canon, sizeof(canon))) {
+    if (!FsPath::normalize(path, canon, sizeof(canon))) {
         rel_out[0] = '\0';
         if (err) *err = (int)Errno::ENAMETOOLONG;
         return nullptr;
@@ -182,7 +122,7 @@ static Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max,
     for (const char* c = rel_out; *c; ) {
         uint64_t len = 0;
         while (c[len] && c[len] != '/') len++;
-        if (len >= (uint64_t)NAME_MAX) {
+        if (!FsPath::component_fits(len)) {
             rel_out[0] = '\0';
             if (err) *err = (int)Errno::ENAMETOOLONG;
             return nullptr;
@@ -194,29 +134,11 @@ static Filesystem* resolve(const char* path, char* rel_out, uint64_t rel_max,
 }
 
 // --- CWD-aware path building ---
-// Relative paths (no leading '/') resolve against the current task's CWD.
-static uint64_t strlen_(const char* s) {
-    uint64_t n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-static char* effective_path(const char* path, char* out, uint64_t out_max) {
-    if (path[0] == '/') {
-        uint64_t i = 0;
-        for (; path[i] && i + 1 < out_max; i++) out[i] = path[i];
-        out[i] = '\0';
-        return out;
-    }
-
-    // Relative: CWD + '/' + path (normalize() cleans it up afterwards)
-    const char* cwd = Sched::current_task_cwd();
-    uint64_t i = 0;
-    for (; cwd[i] && i + 1 < out_max; i++) out[i] = cwd[i];
-    if (i + 1 < out_max) out[i++] = '/';
-    for (; *path && i + 1 < out_max; i++) out[i] = *path++;
-    out[i] = '\0';
-    return out;
+// Relative paths (no leading '/') resolve against the current task's CWD. The
+// join itself is FsPath::absolute; this is where the CWD comes from, and a path
+// that does not fit is refused rather than truncated.
+static bool effective_path(const char* path, char* out, uint64_t out_max) {
+    return FsPath::absolute(path, Sched::current_task_cwd(), out, out_max);
 }
 
 // --- Bare-name fallback (the program search path) ---
@@ -237,18 +159,14 @@ static bool path_exists(const char* full) {
     return true;
 }
 
-// "<dir>/<name>" into out.
-static char* join_dir(const char* dir, const char* name, char* out, uint64_t out_max) {
-    uint64_t i = 0;
-    for (; *dir && i + 1 < out_max; dir++) out[i++] = *dir;
-    if (i + 1 < out_max) out[i++] = '/';
-    for (; *name && i + 1 < out_max; name++) out[i++] = *name;
-    out[i] = '\0';
-    return out;
-}
-
+// Resolve 'path' for a lookup: the CWD first, then the program directories.
+// 'for_create' stops after the CWD, because a creation must never search.
+// False when the path cannot be represented (it does not fit, or the bare name
+// is too long to join to a program directory).
 static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
                                   const char** effective, bool for_create) {
+    if (path == nullptr) { if (out_max) out[0] = '\0'; *effective = out; return false; }
+
     bool has_slash = false;
     for (const char* p = path; *p; p++) {
         if (*p == '/') { has_slash = true; break; }
@@ -257,36 +175,42 @@ static bool resolve_path_fallback(const char* path, char* out, uint64_t out_max,
     // "." and ".." are pure navigation — never treat them as program names
     if (has_slash || path[0] == '\0' ||
         (path[0] == '.' && (path[1] == '\0' || (path[1] == '.' && path[2] == '\0')))) {
-        *effective = effective_path(path, out, out_max);
-        return true;
+        *effective = out;
+        return effective_path(path, out, out_max);
     }
 
     // try CWD-relative: if it exists there (file OR dir), use it
     char cwdtry[PATH_MAX];
-    effective_path(path, cwdtry, sizeof(cwdtry));
+    if (!effective_path(path, cwdtry, sizeof(cwdtry))) {
+        *effective = out;
+        return false;
+    }
     if (path_exists(cwdtry)) {
-        *effective = effective_path(path, out, out_max);
-        return true;
+        *effective = out;
+        return effective_path(path, out, out_max);
     }
 
     // A creation never searches: a bare name is then purely CWD-relative, the
-    // same rule mkdir and unlink follow. Otherwise `open("notes.txt", O_CREATE)`
-    // would create /bin/notes.txt just because nothing by that name exists yet.
+    // same rule mkdir, unlink and rename follow. Otherwise `open("notes.txt",
+    // O_CREATE)` would create /bin/notes.txt just because nothing by that name
+    // exists yet.
     if (for_create) {
-        *effective = effective_path(path, out, out_max);
-        return true;
+        *effective = out;
+        return effective_path(path, out, out_max);
     }
 
     // then each program directory in turn
     for (uint64_t i = 0; i < sizeof(kProgramPath) / sizeof(kProgramPath[0]); i++) {
-        join_dir(kProgramPath[i], path, out, out_max);
+        if (!FsPath::join(kProgramPath[i], path, out, out_max)) {
+            *effective = out;
+            return false;
+        }
         if (path_exists(out)) { *effective = out; return true; }
     }
 
     // nothing found: report the first search directory
-    join_dir(kProgramPath[0], path, out, out_max);
     *effective = out;
-    return true;
+    return FsPath::join(kProgramPath[0], path, out, out_max);
 }
 
 // --- Nodes: the one place that walks a path ---
@@ -304,25 +228,10 @@ Node* node_new(Filesystem* fs, FileType type) {
     return n;
 }
 
-// One component of a path into 'out' (NAME_MAX bytes); advances *p. A component
-// that does not fit is an error, not something to truncate: a truncated name
+// One component of a path into 'out' (NAME_MAX bytes); advances *p. The
+// mechanics and the name limit live in FsPath::next_component: a component that
+// does not fit is an error, not something to truncate, because a truncated name
 // could match a different file.
-enum CompResult { COMP_END, COMP_OK, COMP_TOO_LONG };
-
-static CompResult next_component(const char** p, char* out) {
-    const char* s = *p;
-    while (*s == '/') s++;
-    if (*s == '\0') { *p = s; return COMP_END; }
-
-    uint64_t i = 0;
-    while (*s && *s != '/') {
-        if (i + 1 >= NAME_MAX) return COMP_TOO_LONG;
-        out[i++] = *s++;
-    }
-    out[i] = '\0';
-    *p = s;
-    return COMP_OK;
-}
 
 Node* node_walk(Filesystem* fs, const char* rel) {
     if (fs == nullptr || fs->root == nullptr) return nullptr;
@@ -332,15 +241,15 @@ Node* node_walk(Filesystem* fs, const char* rel) {
 
     char comp[NAME_MAX];
     const char* p = rel;
-    CompResult r;
-    while ((r = next_component(&p, comp)) == COMP_OK) {
+    FsPath::ComponentResult r;
+    while ((r = FsPath::next_component(&p, comp, sizeof(comp))) == FsPath::COMPONENT_OK) {
         if (cur->type != FT_DIR) { fs->release(fs->priv, cur); return nullptr; }
         Node* next = fs->lookup(fs->priv, cur, comp);
         fs->release(fs->priv, cur);
         if (next == nullptr) return nullptr;
         cur = next;
     }
-    if (r == COMP_TOO_LONG) { fs->release(fs->priv, cur); return nullptr; }
+    if (r == FsPath::COMPONENT_TOO_LONG) { fs->release(fs->priv, cur); return nullptr; }
     return cur;
 }
 
@@ -360,8 +269,8 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type,
 
     char comp[NAME_MAX];
     const char* p = rel;
-    CompResult r;
-    while ((r = next_component(&p, comp)) == COMP_OK) {
+    FsPath::ComponentResult r;
+    while ((r = FsPath::next_component(&p, comp, sizeof(comp))) == FsPath::COMPONENT_OK) {
         bool last = true;
         for (const char* q = p; *q; q++)
             if (*q != '/') { last = false; break; }
@@ -384,7 +293,7 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type,
         fs->release(fs->priv, cur);
         cur = next;
     }
-    if (r == COMP_TOO_LONG) {
+    if (r == FsPath::COMPONENT_TOO_LONG) {
         fs->release(fs->priv, cur);
         if (out_err) *out_err = -Errno::ENAMETOOLONG;
         return nullptr;
@@ -393,31 +302,16 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type,
 }
 
 bool node_split(const char* rel, char* parent, char* name) {
-    uint64_t len = strlen_(rel);
-    while (len > 0 && rel[len - 1] == '/') len--;
-
-    uint64_t slash = 0;                    // position just past the last '/'
-    for (uint64_t i = 0; i < len; i++)
-        if (rel[i] == '/') slash = i + 1;
-
-    uint64_t n = 0;
-    for (uint64_t i = slash; i < len; i++) {
-        if (n + 1 >= NAME_MAX) return false;   // a name too long to be one
-        name[n++] = rel[i];
-    }
-    name[n] = '\0';
-    if (n == 0) return false;
-
-    uint64_t plen = (slash > 0) ? slash - 1 : 0;   // drop the trailing '/'
-    for (uint64_t i = 0; i < plen; i++) parent[i] = rel[i];
-    parent[plen] = '\0';
-    return true;
+    return FsPath::split(rel, parent, PATH_MAX, name, NAME_MAX) == FsPath::SPLIT_OK;
 }
 
 bool mount(const char* path, Filesystem* fs) {
     if (mount_count >= MAX_MOUNTS) return false;
+    // A mount path is normalised like any other path.
     static char canon_storage[MAX_MOUNTS][128];
-    if (!normalize(path, canon_storage[mount_count], 128)) return false;
+    if (!FsPath::normalize(path, canon_storage[mount_count],
+                           sizeof(canon_storage[mount_count])))
+        return false;
     mounts[mount_count].path = canon_storage[mount_count];
     mounts[mount_count].fs = fs;
     mount_count++;
@@ -432,19 +326,12 @@ bool mount(const char* path, Filesystem* fs) {
         uint64_t best_len = 0;
         for (int i = 0; i < mount_count - 1; i++) {
             const char* pp = mounts[i].path;
-            uint64_t pl = strlen_(pp);
-            // same rule as find_mount: root "/" covers everything;
-            // otherwise the char right after the prefix must end the
-            // parent component ('/' boundary or end-of-string)
-            bool covers = (pl == 1 && pp[0] == '/');
-            if (!covers) {
-                covers = true;
-                for (uint64_t j = 0; j < pl; j++) {
-                    if (mp[j] != pp[j]) { covers = false; break; }
-                }
-                if (covers && pl < strlen_(mp) && mp[pl] != '/') covers = false;
-            }
-            if (covers && pl > best_len) {
+            // same rule as find_mount: root "/" covers everything; otherwise
+            // the prefix must end at a component boundary
+            if (!FsPath::mount_covers(pp, mp)) continue;
+            uint64_t pl = 0;
+            while (pp[pl]) pl++;
+            if (pl > best_len) {
                 parent = &mounts[i];
                 best_len = pl;
             }
@@ -464,7 +351,8 @@ bool mount(const char* path, Filesystem* fs) {
 bool is_directory(const char* path) {
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return false;
 
     char rel[PATH_MAX];
     Filesystem* fs = resolve(effective, rel, sizeof(rel), nullptr);
@@ -482,8 +370,9 @@ bool canonicalize(const char* path, char* out, uint64_t out_max) {
     // /Pictures (a nonexistent path), and every later ls/cd breaks.
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
-    return normalize(effective, out, out_max);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return false;
+    return FsPath::normalize(effective, out, out_max);
 }
 
 // --- fd plumbing: the table lives in the current task ---
@@ -556,9 +445,10 @@ int open_fd(const char* path, int flags) {
     char fixed[PATH_MAX];
     const char* effective = nullptr;
     // A creation is CWD-relative: it must not search /bin (see
-    // resolve_path_fallback).
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective,
-                          (flags & O_CREATE) != 0);
+    // resolve_path_fallback). A path that does not fit is ENAMETOOLONG.
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective,
+                               (flags & O_CREATE) != 0))
+        return -Errno::ENAMETOOLONG;
 
     char rel[PATH_MAX];
     int err = 0;
@@ -999,7 +889,8 @@ int stat_path(const char* path, Stat* out) {
     // A lookup: same resolution as open (CWD, then /bin for a bare name).
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return -Errno::ENAMETOOLONG;
 
     char rel[PATH_MAX];
     int err = 0;
@@ -1043,7 +934,8 @@ int statfs_path(const char* path, StatFs* out) {
 
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return -Errno::ENAMETOOLONG;
 
     char rel[PATH_MAX];
     int err = 0;
@@ -1077,7 +969,8 @@ int statfs_path(const char* path, StatFs* out) {
 int map_file(const char* path, uint64_t* out_phys, uint64_t* out_size) {
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return -Errno::ENAMETOOLONG;
 
     char rel[PATH_MAX];
     int err = 0;
@@ -1123,7 +1016,8 @@ int sync_all() {
 bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return false;
 
     char rel[PATH_MAX];
     Filesystem* fs = resolve(effective, rel, sizeof(rel), nullptr);
@@ -1146,7 +1040,8 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
 long readdir_entries(const char* path, DirEntry* out, uint64_t max) {
     char fixed[PATH_MAX];
     const char* effective = nullptr;
-    resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false);
+    if (!resolve_path_fallback(path, fixed, sizeof(fixed), &effective, false))
+        return -Errno::ENAMETOOLONG;
 
     char rel[PATH_MAX];
     int err = 0;

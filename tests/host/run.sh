@@ -43,6 +43,15 @@ printf -- '-- test_blockcache (page cache over a fake device)\n'
     -o "$ART/test_blockcache" || fail "test_blockcache: compile failed"
 "$ART/test_blockcache" || fail "test_blockcache: checks failed"
 
+# Not a C program: the path logic is the one piece of the filesystem with no
+# kernel dependencies (no scheduler, console or VFS globals), so the table of
+# cases runs here instead of needing a guest boot.
+printf -- '-- test_path (the pure path rule)\n'
+"${CXX:-c++}" -O2 -std=c++17 -Isrc \
+    tools/test_path.cpp src/fs/path.cpp \
+    -o "$ART/test_path" || fail "test_path: compile failed"
+"$ART/test_path" || fail "test_path: checks failed"
+
 # Not a C program: the kernel and the libc describe the same syscall records in
 # two headers that cannot include each other, so this is the only place they can
 # be compared.
