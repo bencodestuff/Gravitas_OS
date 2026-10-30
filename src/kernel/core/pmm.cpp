@@ -148,12 +148,23 @@ namespace PMM {
         return 0; // Out of Memory
     }
 
+    uint64_t alloc_page_zeroed() {
+        uint64_t phys = alloc_page();
+        if (phys == 0) return 0;
+        memory_set((void*)(phys + hhdm_request.response->offset), 0, PAGE_SIZE);
+        return phys;
+    }
+
     void free_page(uint64_t address) {
         uint64_t i = address / PAGE_SIZE;
         // Frame 0 is reserved and never allocated, so a 0 here means the caller
         // passed on the result of a failed allocation; drop it rather than
         // clearing a reserved frame.
         if (i == 0) return;
+        // The bitmap only covers frames below the highest usable RAM. A
+        // device frame outside that range (the framebuffer is the common one)
+        // must never index the bitmap: do not even read the bit.
+        if (i >= total_frames_count) return;
         if (!bitmap_test(i)) return; // already free: don't over-count
         bitmap_unset(i);
         free_frames_count++;
