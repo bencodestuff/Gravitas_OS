@@ -790,13 +790,30 @@ long lseek_fd(int fd, long offset, int whence) {
     return pos;
 }
 
-// Path rule (see vfs.h): lookups (open/stat) accept a bare name and search
-// the CWD then /bin; creation and removal (open with O_CREATE, mkdir, unlink)
-// are always CWD-relative, so a typo never lands in a program directory.
+// Path rule (see vfs.h): lookups (open/stat) accept a bare name and search the
+// CWD then /bin; creation and removal (open with O_CREATE, mkdir, unlink,
+// rename) are always CWD-relative, so a typo never lands in a program directory.
+//
+// The three functions below therefore share one resolver: the CWD join that a
+// lookup uses, minus the program search that follows it. Resolving them any
+// other way (as they once did, straight through resolve()) rooted a relative
+// path at '/', so `cd /tmp; mkdir d` created /d and `rm notes.txt` could delete
+// /notes.txt.
+static Filesystem* resolve_cwd(const char* path, char* rel_out,
+                               uint64_t rel_max, int* err) {
+    char fixed[PATH_MAX];
+    if (!effective_path(path, fixed, sizeof(fixed))) {
+        rel_out[0] = '\0';
+        if (err) *err = (int)Errno::ENAMETOOLONG;
+        return nullptr;
+    }
+    return resolve(fixed, rel_out, rel_max, err);
+}
+
 int mkdir(const char* path) {
     char rel[PATH_MAX];
     int err = 0;
-    Filesystem* fs = resolve(path, rel, sizeof(rel), &err);
+    Filesystem* fs = resolve_cwd(path, rel, sizeof(rel), &err);
     if (fs == nullptr) return -err;
     if (fs->create == nullptr) return -Errno::EROFS;
 
@@ -829,7 +846,7 @@ int mkdir(const char* path) {
 int unlink(const char* path) {
     char rel[PATH_MAX];
     int err = 0;
-    Filesystem* fs = resolve(path, rel, sizeof(rel), &err);
+    Filesystem* fs = resolve_cwd(path, rel, sizeof(rel), &err);
     if (fs == nullptr) return -err;
     if (fs->unlink == nullptr) return -Errno::EROFS;
 
@@ -849,10 +866,10 @@ int rename(const char* from, const char* to) {
     char from_rel[PATH_MAX], to_rel[PATH_MAX];
     int err = 0;
 
-    Filesystem* from_fs = resolve(from, from_rel, sizeof(from_rel), &err);
+    Filesystem* from_fs = resolve_cwd(from, from_rel, sizeof(from_rel), &err);
     if (from_fs == nullptr) return -err;
 
-    Filesystem* to_fs = resolve(to, to_rel, sizeof(to_rel), &err);
+    Filesystem* to_fs = resolve_cwd(to, to_rel, sizeof(to_rel), &err);
     if (to_fs == nullptr) return -err;
 
     if (from_fs != to_fs) return -Errno::EINVAL;
