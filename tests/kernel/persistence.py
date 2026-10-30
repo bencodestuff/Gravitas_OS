@@ -15,8 +15,11 @@ under its own name, and deliberately does not call sync: leaving the machine is
 what has to flush, and a test that syncs first would pass even if poweroff
 forgot to. The second writes to /, which lands in the disk's "root" directory,
 the overlay's upper layer; it appends to an image file so a copy-up has to carry
-the image's original bytes into the upper, and it does call sync as well. Each
-test owns its own copy of the image, so one failing does not decide the other.
+the image's original bytes into the upper, and it does call sync as well. A
+third fills a small ext2 image of its own to the last block so that a rename
+over an existing name fails with ENOSPC, and requires the name it was replacing
+to survive the reboot and e2fsck. Each test owns its own image, so one failing
+does not decide the other.
 """
 import atexit
 import os
@@ -52,6 +55,39 @@ TMPDIR, DISK = _prepare()
 # The root-persistence test gets its own copy, so its result does not depend on
 # whether the /disk test ran (or passed) first.
 ROOT_TMPDIR, ROOT_DISK = _prepare()
+
+# The full-disk rename test makes its own, much smaller image (see _full_disk):
+# it deliberately fills every block, and filling 16 MB a page at a time through
+# the guest costs minutes of QEMU for the same end state.
+FULL_BLOCKS = 2048   # 2 MB
+
+
+def _full_disk():
+    """A small ext2 image for the full-disk rename test.
+
+    Made the way tools/mkext2.py makes the shipped one, but 2 MB instead of 16:
+    the test fills it from the guest, and doing that to the shipped image costs
+    minutes of QEMU for the same end state. Only root/ is staged, because that
+    is the directory the kernel mounts as the writable root's upper layer. The
+    test creates the directory it packs and the name it replaces itself, while
+    there is still room, before filling what is left.
+    """
+    if shutil.which("mke2fs") is None:
+        raise RuntimeError("persistence: mke2fs is missing (install e2fsprogs)")
+    tmp = tempfile.mkdtemp(prefix="gravitas-full-")
+    atexit.register(shutil.rmtree, tmp, ignore_errors=True)
+    stage = os.path.join(tmp, "stage")
+    os.makedirs(os.path.join(stage, "root"))
+    image = os.path.join(tmp, "disk.img")
+    subprocess.check_call([
+        "mke2fs", "-q", "-t", "ext2", "-b", "1024",
+        "-O", "^dir_index,^resize_inode",
+        "-N", "256",
+        "-E", "root_owner=0:0",
+        "-d", stage, "-F", "-L", "gravitas",
+        image, str(FULL_BLOCKS),
+    ], env=dict(os.environ, SOURCE_DATE_EPOCH="946684800"))
+    return tmp, image
 
 # The group's first guest boots on the copy, not on the repo image.
 BOOT = {"disk_image": DISK}
@@ -234,6 +270,61 @@ def root_writes_survive_reboot(g):
     print("  e2fsck clean (root): %s" % out.splitlines()[-1], flush=True)
 
     shutil.rmtree(ROOT_TMPDIR, ignore_errors=True)
+
+
+@test
+def failed_rename_keeps_destination(g):
+    # A rename that replaces a name has to take the old entry out before the new
+    # one goes in. On a full disk that insertion is what fails (ENOSPC), and the
+    # removal has to be undone: the destination must still be there, with its
+    # bytes, and the filesystem must still be clean.
+    #
+    # renamefull.elf reaches that state: it fills the filesystem, packs one
+    # directory's block with short names until the next entry has no room, and
+    # renames one of them over another. It gives the blocks back before it
+    # returns, so the reboot and the e2fsck below see a usable image.
+    tmp, image = _full_disk()
+    rc, out = fsck(image)
+    if rc != 0:
+        g.fail("the prepared image was not clean before boot (e2fsck rc %d):\n%s"
+               % (rc, out))
+
+    first = Guest("persistence-renamefull", disk_image=image)
+    try:
+        first.shell("run renamefull.elf")
+        # Filling the image a page at a time is the slow part of this test; the
+        # guest prints how far it got, so a timeout says whether it stalled
+        # while filling or afterwards.
+        first.wait_for("renamefull: all checks pass", timeout=300)
+        leave(first, "rename-full first boot")
+    finally:
+        first.close()
+
+    # A second boot proves the restored entry is on the medium and not just in
+    # the block cache of the machine that failed the rename.
+    second = Guest("persistence-renamefull-second", disk_image=image)
+    try:
+        cat(second, "/disk/fullpacked/b01", "keep")
+        mark = second.mark()
+        run(second, "ls /disk/fullpacked")
+        listing = second.since(mark)
+        for name in ("a00", "b01"):
+            if not re.search(r"^%s$" % re.escape(name), listing, re.M):
+                second.fail("the failed rename lost %r:\n%s"
+                            % (name, listing.strip()))
+        leave(second, "rename-full second boot")
+    finally:
+        second.close()
+
+    # The restored record has to be a record e2fsck accepts, not merely one the
+    # kernel reads back.
+    rc, out = fsck(image)
+    if rc != 0:
+        g.fail("e2fsck -fn says the full-disk image is not clean (rc %d):\n%s"
+               % (rc, out))
+    print("  e2fsck clean (full disk): %s" % out.splitlines()[-1], flush=True)
+
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

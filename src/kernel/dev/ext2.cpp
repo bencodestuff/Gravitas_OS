@@ -1122,6 +1122,74 @@ static bool dir_remove(Fs* f, Inode* dir, const char* name, uint32_t len,
     return false;
 }
 
+// Put a removed name back into the free record it left behind. This is the
+// inverse of dir_remove and exists for e2_rename: the destination entry has to
+// be taken out before the new name goes in, so a failed insertion must be able
+// to undo that. Unlike dir_insert it does not reserve a header-sized record at
+// the front of the free space, because the whole point is to fit inside the
+// record the name just came out of: there is always room, and no block is ever
+// needed.
+static bool dir_reinsert(Fs* f, Inode* dir, const char* name, uint32_t len,
+                         uint32_t ino, uint8_t ftype) {
+    uint32_t bs = f->dev->block_size;
+    uint32_t needed = rec_used((uint8_t)len);
+    uint32_t buf[MAX_BLOCK / 4];
+    uint32_t nblocks = (dir->size + bs - 1) / bs;
+
+    for (uint32_t b = 0; b < nblocks; b++) {
+        bool err = false;
+        uint32_t blk = get_block(f, dir, b, false, &err);
+        if (blk == 0) continue;
+        if (!read_block(f, blk, buf)) return false;
+        uint8_t* raw = (uint8_t*)buf;
+        uint32_t p = 0;
+        while (p + sizeof(RawDirEntry) <= bs) {
+            RawDirEntry* de = (RawDirEntry*)(raw + p);
+            if (de->rec_len < sizeof(RawDirEntry) || p + de->rec_len > bs) break;
+            if (de->inode == 0 && de->rec_len >= needed) {
+                uint32_t entry_len = de->rec_len;
+                // Split only when the tail can hold a header of its own; a
+                // shorter one would be a record no reader accepts.
+                if (entry_len > needed && entry_len - needed >= MIN_DIR_REC) {
+                    RawDirEntry* rest = (RawDirEntry*)(raw + p + needed);
+                    rest->inode = 0;
+                    rest->rec_len = (uint16_t)(entry_len - needed);
+                    rest->name_len = 0;
+                    rest->file_type = 0;
+                    entry_len = needed;
+                }
+                de->inode = ino;
+                de->rec_len = (uint16_t)entry_len;
+                de->name_len = (uint8_t)len;
+                de->file_type = ftype;
+                memset((uint8_t*)de + sizeof(RawDirEntry), 0,
+                       entry_len - sizeof(RawDirEntry));
+                memcpy((uint8_t*)de + sizeof(RawDirEntry), name, len);
+                return write_block(f, blk, buf);
+            }
+            p += de->rec_len;
+        }
+    }
+    return false;
+}
+
+// Undo the removal of the name e2_rename is about to replace. The destination
+// inode is not written until the rename can no longer fail, so putting the entry
+// back and undoing the parent's link count is the whole restoration.
+static void restore_replaced(Fs* f, Inode* tdir, const char* name, uint32_t len,
+                             uint32_t ino, bool restore_link, uint8_t ftype) {
+    // The room is guaranteed: this name was removed from this directory a few
+    // statements ago, so the record that held it is free again and long enough
+    // for the same name. dir_reinsert never allocates a block; a false return
+    // here would mean that space disappeared inside one interrupts-off section,
+    // which is a bug in these two helpers rather than a full disk. Say so rather
+    // than carry on as if the name had come back.
+    if (!dir_reinsert(f, tdir, name, len, ino, ftype)) {
+        kprint("[Ext2] rename could not restore the replaced name!\n");
+    }
+    if (restore_link) tdir->links_count++;   // its ".." points here again
+}
+
 static bool dir_is_empty(Fs* f, Inode* dir) {
     uint32_t bs = f->dev->block_size;
     uint32_t buf[MAX_BLOCK / 4];
@@ -1656,13 +1724,22 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         }
     }
 
+    // The name the new one replaces. Its removal has to be undoable, so the
+    // entry's inode number and type are kept here, and 'dst' holds the inode
+    // exactly as it was read: nothing writes that inode until every step that
+    // can fail has passed, which keeps the snapshot and the disk in agreement
+    // for as long as the restore path can run.
     uint32_t dst_ino = 0;
-    bool dst_exists = dir_find(f, tdir, to, tlen, &dst_ino, nullptr, nullptr, nullptr);
-    if (dst_exists) {
+    Inode dst;
+    uint8_t dst_ftype = 0;
+    bool dst_is_dir = false;
+    bool dst_removed = false;
+    bool dst_link_dropped = false;
+    if (dir_find(f, tdir, to, tlen, &dst_ino, nullptr, nullptr, nullptr)) {
         if (dst_ino == src_ino) { irq_restore(flags); return 0; }   // same inode
-        Inode dst;
         if (!read_inode(f, dst_ino, &dst)) { irq_restore(flags); return -Errno::EIO; }
-        bool dst_is_dir = (dst.mode & S_IFDIR_BIT) != 0;
+        dst_is_dir = (dst.mode & S_IFDIR_BIT) != 0;
+        dst_ftype = f->dev->has_filetype ? (dst_is_dir ? 2 : 1) : 0;
         if (src_is_dir != dst_is_dir) {
             irq_restore(flags);
             return dst_is_dir ? -Errno::EISDIR : -Errno::ENOTDIR;
@@ -1676,17 +1753,13 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
             irq_restore(flags);
             return -Errno::EIO;
         }
-        if (dst_is_dir) {
+        if (dst_is_dir && tdir->links_count > 0) {
             // The replaced directory's ".." was one of this parent's links.
-            if (tdir->links_count > 0) tdir->links_count--;
+            // Undone with the entry if the rename has to back out below.
+            tdir->links_count--;
+            dst_link_dropped = true;
         }
-        uint32_t now = (uint32_t)Rtc::seconds_now();
-        dst.links_count = 0;
-        dst.ctime = now;
-        dst.mtime = now;
-        dst.dtime = now ? now : 1;
-        write_inode(f, dst_ino, &dst);
-        inode_put(f, dst_ino, dst_is_dir);
+        dst_removed = true;
     }
 
     // Insert first, then remove: a failure halfway leaves the name reachable in
@@ -1698,6 +1771,10 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     uint8_t ftype = f->dev->has_filetype ? (src_is_dir ? 2 : 1) : 0;
     int ierr = dir_insert(f, tdir, to, tlen, src_ino, ftype);
     if (ierr != 0) {
+        // Nothing has been written to the replaced inode, so its name going
+        // back and the parent's link count being undone leave the directory
+        // exactly as it was found.
+        if (dst_removed) restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
         irq_restore(flags);
         return ierr;
     }
@@ -1713,10 +1790,13 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         tdin.links_count++;
         if (!set_dotdot(f, &src, tdn->ino)) {
             // Undo both the name and the counts: ".." still names the old
-            // parent, which still holds the name, so the tree is as it was.
+            // parent, which still holds the name, so the tree is as it was. The
+            // replaced name goes back into the record the insertion came out
+            // of, so the destination is not lost either.
             if (dropped_link) fdin.links_count++;
             tdin.links_count--;
             dir_remove(f, tdir, to, tlen, nullptr, nullptr);
+            if (dst_removed) restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
             // The insertion may have given the new parent a block. Writing its
             // inode keeps that block reachable instead of leaking it.
             tdin.blocks = blocks_to_512(f, count_blocks(f, &tdin));
@@ -1748,6 +1828,20 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         tdin.blocks = blocks_to_512(f, count_blocks(f, &tdin));
         write_inode(f, tdn->ino, &tdin);
         refresh_node(tdn, to_dir, &tdin);
+    }
+
+    if (dst_removed) {
+        // Now, and only now, the replaced inode is given up: every step that
+        // could fail has succeeded, so links_count = 0 with a deletion time
+        // cannot be seen next to a name that still points at it. Until here the
+        // on-disk inode was untouched, which is what made the restore above
+        // possible without rewriting it.
+        dst.links_count = 0;
+        dst.ctime = now;
+        dst.mtime = now;
+        dst.dtime = now ? now : 1;
+        write_inode(f, dst_ino, &dst);
+        inode_put(f, dst_ino, dst_is_dir);
     }
 
     irq_restore(flags);
