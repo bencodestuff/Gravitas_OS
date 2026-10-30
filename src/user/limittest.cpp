@@ -139,6 +139,22 @@ static void test_mailbox_capacity(void) {
           "a drained mailbox polls as EAGAIN");
 }
 
+static void test_shared_region_limits(void) {
+    // Shared regions are capped at 64 MiB (MAX_REGION_BYTES in memmap.cpp)
+    // and page-rounded. A length near UINT64_MAX used to wrap that rounding
+    // to zero, pass the cap check and return an id for an unusable region.
+    check(grv_shm_create(~0ul) < 0, "a region of all-ones bytes is refused");
+    check(grv_shm_create(~0ul - 100) < 0, "a region near UINT64_MAX is refused");
+    check(grv_shm_create((64ul << 20) + 1) < 0, "a region past 64 MiB is refused");
+    check(grv_shm_create(0) < 0, "a zero-byte region is refused");
+
+    // A refusal must not consume the id sequence or a region slot: the next
+    // ordinary request still works.
+    int id = grv_shm_create(4096);
+    check(id > 0, "an ordinary region still succeeds after the refusals");
+    if (id > 0) check(grv_shm_close(id) == 0, "and can be closed");
+}
+
 static void test_long_name(void) {
     // 200 bytes: longer than the old 63-byte RamFS field, well inside NAME_MAX.
     char name[201];
@@ -237,6 +253,7 @@ int main(int argc, char** argv) {
     test_fd_capacity();
     test_mailbox_capacity();
     test_new_alignment();
+    test_shared_region_limits();
     test_long_name();
     test_long_cwd();
 

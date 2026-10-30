@@ -41,7 +41,13 @@ static Map    maps[MAX_MAP];
 static Region regions[MAX_REGION];
 static int    next_region_id = 1;
 
-static uint64_t page_up(uint64_t n) { return (n + 4095) & ~(uint64_t)4095; }
+// Round up to a page, returning 0 when the rounded value would wrap. Callers
+// treat 0 as "refuse": a wrapped span looks like zero pages and would create a
+// region or mapping that can never be used.
+static uint64_t page_up(uint64_t n) {
+    if (n > (uint64_t)-1 - 4095) return 0;
+    return (n + 4095) & ~(uint64_t)4095;
+}
 
 // The mapping an address falls in. A file mapping hands back the file's real
 // first byte, which is part-way into its first page, so the lookup cannot just
@@ -93,10 +99,15 @@ static bool map_pages(uint64_t cr3, uint64_t va, uint64_t phys, uint64_t pages,
 // --- shared regions ---
 
 int create(uint64_t size) {
-    if (size == 0) return -1;
+    // Check the raw request before rounding: a size near UINT64_MAX used to
+    // wrap page_up() to zero, pass the span check and produce a region with no
+    // pages and a nonsensical size. Both the zero case and the cap are
+    // refusals, and the second check covers a rounded span of zero.
+    if (size == 0 || size > MAX_REGION_BYTES) return -1;
     uint64_t span = page_up(size);
-    if (span > MAX_REGION_BYTES) return -1;
+    if (span == 0 || span > MAX_REGION_BYTES) return -1;
     uint64_t pages = span / 4096;
+    if (pages == 0) return -1;
 
     Region* r = nullptr;
     for (int i = 0; i < MAX_REGION; i++)
@@ -209,7 +220,12 @@ int map_file(const char* path, uint64_t* out_addr, uint64_t* out_size) {
     // pointer at the file's real offset.
     uint64_t off = phys & 0xFFF;
     uint64_t base = phys & ~(uint64_t)0xFFF;
+    // The VFS reports the file's size, which a mounted image can make large.
+    // Refuse a length whose page-rounded end would wrap instead of turning it
+    // into a zero-page mapping.
+    if (size > (uint64_t)-1 - off) return -1;
     uint64_t pages = page_up(off + size) / 4096;
+    if (pages == 0) return -1;
 
     Map* m = map_slot();
     if (m == nullptr) return -1;
