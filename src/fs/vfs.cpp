@@ -307,8 +307,9 @@ bool node_split(const char* rel, char* parent, char* name) {
 
 bool mount(const char* path, Filesystem* fs) {
     if (mount_count >= MAX_MOUNTS) return false;
-    // A mount path is normalised like any other path.
-    static char canon_storage[MAX_MOUNTS][128];
+    // A mount path is a path: it gets the same ceiling as any other, rather
+    // than the 128 bytes it used to share with nothing else.
+    static char canon_storage[MAX_MOUNTS][PATH_MAX];
     if (!FsPath::normalize(path, canon_storage[mount_count],
                            sizeof(canon_storage[mount_count])))
         return false;
