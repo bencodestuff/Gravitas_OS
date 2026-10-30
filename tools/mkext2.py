@@ -10,7 +10,7 @@ including a file deliberately larger than the twelve direct block pointers
 (12 KB at 1 KB blocks): reading it exercises the indirect path, which is the
 part of ext2 most likely to be quietly wrong. Two runs produce identical
 bytes: the UUID and hash seed are constants, every staged file is stamped with
-epoch-zero times, SOURCE_DATE_EPOCH stops the superblock carrying the wall
+the same fixed epoch, SOURCE_DATE_EPOCH stops the superblock carrying the wall
 clock (e2fsprogs 1.47.1 or newer), and a debugfs pass rewrites the copied
 inodes to root:root so the result does not depend on who ran the build.
 
@@ -44,7 +44,10 @@ BIG_SIZE = 20000     # > 12 KB, so the direct pointers are not enough
 # are comparable; the same value is used as the directory hash seed (ext2 has
 # no dir_index here, but mke2fs otherwise fills the field from the clock).
 IMAGE_UUID = "4d3c2b1a-0f9e-4d8c-9b7a-6e5d4c3b2a19"
-IMAGE_EPOCH = "0"
+# 2000-01-01T00:00:00Z: fixed, so the image is reproducible, but deliberately
+# not zero, because a zero mtime is indistinguishable from a driver that never
+# filled the field in. ext2test asserts the former.
+IMAGE_EPOCH = "946684800"
 
 # A name longer than 128 bytes. ext2 allows 255, and the point of NAME_MAX 256
 # is that a file like this lists and opens instead of being silently cut down.
@@ -95,10 +98,11 @@ def main():
 
         # mke2fs copies each source file's mtime and atime into the inode, so
         # the staging tree has to carry fixed ones.
+        stamp = int(IMAGE_EPOCH)
         for base, dirs, files in os.walk(stage):
             for name in dirs + files:
-                os.utime(os.path.join(base, name), (0, 0))
-        os.utime(stage, (0, 0))
+                os.utime(os.path.join(base, name), (stamp, stamp))
+        os.utime(stage, (stamp, stamp))
 
         # ext2, no journal; dir_index off so directories stay a linear list
         # (the reader does not walk an htree). The image is the writable root's
