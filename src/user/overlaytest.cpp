@@ -38,6 +38,32 @@ int main(int argc, char** argv) {
     if (fd >= 0) close(fd);
     check(stat(path, &st) == 0 && st.st_size == 19, "stat it");
 
+    // 1b. Two descriptors on one overlay file agree about the live size. The
+    //     node each one holds asks its upper layer rather than trusting the
+    //     length copied at lookup, so an old reader sees the new bytes and an
+    //     old appender lands at the real end.
+    const char* live = "/overlay-live.txt";
+    unlink(live);
+    int lfd = open(live, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int lrd = open(live, O_RDONLY);
+    int lap = open(live, O_WRONLY | O_APPEND);
+    check(lfd >= 0 && lrd >= 0 && lap >= 0, "open one overlay file three times");
+    if (lfd >= 0 && lrd >= 0 && lap >= 0) {
+        check(write(lfd, "abcdef", 6) == 6, "write through the first descriptor");
+        check(read(lrd, buf, sizeof(buf)) == 6 && memcmp(buf, "abcdef", 6) == 0,
+              "a reader opened before the write sees the new bytes");
+        check(fstat(lrd, &st) == 0 && st.st_size == 6,
+              "fstat through the older descriptor");
+        check(lseek(lrd, 0, SEEK_END) == 6, "SEEK_END through the older descriptor");
+        check(write(lap, "Z", 1) == 1, "an append opened at 0 lands at the live end");
+        check(stat(live, &st) == 0 && st.st_size == 7,
+              "the overlay file grew to 7 bytes");
+    }
+    if (lap >= 0) close(lap);
+    if (lrd >= 0) close(lrd);
+    if (lfd >= 0) close(lfd);
+    check(unlink(live) == 0, "clean up the live-size file");
+
     // 2. mkdir in "/", and use the new directory.
     unlink("/overlay-dir/inner.txt");
     unlink("/overlay-dir");
@@ -151,8 +177,11 @@ int main(int argc, char** argv) {
     check(unlink("/overlay-both-moved.txt") == 0, "unlink the moved file");
 
     // 10. unlink doubles as rmdir, but a directory the image owns is never
-    //     hidden: its subtree would become unreachable.
-    check(unlink("/fonts") != 0, "unlink a non-empty lower directory is refused");
+    //     hidden: its subtree would become unreachable. The reason survives
+    //     the VFS, so a caller can tell EISDIR from a missing name.
+    errno = 0;
+    check(unlink("/fonts") == -1 && errno == EISDIR,
+          "unlink a non-empty lower directory -> EISDIR");
     check(stat("/fonts", &st) == 0 && S_ISDIR(st.st_mode), "the directory survives");
     check(stat("/fonts/bizcat.psf", &st) == 0, "and so does its subtree");
 

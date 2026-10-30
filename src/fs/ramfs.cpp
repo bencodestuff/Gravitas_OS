@@ -129,6 +129,17 @@ static void detach(RamNode* dir, RamNode* node) {
     }
 }
 
+// Is 'target' this directory or somewhere below it? Used by rename to refuse a
+// move that would put a directory inside itself. There are no parent pointers,
+// so the walk goes down from the source rather than up from the destination.
+static bool subtree_contains(RamNode* dir, RamNode* target) {
+    for (RamNode* c = dir->first_child; c; c = c->next_sibling) {
+        if (c == target) return true;
+        if (c->is_dir && subtree_contains(c, target)) return true;
+    }
+    return false;
+}
+
 // --- the VFS ops ---
 // A node is a window onto a RamNode: it takes a reference, and release() gives
 // it back. The durable state is the RamNode.
@@ -139,6 +150,7 @@ static VFS::Node* ram_lookup(void* priv, VFS::Node* dir, const char* name);
 static bool ram_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
 static uint64_t ram_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
 static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf, uint64_t count, uint64_t offset);
+static uint64_t ram_size(void* priv, VFS::Node* node);
 static int ram_truncate(void* priv, VFS::Node* node, uint64_t size);
 static int ram_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type, VFS::Node** out);
 static int ram_unlink(void* priv, VFS::Node* dir, const char* name);
@@ -154,6 +166,7 @@ static VFS::Filesystem fs = {
     .readdir  = ram_readdir,
     .read      = ram_read,
     .write     = ram_write,
+    .size      = ram_size,
     .truncate = ram_truncate,
     .create   = ram_create,
     .unlink   = ram_unlink,
@@ -252,6 +265,14 @@ static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf,
     return count;
 }
 
+// The durable node's length. Two VFS::Node windows onto one RamNode then agree
+// even when one of them was opened before the other wrote.
+static uint64_t ram_size(void* priv, VFS::Node* node) {
+    (void)priv;
+    RamNode* n = (RamNode*)node->priv;
+    return n->is_dir ? 0 : n->size;
+}
+
 static int ram_truncate(void* priv, VFS::Node* node, uint64_t size) {
     (void)priv;
     RamNode* n = (RamNode*)node->priv;
@@ -290,11 +311,14 @@ static int ram_create(void* priv, VFS::Node* dir, const char* name,
 static int ram_unlink(void* priv, VFS::Node* dir, const char* name) {
     (void)priv;
     RamNode* d = (RamNode*)dir->priv;
-    if (!d->is_dir) return -1;
+    if (!d->is_dir) return -Errno::ENOTDIR;
 
     RamNode* c = find_child(d, name);
-    if (c == nullptr) return -1;
-    if (c->is_dir && c->first_child) return -1;   // non-empty dir
+    if (c == nullptr) return -Errno::ENOENT;
+    // unlink doubles as rmdir here, but only an empty directory goes. Saying
+    // EISDIR rather than ENOENT is what lets a caller tell a wrong name from a
+    // directory it has to empty first.
+    if (c->is_dir && c->first_child) return -Errno::EISDIR;
 
     detach(d, c);
     node_unref(c); // the tree's reference; a live VFS::Node keeps the node alive
@@ -302,25 +326,31 @@ static int ram_unlink(void* priv, VFS::Node* dir, const char* name) {
 }
 
 // Rename/move within the ramfs. Replaces an existing destination file; refuses
-// to clobber a non-empty directory. (Moving a directory into its own subtree is
-// not detected: nodes carry no parent pointer.)
+// to clobber a non-empty directory, and refuses to move a directory into its
+// own subtree (which would detach the subtree and leak it).
 static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
                       VFS::Node* to_dir_node, const char* to) {
     (void)priv;
     RamNode* fdir = (RamNode*)from_dir_node->priv;
     RamNode* tdir = (RamNode*)to_dir_node->priv;
-    if (!fdir->is_dir || !tdir->is_dir) return -1;
-    if (from[0] == '\0' || to[0] == '\0') return -1;
+    if (!fdir->is_dir || !tdir->is_dir) return -Errno::ENOTDIR;
+    if (from[0] == '\0' || to[0] == '\0') return -Errno::EINVAL;
     // Refuse a destination that would be cut down; a shortened name would move
     // the file somewhere the caller cannot find it.
     if (name_too_long(to)) return -Errno::ENAMETOOLONG;
 
     RamNode* src = find_child(fdir, from);
-    if (src == nullptr) return -1;
+    if (src == nullptr) return -Errno::ENOENT;
+
+    // The new parent is the source itself or lies below it: moving there would
+    // cut the subtree off from the root with no path back to it. ext2 does the
+    // equivalent check by walking up from the destination through "..".
+    if (src->is_dir && (tdir == src || subtree_contains(src, tdir)))
+        return -Errno::EINVAL;
 
     RamNode* dst = find_child(tdir, to);
     if (dst != nullptr && dst != src) {
-        if (dst->is_dir && dst->first_child) return -1;   // non-empty dir
+        if (dst->is_dir && dst->first_child) return -Errno::EISDIR; // non-empty dir
         detach(tdir, dst);
         node_unref(dst); // as in unlink: a live VFS::Node keeps it alive
     }

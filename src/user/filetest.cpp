@@ -81,6 +81,35 @@ int main(int argc, char** argv) {
     check(n == 11 && memcmp(buf, "onetwothree", 11) == 0, "appended contents");
     grv_close(fd);
 
+    // --- two descriptors on one file share its live size ---
+    // A node is a per-open snapshot, so a reader opened before the writer ran
+    // used to see EOF at the old length and an append opened then used to land
+    // at the old end. Reading, fstat, SEEK_END and O_APPEND through the older
+    // handle must all follow the file the writer extended.
+    const char* shared = "/tmp/ftdir/shared.txt";
+    grv_unlink(shared);
+    int sfd  = grv_open(shared, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    int srd  = grv_open(shared, GRV_O_RDONLY);
+    int sap  = grv_open(shared, GRV_O_WRONLY | GRV_O_APPEND);
+    check(sfd >= 0 && srd >= 0 && sap >= 0, "open one file three times");
+    check(grv_write_fd(sfd, "abcdef", 6) == 6, "write through the first descriptor");
+    n = grv_read_fd(srd, buf, sizeof(buf));
+    check(n == 6 && memcmp(buf, "abcdef", 6) == 0,
+          "a reader opened before the write sees the new bytes");
+    check(grv_fstat(srd, &st) == 0 && st.size == 6,
+          "fstat through the older descriptor");
+    check(grv_lseek(srd, 0, 2) == 6, "SEEK_END through the older descriptor");
+    check(grv_write_fd(sap, "Z", 1) == 1,
+          "an append opened at 0 lands at the live end");
+    grv_close(sap);
+    check(grv_lseek(srd, 0, 0) == 0, "rewind the reader");
+    n = grv_read_fd(srd, buf, sizeof(buf));
+    check(n == 7 && memcmp(buf, "abcdefZ", 7) == 0,
+          "the appended byte is at the real end");
+    grv_close(srd);
+    grv_close(sfd);
+    check(grv_unlink(shared) == 0, "clean up the shared file");
+
     // --- O_EXCL: a create that refuses to clobber ---
     errno = 0;
     fd = grv_open(file, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_EXCL);
@@ -254,6 +283,37 @@ int main(int argc, char** argv) {
     check(n == 6 && memcmp(buf, "intact", 6) == 0, "the heap is intact after the refusals");
     grv_close(fd);
     check(grv_unlink(after) == 0, "clean up the heap check");
+
+    // --- directory failures keep their reason ---
+    // A non-empty directory is EISDIR, not ENOENT, so a caller can tell "empty
+    // it first" from "no such name". Moving a directory into its own subtree
+    // is EINVAL, and the refused move must leave the subtree where it was.
+    const char* ne = "/tmp/ftdir/ne";
+    grv_unlink(ne);
+    check(grv_mkdir(ne) == 0, "mkdir for the non-empty unlink");
+    fd = grv_open("/tmp/ftdir/ne/child.txt", GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    check(fd >= 0, "create a file inside it");
+    grv_close(fd);
+    errno = 0;
+    check(grv_unlink(ne) == -1 && errno == EISDIR,
+          "unlink a non-empty directory -> EISDIR");
+
+    const char* sub = "/tmp/ftdir/sub";
+    grv_unlink("/tmp/ftdir/sub/inner/deep.txt");
+    grv_unlink("/tmp/ftdir/sub/inner");
+    grv_unlink(sub);
+    check(grv_mkdir(sub) == 0 && grv_mkdir("/tmp/ftdir/sub/inner") == 0,
+          "mkdir a subtree for the cycle test");
+    errno = 0;
+    check(rename(sub, "/tmp/ftdir/sub/inner/x") == -1 && errno == EINVAL,
+          "rename a directory into its own subtree -> EINVAL");
+    check(grv_stat("/tmp/ftdir/sub/inner", &st) == 0 && st.is_dir,
+          "the refused move left the subtree in place");
+
+    check(grv_unlink("/tmp/ftdir/ne/child.txt") == 0 &&
+          grv_unlink(ne) == 0 &&
+          grv_unlink("/tmp/ftdir/sub/inner") == 0 &&
+          grv_unlink(sub) == 0, "clean up the directory checks");
 
     if (fails == 0) { printf("filetest: all checks pass\n"); return 0; }
     printf("filetest: %d check(s) failed\n", fails);

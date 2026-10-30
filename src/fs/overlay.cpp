@@ -46,6 +46,7 @@ static VFS::Node* ov_lookup(void* priv, VFS::Node* dir, const char* name);
 static bool ov_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
 static uint64_t ov_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
 static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf, uint64_t count, uint64_t offset);
+static uint64_t ov_size(void* priv, VFS::Node* node);
 static int ov_truncate(void* priv, VFS::Node* node, uint64_t size);
 static int ov_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type, VFS::Node** out);
 static int ov_unlink(void* priv, VFS::Node* dir, const char* name);
@@ -63,6 +64,7 @@ static VFS::Filesystem fs = {
     .readdir  = ov_readdir,
     .read      = ov_read,
     .write     = ov_write,
+    .size      = ov_size,
     .truncate = ov_truncate,
     .create   = ov_create,
     .unlink   = ov_unlink,
@@ -363,6 +365,20 @@ static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf,
     return on->upper->fs->write(on->upper->fs->priv, on->upper, buf, count, offset);
 }
 
+// The length of the view a read would use: the upper copy once a file has been
+// copied up, the lower entry otherwise. Asking the layer rather than copying
+// its snapshot at lookup is what keeps two descriptors on one overlay file in
+// agreement after either of them writes. (A lower-only file that another
+// descriptor has just copied up still reads through this node's lower view;
+// the size reported here matches the bytes this node can actually see.)
+static uint64_t ov_size(void* priv, VFS::Node* node) {
+    (void)priv;
+    OvNode* on = (OvNode*)node->priv;
+    VFS::Node* src = on->upper ? on->upper : on->lower;
+    if (src == nullptr) return 0;
+    return VFS::node_size(src);
+}
+
 static int ov_truncate(void* priv, VFS::Node* node, uint64_t size) {
     (void)priv;
     OvNode* on = (OvNode*)node->priv;
@@ -454,9 +470,10 @@ static int ov_unlink(void* priv, VFS::Node* dir, const char* name) {
 
     if (u != nullptr) {
         upper_fs->release(upper_fs->priv, u);
-        if (upper_fs->unlink(upper_fs->priv, d->upper, name) != 0) {
+        int r = upper_fs->unlink(upper_fs->priv, d->upper, name);
+        if (r != 0) {
             if (made) remove_whiteout(d->upper, name);
-            return -Errno::EIO;
+            return r;   // the upper's reason, not a flat EIO
         }
     }
     return 0;
@@ -475,9 +492,11 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (!join(fd->path, from, from_path, sizeof(from_path)))
         return -Errno::ENAMETOOLONG;
 
-    VFS::Node* fup = ensure_dir(&fd->upper, fd->path, nullptr);
-    VFS::Node* tup = ensure_dir(&td->upper, td->path, nullptr);
-    if (fup == nullptr || tup == nullptr) return -Errno::EIO;
+    int fderr = 0, tderr = 0;
+    VFS::Node* fup = ensure_dir(&fd->upper, fd->path, &fderr);
+    VFS::Node* tup = ensure_dir(&td->upper, td->path, &tderr);
+    if (fup == nullptr) return fderr ? fderr : -Errno::EIO;
+    if (tup == nullptr) return tderr ? tderr : -Errno::EIO;
 
     // What the two layers hold under the old and the new name. A whited-out
     // lower name is not there as far as the overlay is concerned.
@@ -539,8 +558,9 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (lower_from) r = add_whiteout(fup, from, &made_from);
     if (r == 0 && lower_to) r = add_whiteout(tup, to, &made_to);
     if (r == 0) {
+        // Keep the upper's reason: a rename that could not be recorded is not
+        // a missing file, and EIO would hide the difference.
         r = upper_fs->rename(upper_fs->priv, fup, from, tup, to);
-        if (r != 0) r = -Errno::EIO;
     }
     if (r != 0) {
         if (made_from) remove_whiteout(fup, from);

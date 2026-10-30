@@ -343,13 +343,42 @@ int main(int argc, char** argv) {
     }
     check(stat("/disk/rwtestopen.txt", &st) == -1, "the unlinked file is gone for good");
 
+    // 13b. Two descriptors on one file share its live size. A node used to be a
+    //      per-open snapshot, so a reader opened before the writer ran saw EOF
+    //      at the old length and an append opened early overwrote the old end.
+    int sfd = open("/disk/rwtestshared.txt", O_CREAT | O_RDWR | O_TRUNC, 0644);
+    check(sfd >= 0, "create rwtestshared.txt");
+    int srd = open("/disk/rwtestshared.txt", O_RDONLY);
+    int sap = open("/disk/rwtestshared.txt", O_WRONLY | O_APPEND);
+    check(srd >= 0 && sap >= 0, "open the shared file three times");
+    if (sfd >= 0 && srd >= 0 && sap >= 0) {
+        check(write(sfd, "abcdef", 6) == 6, "write through the first descriptor");
+        check(read(srd, buf, sizeof(buf)) == 6 && memcmp(buf, "abcdef", 6) == 0,
+              "a reader opened before the write sees the new bytes");
+        check(fstat(srd, &st) == 0 && st.st_size == 6,
+              "fstat through the older descriptor");
+        check(lseek(srd, 0, SEEK_END) == 6, "SEEK_END through the older descriptor");
+        check(write(sap, "Z", 1) == 1, "an append opened at 0 lands at the live end");
+        check(lseek(srd, 0, SEEK_SET) == 0, "rewind the reader");
+        check(read(srd, buf, sizeof(buf)) == 7 && memcmp(buf, "abcdefZ", 7) == 0,
+              "the appended byte is at the real end");
+    }
+    if (sap >= 0) close(sap);
+    if (srd >= 0) close(srd);
+    if (sfd >= 0) close(sfd);
+    check(unlink("/disk/rwtestshared.txt") == 0, "unlink rwtestshared.txt");
+
     // 14. A rename must not replace a directory that still has entries.
     check(mkdir("/disk/rwtestdir5", 0755) == 0, "mkdir rwtestdir5");
     check(mkdir("/disk/rwtestdir6", 0755) == 0, "mkdir rwtestdir6");
     fd = open("/disk/rwtestdir6/keep.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd >= 0) { write(fd, "k", 1); close(fd); }
-    check(rename("/disk/rwtestdir5", "/disk/rwtestdir6") == -1,
-          "rename refuses to replace a non-empty directory");
+    errno = 0;
+    check(unlink("/disk/rwtestdir6") == -1 && errno == EISDIR,
+          "unlink a non-empty directory -> EISDIR");
+    errno = 0;
+    check(rename("/disk/rwtestdir5", "/disk/rwtestdir6") == -1 && errno == EISDIR,
+          "rename over a non-empty directory -> EISDIR");
     check(stat("/disk/rwtestdir5", &st) == 0 && S_ISDIR(st.st_mode) &&
           stat("/disk/rwtestdir6", &st) == 0 && S_ISDIR(st.st_mode),
           "both directories are still there");
@@ -360,8 +389,9 @@ int main(int argc, char** argv) {
     // A directory cannot be moved into its own subtree.
     check(mkdir("/disk/rwtestdir7", 0755) == 0, "mkdir rwtestdir7");
     check(mkdir("/disk/rwtestdir7/child", 0755) == 0, "mkdir rwtestdir7/child");
-    check(rename("/disk/rwtestdir7", "/disk/rwtestdir7/child/x") == -1,
-          "rename refuses to move a directory into its own subtree");
+    errno = 0;
+    check(rename("/disk/rwtestdir7", "/disk/rwtestdir7/child/x") == -1 && errno == EINVAL,
+          "rename refuses to move a directory into its own subtree with EINVAL");
     check(rmdir("/disk/rwtestdir7/child") == 0, "rmdir rwtestdir7/child");
     check(rmdir("/disk/rwtestdir7") == 0, "rmdir rwtestdir7");
 

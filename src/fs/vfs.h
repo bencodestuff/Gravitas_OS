@@ -132,6 +132,15 @@ struct Filesystem {
     uint64_t (*write)(void* priv, Node* node, const void* buf,
                       uint64_t count, uint64_t offset);
 
+    // Report a file's current length, from the durable thing the node names
+    // rather than from the snapshot the node was created with. nullptr when the
+    // backend cannot say, and then the VFS keeps using node->size. Present
+    // means authoritative: the size of a directory is 0. This is what lets two
+    // descriptors on one file agree, and what makes O_APPEND land at the real
+    // end rather than at the end the descriptor last saw.
+    // Defaulted so a backend that does not implement it (tarfs) needs no entry.
+    uint64_t (*size)(void* priv, Node* node) = nullptr;
+
     // Set a file's length (nullptr if the backend cannot). Shrinking discards;
     // growing zero-fills. Returns 0 or -1.
     int (*truncate)(void* priv, Node* node, uint64_t size);
@@ -145,11 +154,14 @@ struct Filesystem {
     int (*create)(void* priv, Node* dir, const char* name, FileType type,
                   Node** out);
 
-    // Remove an entry from 'dir' (nullptr when read-only). Returns 0 or -1.
+    // Remove an entry from 'dir' (nullptr when read-only). Returns 0, or a
+    // negated errno (ENOENT, EISDIR, EIO, ...): the VFS passes the reason to
+    // the caller rather than flattening every failure to one code.
     int (*unlink)(void* priv, Node* dir, const char* name);
 
     // Move 'from' in 'from_dir' to 'to' in 'to_dir' (nullptr when read-only).
-    // Both directories belong to this filesystem. Returns 0 or -1.
+    // Both directories belong to this filesystem. Returns 0, or a negated
+    // errno (ENOENT, EINVAL, EISDIR, ...).
     int (*rename)(void* priv, Node* from_dir, const char* from,
                   Node* to_dir, const char* to);
 
@@ -242,6 +254,14 @@ Node* node_create(Filesystem* fs, const char* rel, FileType final_type,
 // NAME_MAX. 'parent' holds PATH_MAX bytes, 'name' holds NAME_MAX.
 bool node_split(const char* rel, char* parent, char* name);
 
+// A node's current size. When the backend has a size() op this asks it and
+// refreshes node->size, so two descriptors on one file never disagree; when it
+// has none (tarfs, whose image cannot change) the snapshot is the answer.
+// Directories are always 0. The VFS calls this at every point that depends on
+// the length: read, append positioning, seek from the end, fstat and the spawn
+// buffer size. Node is a per-open snapshot; this is how the VFS gets past that.
+uint64_t node_size(Node* node);
+
 // --- Kernel API ---
 
 // Mount the root ramfs; called once at boot
@@ -306,12 +326,12 @@ long readdir_entries(const char* path, DirEntry* out, uint64_t max);
 long lseek_fd(int fd, long offset, int whence);
 
 // Create a directory / remove a file, by path. Return 0 or -errno
-// (ENOENT/EROFS/EEXIST/ENOSPC; the backend's own code for a create failure).
+// (ENOENT/EROFS/EEXIST/ENOSPC/EISDIR; the backend's own code for a failure).
 int mkdir(const char* path);
 int unlink(const char* path);
 
 // Rename/move a path. Both sides must live on the same filesystem. Returns 0
-// or -errno (ENOENT/EINVAL/EROFS).
+// or -errno (ENOENT/EINVAL/EISDIR/EROFS; the backend's own code).
 int rename(const char* from, const char* to);
 
 // Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO).
@@ -346,6 +366,6 @@ int sync_all();
 void      fds_init_current();               // zero the table
 FileHandle** fds_of_current();               // the current task's table
 FileHandle*  fd_slot_get(int fd);
-uint64_t     fd_size(int fd);                // bytes reported at open
+uint64_t     fd_size(int fd);                // the file's current length
 int          fd_slot_alloc(Node* node);      // takes ownership of the reference
 } // namespace VFS

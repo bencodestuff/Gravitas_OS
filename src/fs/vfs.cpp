@@ -228,6 +228,16 @@ Node* node_new(Filesystem* fs, FileType type) {
     return n;
 }
 
+uint64_t node_size(Node* n) {
+    if (n == nullptr) return 0;
+    if (n->type != FT_FILE) return 0;
+    if (n->fs == nullptr || n->fs->size == nullptr) return n->size;
+    // Ask the durable thing. A backend without a size op (tarfs) keeps its
+    // snapshot, which is right because its bytes cannot change.
+    n->size = n->fs->size(n->fs->priv, n);
+    return n->size;
+}
+
 // One component of a path into 'out' (NAME_MAX bytes); advances *p. The
 // mechanics and the name limit live in FsPath::next_component: a component that
 // does not fit is an error, not something to truncate, because a truncated name
@@ -502,7 +512,7 @@ int open_fd(const char* path, int flags) {
         // right after the open reports the size without an explicit seek.
         FileHandle* h = fds_of_current()[fd];
         h->append = true;
-        h->offset = node->size;
+        h->offset = node_size(node);
     }
     return fd;
 }
@@ -622,11 +632,12 @@ long read_fd(int fd, void* buf, uint64_t count) {
 
     Node* n = h->node;
     if (n->fs->read == nullptr) return -Errno::EACCES;
-    // Clamp against the node's size (protects zero-copy backends like tarfs
-    // whose read cannot know its own bounds, and is live for a file another
-    // fd may have extended).
-    if (h->offset >= n->size) return 0;
-    if (count > n->size - h->offset) count = n->size - h->offset;
+    // Ask for the live length; node->size was a snapshot from lookup, and a
+    // descriptor opened before another one extended the file would otherwise
+    // read a stale EOF. (tarfs has no size op: its image cannot change.)
+    uint64_t size = node_size(n);
+    if (h->offset >= size) return 0;
+    if (count > size - h->offset) count = size - h->offset;
     uint64_t got = n->fs->read(n->fs->priv, n, buf, count, h->offset);
     h->offset += got;
     return (long)got;
@@ -647,7 +658,12 @@ long write_fd(int fd, const void* buf, uint64_t count) {
 
     Node* n = h->node;
     if (n->fs->write == nullptr) return -Errno::EROFS;
-    if (h->append) h->offset = n->size;  // O_APPEND: the end is wherever it is now
+    // O_APPEND: the end is wherever it is now, not where this descriptor last
+    // saw it. The read of the length and the write below happen in one
+    // syscall with interrupts off, so no other task can extend the file
+    // between them; two appenders therefore land end to end instead of on top
+    // of each other. That is why no lock is needed here.
+    if (h->append) h->offset = node_size(n);
     // The range must be representable: a wrapped addition would describe a
     // small write at a huge offset, or a huge one at a small offset, and either
     // way a backend's cap check would be checking the wrong number.
@@ -782,15 +798,18 @@ long lseek_fd(int fd, long offset, int whence) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr) return -Errno::EBADF;
     if (h->kind != FdKind::File) return -Errno::EINVAL; // a console/pipe is not seekable
+    // END and the clamp both mean the file's length now, not the length this
+    // descriptor saw when it was opened.
+    uint64_t size = node_size(h->node);
     long base;
     if (whence == 0) base = 0;                 // SET
     else if (whence == 1) base = (long)h->offset; // CUR
-    else if (whence == 2) base = (long)h->node->size; // END
+    else if (whence == 2) base = (long)size; // END
     else return -Errno::EINVAL;
 
     long pos = base + offset;
     if (pos < 0) pos = 0;
-    if ((uint64_t)pos > h->node->size) pos = (long)h->node->size; // not past EOF
+    if ((uint64_t)pos > size) pos = (long)size; // not past EOF
     h->offset = (uint64_t)pos;
     return pos;
 }
@@ -861,7 +880,10 @@ int unlink(const char* path) {
     if (dir == nullptr) return -Errno::ENOENT;
     int r = fs->unlink(fs->priv, dir, name);
     fs->release(fs->priv, dir);
-    return r == 0 ? 0 : -Errno::ENOENT;
+    // The backend's reason, as create already does: a stale name is ENOENT,
+    // an unemptied directory is EISDIR, a failed write is EIO. Flattening them
+    // to ENOENT made `rm` of a non-empty directory look like a missing file.
+    return r;
 }
 
 // Rename resolves like mkdir/unlink: against the CWD (or an absolute path)
@@ -893,7 +915,9 @@ int rename(const char* from, const char* to) {
     int r = from_fs->rename(from_fs->priv, fdir, from_name, tdir, to_name);
     from_fs->release(from_fs->priv, fdir);
     from_fs->release(from_fs->priv, tdir);
-    return r == 0 ? 0 : -Errno::ENOENT;
+    // The backend's reason: ENOENT for a missing source, EINVAL for a move
+    // into the tree's own subtree, EISDIR for a directory case it refuses.
+    return r;
 }
 
 int ftruncate_fd(int fd, uint64_t size) {
@@ -901,6 +925,9 @@ int ftruncate_fd(int fd, uint64_t size) {
     if (h == nullptr || h->kind != FdKind::File) return -Errno::EBADF;
     Node* n = h->node;
     if (n->fs->truncate == nullptr) return -Errno::EROFS;
+    // The backend truncates the durable file (the ramfs node, the ext2 inode,
+    // the overlay's upper copy), so the length it acts on is the live one
+    // however stale this descriptor's snapshot is.
     int r = n->fs->truncate(n->fs->priv, n, size);
     if (r != 0) return -Errno::ENOSPC; // the only reason a truncate fails here
     n->size = size;
@@ -922,7 +949,7 @@ int stat_path(const char* path, Stat* out) {
     Node* n = node_walk(fs, rel);
     if (n == nullptr) return -Errno::ENOENT;
     if (out) {
-        out->size = n->size;
+        out->size = node_size(n);
         out->type = n->type;
         out->ino = n->ino;
         out->mode = n->mode;
@@ -941,7 +968,9 @@ int fstat_fd(int fd, Stat* out) {
     if (h->kind != FdKind::File) return -Errno::EINVAL;
     Node* n = h->node;
     if (out) {
-        out->size = n->size;
+        // The live length, so an fstat through one descriptor sees a write
+        // that another descriptor made after this one was opened.
+        out->size = node_size(n);
         out->type = n->type;
         out->ino = n->ino;
         out->mode = n->mode;
@@ -1051,7 +1080,8 @@ bool read_full(const char* path, char* buf, uint64_t max, uint64_t* out_size) {
         return false;
     }
 
-    uint64_t want = (n->size < max) ? n->size : max;
+    uint64_t size = node_size(n);
+    uint64_t want = (size < max) ? size : max;
     uint64_t got = fs->read(fs->priv, n, buf, want, 0);
     fs->release(fs->priv, n);
     if (out_size) *out_size = got;
@@ -1085,7 +1115,7 @@ long readdir_entries(const char* path, DirEntry* out, uint64_t max) {
 uint64_t fd_size(int fd) {
     FileHandle* h = fd_slot_get(fd);
     if (h == nullptr || h->kind != FdKind::File) return 0;
-    return h->node->size;
+    return node_size(h->node);
 }
 
 } // namespace VFS
