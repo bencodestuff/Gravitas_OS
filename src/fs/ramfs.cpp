@@ -129,6 +129,17 @@ static void detach(RamNode* dir, RamNode* node) {
     }
 }
 
+// Is 'target' this directory or somewhere below it? Used by rename to refuse a
+// move that would put a directory inside itself. There are no parent pointers,
+// so the walk goes down from the source rather than up from the destination.
+static bool subtree_contains(RamNode* dir, RamNode* target) {
+    for (RamNode* c = dir->first_child; c; c = c->next_sibling) {
+        if (c == target) return true;
+        if (c->is_dir && subtree_contains(c, target)) return true;
+    }
+    return false;
+}
+
 // --- the VFS ops ---
 // A node is a window onto a RamNode: it takes a reference, and release() gives
 // it back. The durable state is the RamNode.
@@ -315,8 +326,8 @@ static int ram_unlink(void* priv, VFS::Node* dir, const char* name) {
 }
 
 // Rename/move within the ramfs. Replaces an existing destination file; refuses
-// to clobber a non-empty directory. (Moving a directory into its own subtree is
-// not detected: nodes carry no parent pointer.)
+// to clobber a non-empty directory, and refuses to move a directory into its
+// own subtree (which would detach the subtree and leak it).
 static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
                       VFS::Node* to_dir_node, const char* to) {
     (void)priv;
@@ -330,6 +341,12 @@ static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
 
     RamNode* src = find_child(fdir, from);
     if (src == nullptr) return -Errno::ENOENT;
+
+    // The new parent is the source itself or lies below it: moving there would
+    // cut the subtree off from the root with no path back to it. ext2 does the
+    // equivalent check by walking up from the destination through "..".
+    if (src->is_dir && (tdir == src || subtree_contains(src, tdir)))
+        return -Errno::EINVAL;
 
     RamNode* dst = find_child(tdir, to);
     if (dst != nullptr && dst != src) {

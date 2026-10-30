@@ -286,7 +286,8 @@ int main(int argc, char** argv) {
 
     // --- directory failures keep their reason ---
     // A non-empty directory is EISDIR, not ENOENT, so a caller can tell "empty
-    // it first" from "no such name".
+    // it first" from "no such name". Moving a directory into its own subtree
+    // is EINVAL, and the refused move must leave the subtree where it was.
     const char* ne = "/tmp/ftdir/ne";
     grv_unlink(ne);
     check(grv_mkdir(ne) == 0, "mkdir for the non-empty unlink");
@@ -297,8 +298,22 @@ int main(int argc, char** argv) {
     check(grv_unlink(ne) == -1 && errno == EISDIR,
           "unlink a non-empty directory -> EISDIR");
 
+    const char* sub = "/tmp/ftdir/sub";
+    grv_unlink("/tmp/ftdir/sub/inner/deep.txt");
+    grv_unlink("/tmp/ftdir/sub/inner");
+    grv_unlink(sub);
+    check(grv_mkdir(sub) == 0 && grv_mkdir("/tmp/ftdir/sub/inner") == 0,
+          "mkdir a subtree for the cycle test");
+    errno = 0;
+    check(rename(sub, "/tmp/ftdir/sub/inner/x") == -1 && errno == EINVAL,
+          "rename a directory into its own subtree -> EINVAL");
+    check(grv_stat("/tmp/ftdir/sub/inner", &st) == 0 && st.is_dir,
+          "the refused move left the subtree in place");
+
     check(grv_unlink("/tmp/ftdir/ne/child.txt") == 0 &&
-          grv_unlink(ne) == 0, "clean up the directory checks");
+          grv_unlink(ne) == 0 &&
+          grv_unlink("/tmp/ftdir/sub/inner") == 0 &&
+          grv_unlink(sub) == 0, "clean up the directory checks");
 
     if (fails == 0) { printf("filetest: all checks pass\n"); return 0; }
     printf("filetest: %d check(s) failed\n", fails);

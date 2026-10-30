@@ -389,8 +389,9 @@ int main(int argc, char** argv) {
     // A directory cannot be moved into its own subtree.
     check(mkdir("/disk/rwtestdir7", 0755) == 0, "mkdir rwtestdir7");
     check(mkdir("/disk/rwtestdir7/child", 0755) == 0, "mkdir rwtestdir7/child");
-    check(rename("/disk/rwtestdir7", "/disk/rwtestdir7/child/x") == -1,
-          "rename refuses to move a directory into its own subtree");
+    errno = 0;
+    check(rename("/disk/rwtestdir7", "/disk/rwtestdir7/child/x") == -1 && errno == EINVAL,
+          "rename refuses to move a directory into its own subtree with EINVAL");
     check(rmdir("/disk/rwtestdir7/child") == 0, "rmdir rwtestdir7/child");
     check(rmdir("/disk/rwtestdir7") == 0, "rmdir rwtestdir7");
 
