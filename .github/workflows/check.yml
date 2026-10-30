@@ -1,0 +1,34 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    # Pinned rather than ubuntu-latest: the host tests are cheap, and a stable
+    # image keeps a green run meaningful.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build prerequisites
+        # clang, ninja-build, e2fsprogs and python3 run the job. lld, xorriso,
+        # tar, git, make and curl are what configure.py checks for or needs to
+        # fetch and build Limine and Lua on a fresh tree.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld ninja-build e2fsprogs python3 xorriso tar git make curl
+
+      # A fresh tree makes configure.py clone Limine and download Lua from the
+      # network, so this step depends on GitHub and lua.org being reachable.
+      # That is the fragile part of the job; the Limine tag and commit pin in
+      # configure.py fails loudly instead of building a different bootloader.
+      - name: Configure
+        run: python3 configure.py
+
+      # Host tests only: no QEMU and no guest boots in CI. The guest groups
+      # still run locally; see tests/README.md.
+      - name: Host tests
+        run: ninja check
