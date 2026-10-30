@@ -394,8 +394,18 @@ namespace Sched {
 
         // FPU area: separately allocated (heap is only 8-aligned; fxsave
         // needs 16) and seeded with the boot-clean template so the first
-        // fxrstor is valid
+        // fxrstor is valid. Failure here is a failed spawn like any other: the
+        // user stack is already mapped and reserved, so it is handed back the
+        // way the out-of-memory path above does it. The copy below must never
+        // run through a null pointer.
         new_task->fxsave_raw = new uint8_t[512 + 63];
+        if (new_task->fxsave_raw == nullptr) {
+            kprint("[Sched] Out of memory for the FPU area!\n");
+            VMM::unmap_and_free_user_range(new_task->cr3, stack_base + 4096, mapped);
+            VMM::unmap_user_range(new_task->cr3, stack_base, 1); // guard marker
+            discard_unlinked_task(new_task);
+            return -1;
+        }
         new_task->fxsave_area = (uint8_t*)(((uint64_t)new_task->fxsave_raw + 63) & ~(uint64_t)63);
         for (int i = 0; i < 512; i++) new_task->fxsave_area[i] = fpu_template[i];
         // The child inherits the parent's descriptors (Unix semantics): its
