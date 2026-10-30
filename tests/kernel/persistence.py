@@ -117,6 +117,10 @@ def disk_writes_survive_reboot(g):
     run(g, "cp /disk/hello.txt /disk/persist/hello-copy.txt")
     run(g, "cp /disk/sub/nested.txt /disk/persist/deep/nested.txt")
     run(g, "cp /disk/big.bin /disk/persist/big-copy.bin")
+    # Move a directory to a different parent. The moved directory's ".." and
+    # both parents' link counts have to change, and the e2fsck run below is what
+    # judges them: an old ".." or a stale count is not a clean filesystem.
+    run(g, "mv /disk/persist/deep /disk/sub/moved")
     run(g, "cp /disk/hello.txt /disk/sub/nested.txt")
     run(g, "cp /disk/hello.txt /disk/persist/gone.txt")
     run(g, "rm /disk/persist/gone.txt")
@@ -127,7 +131,7 @@ def disk_writes_survive_reboot(g):
     g2 = Guest("persistence-second", disk_image=DISK)
     try:
         cat(g2, "/disk/persist/hello-copy.txt", "Hello from the ext2 disk")
-        cat(g2, "/disk/persist/deep/nested.txt", "A nested file.")
+        cat(g2, "/disk/sub/moved/nested.txt", "A nested file.")
         # The overwrite stuck: this is now hello.txt's content, not the
         # "A nested file." the image was built with.
         cat(g2, "/disk/sub/nested.txt", "Hello from the ext2 disk")
@@ -135,12 +139,24 @@ def disk_writes_survive_reboot(g):
         mark = g2.mark()
         run(g2, "ls /disk/persist")
         listing = g2.since(mark)
-        for name in ("hello-copy.txt", "big-copy.bin", "deep/"):
+        for name in ("hello-copy.txt", "big-copy.bin"):
             if not re.search(r"^%s$" % re.escape(name), listing, re.M):
                 g2.fail("ls /disk/persist lost %r:\n%s"
                         % (name, listing.strip()))
         if re.search(r"^gone\.txt$", listing, re.M):
             g2.fail("the removed file came back:\n%s" % listing.strip())
+        if re.search(r"^deep/$", listing, re.M):
+            g2.fail("the moved directory is still in its old parent:\n%s"
+                    % listing.strip())
+
+        # And it arrived in its new parent, with its own entry intact.
+        mark = g2.mark()
+        run(g2, "ls /disk/sub")
+        listing = g2.since(mark)
+        for name in ("nested.txt", "moved/"):
+            if not re.search(r"^%s$" % re.escape(name), listing, re.M):
+                g2.fail("ls /disk/sub lost %r:\n%s"
+                        % (name, listing.strip()))
 
         # Still writable after a reboot, into the directory rm emptied a slot
         # in. That used to split a freed record below ext2's 12-byte minimum
