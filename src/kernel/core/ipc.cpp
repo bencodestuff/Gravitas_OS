@@ -13,7 +13,7 @@
 
 namespace Ipc {
 
-constexpr int MAX_BOXES = 16;   // concurrent mailboxes (>= max live tasks)
+constexpr int MAX_BOXES = 16;   // mailboxes claimed at once, shared by every task
 constexpr int BOX_CAP  = 16;    // messages buffered per mailbox
 
 struct Box {
@@ -52,7 +52,7 @@ static Box* claim_box(int owner) {
             return &boxes[i];
         }
     }
-    return nullptr; // out of slots: 16 live-task mailboxes exceeded
+    return nullptr; // out of slots: 16 mailboxes are already claimed
 }
 
 int send(int dst, const Msg& m) {
@@ -101,8 +101,10 @@ void recv_wait() {
     Box* b = claim_box(Sched::current_task_id());
     if (b == nullptr) {
         // No slot left: report by leaving the task blocked-but-wakable at
-        // the next timer tick instead of silently spinning. (Kernel
-        // under-provisioning, not a userland error.)
+        // the next timer tick instead of silently spinning. The table holds 16
+        // mailboxes and there is no cap on live tasks, so this is reachable
+        // whenever 16 other tasks have claimed one. (Kernel under-provisioning,
+        // not a userland error.)
         kprint(tag);
         kprint("no mailbox slot — sleeping on timer instead\n");
         Sched::sleep_current(2);

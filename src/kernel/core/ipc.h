@@ -9,9 +9,9 @@
 // which types exist, who may talk to whom) are userland policy.
 //
 // DELIVERY CONTRACT:
-//   * send is non-blocking: 0 = delivered, -1 = no such/dead target,
-//     -2 = target's mailbox is full. (Wakable-blocked send is the first
-//     listed extension below — same wake_task pattern as recv.)
+//   * send is non-blocking: 0 = delivered, or a negated errno:
+//     -ENOENT for no such/dead target, -ENOMEM when all 16 mailbox slots are
+//     claimed, -EAGAIN when the target's mailbox already holds 16 messages.
 //   * messages arrive in send order (FIFO ring per task).
 //   * nobody may recv from another task's mailbox (receive-if-owner).
 //   * a task's mailbox dies with the task; queued-but-undelivered
@@ -35,7 +35,8 @@ namespace Ipc {
     };
 
     // Try to deliver 'm' (kernel-side copy) to task 'dst'. Never blocks.
-    // 0 delivered / -1 unknown or dead task / -2 mailbox full.
+    // 0 delivered, or a negated errno:
+    // -ENOENT unknown/dead target, -ENOMEM no free mailbox slot, -EAGAIN full.
     int send(int dst, const Msg& m);
 
     // Take the next message out of OUR task's mailbox. 0 + *out, or -1.

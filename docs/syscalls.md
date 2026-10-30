@@ -76,6 +76,16 @@ A successful call never clears `errno` (check the return value, as in C).
 Not every syscall distinguishes every reason yet: the filesystem backends
 report 0/−1, so the VFS maps their failures to the closest code above.
 
+## Limits
+
+Fixed capacities are collected in [`limits.md`](limits.md): descriptors,
+kernel-wide handles, pipes, mailboxes, mounts, surfaces, mappings and regions,
+the heap and the user address window, name/path/working-directory sizes, the
+`spawn` argument buffers, and the storage image. The table names the code that
+enforces each one and the error at the boundary. Read it before a program that
+opens many files, spawns many children or writes large files: the kernel does
+not grow these tables.
+
 ## Bad addresses
 
 Every pointer and length argument is checked at the boundary, before the

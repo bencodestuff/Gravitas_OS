@@ -116,6 +116,16 @@ def path_limits(g):
 
 
 @test
+def capacity_limits(g):
+    # The documented capacities a program can reach: 13 usable descriptors per
+    # task and EMFILE past them, a 16-message mailbox and EAGAIN past that, a
+    # 200-byte ramfs name that reopens, and a working directory whose absolute
+    # path is longer than the old 63-byte field. See docs/limits.md.
+    g.shell("run limittest.elf")
+    g.wait_for("limittest: all checks pass")
+
+
+@test
 def file_commands(g):
     # The userland file commands, driven the way a person would. This is the only
     # place mkdir's "the parent must exist", cp's chunked copy and rm -r's walk

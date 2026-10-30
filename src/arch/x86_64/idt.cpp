@@ -41,8 +41,7 @@ static constexpr uint64_t MAX_SPAWN_IMAGE_BYTES = 16ull << 20; // 16 MiB
 // PATH: "ls.elf" -> /bin/ls.elf)
 #define BIN_MOUNT "/bin"
 
-// chdir/getcwd: per-process CWD, lives on the Task
-#define CWD_MAX 64
+// chdir/getcwd: per-process CWD, lives on the Task (VFS::PATH_MAX bytes)
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
@@ -314,10 +313,11 @@ static void sys_chdir(IDT::Registers* regs) {
         regs->rax = (uint64_t)-Errno::ENOENT;
         return;
     }
-    // Store the canonical path (cwd-relative + ./.. resolved). The CWD has its
-    // own, smaller limit than a path does, so a deep one is refused here rather
-    // than silently truncated into a different directory.
-    static char canon[64];
+    // Store the canonical path (cwd-relative + ./.. resolved). The CWD has the
+    // same size as any other path (VFS::PATH_MAX), so a directory the VFS can
+    // name can also be entered. A path that genuinely does not fit is refused
+    // here rather than silently truncated into a different directory.
+    static char canon[VFS::PATH_MAX];
     if (!VFS::canonicalize(path, canon, sizeof(canon))) {
         regs->rax = (uint64_t)-Errno::ENAMETOOLONG;
         return;

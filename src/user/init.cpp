@@ -136,7 +136,7 @@ static int l_sleep(lua_State* L) {
 
 // init.cwd() -> the working directory as a string
 static int l_cwd(lua_State* L) {
-    char buf[64];
+    char buf[512];   // the CWD can be a full PATH_MAX path
     grv_getcwd(buf, sizeof(buf));
     lua_pushstring(L, buf);
     return 1;

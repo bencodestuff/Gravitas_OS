@@ -19,14 +19,19 @@ namespace VFS {
 
 constexpr int MAX_FDS     = 16;
 constexpr int MAX_MOUNTS  = 8;
-constexpr int MAX_HANDLES = 64;   // open files kernel-wide
+// Open file descriptions kernel-wide, counting both regular-file handles and
+// pipe ends. A task can reach its own fd cap first, but this pool is shared by
+// every task: once it is exhausted, an open or a pipe fails with EMFILE even
+// when the calling task still has free descriptor slots.
+constexpr int MAX_HANDLES = 64;
 
 // The longest absolute path the VFS will carry. It has to be comfortably more
 // than NAME_MAX: a maximal 255-byte name still needs room for the directory it
-// lives in, and a path that does not fit is refused rather than cut down.
-// (The CWD is separate and much smaller — see the scheduler.) The value itself
-// lives with the rest of the pure path logic, so the VFS and its host test
-// cannot disagree about it.
+// lives in, and a path that does not fit is refused rather than cut down. A
+// task's working directory is stored at this same size (see Task::cwd), so any
+// path the VFS accepts can also be entered with chdir. The value itself lives
+// with the rest of the pure path logic, so the VFS and its host test cannot
+// disagree about it.
 constexpr int PATH_MAX = FsPath::PATH_MAX;
 
 // The longest single name any backend may hand back (and the ABI's ceiling).

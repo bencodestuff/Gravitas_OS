@@ -59,7 +59,9 @@ static void cmd_cd(const char* dir) {
 }
 
 static void cmd_pwd() {
-    static char cwd[64];
+    // The CWD can be as long as PATH_MAX (512), so the buffer must be too:
+    // getcwd truncates silently into whatever it is given.
+    static char cwd[512];
     grv_getcwd(cwd, sizeof(cwd));
     printf("%s\n", cwd);
 }
@@ -540,13 +542,14 @@ int main(int argc, char** argv) {
 
     static char line[128];
     while (1) {
-        // Prompt shows the CWD
-        static char cwd[64];
+        // Prompt shows the CWD. It can be a full PATH_MAX path now, and
+        // snprintf is what keeps the prompt buffer safe.
+        static char cwd[512];
         grv_getcwd(cwd, sizeof(cwd));
         // The prompt is printed once, on a line of its own; the *text* is what
         // a redraw reprints, so it must not carry that leading newline (or
         // every redraw would start a new line).
-        static char prompt[96];
+        static char prompt[512 + 32];
         snprintf(prompt, sizeof(prompt), "%s root@gravitas# ", cwd);
         printf("\n%s", prompt);
 

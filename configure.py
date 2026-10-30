@@ -50,6 +50,7 @@ TEST_PROGRAMS = {
     "stackoverflow", "surfacetest", "surfhelper", "timertest", "stdiotest",
     "shmtest", "shmhelper",
     "hang", "posixtest", "overlaytest", "ext2test", "pathtest",
+    "limittest",
 }
 
 # Programs assembled from more than one translation unit. The auto-glob would
