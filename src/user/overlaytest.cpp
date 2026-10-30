@@ -133,17 +133,22 @@ int main(int argc, char** argv) {
 
     // 9. The same rule when the source exists in both layers: write it (copy
     //    up), then rename. The old name must not fall back to the image copy.
-    fd = open("/lua/hello.lua", O_WRONLY | O_TRUNC);
+    //    This leaves the old name hidden for the rest of the boot, so it uses
+    //    the image's own /overlay-both.txt, which exists for this one test:
+    //    shmtest maps /lua/hello.lua straight out of the image later, and other
+    //    image files here are either already deleted or needed by a test.
+    fd = open("/overlay-both.txt", O_WRONLY | O_TRUNC);
     check(fd >= 0, "open a lower file that will exist in both layers");
     if (fd >= 0) { write(fd, "both layers", 11); close(fd); }
-    check(rename("/lua/hello.lua", "/lua/moved.lua") == 0,
+    check(rename("/overlay-both.txt", "/overlay-both-moved.txt") == 0,
           "rename a file present in both layers");
-    check(stat("/lua/hello.lua", &st) != 0, "the lower original stays hidden");
-    fd = open("/lua/moved.lua", O_RDONLY);
+    check(stat("/overlay-both.txt", &st) != 0,
+          "the lower original stays hidden");
+    fd = open("/overlay-both-moved.txt", O_RDONLY);
     check(fd >= 0 && read(fd, buf, 11) == 11 && memcmp(buf, "both layers", 11) == 0,
           "the moved file has the upper's contents");
     if (fd >= 0) close(fd);
-    check(unlink("/lua/moved.lua") == 0, "unlink the moved file");
+    check(unlink("/overlay-both-moved.txt") == 0, "unlink the moved file");
 
     // 10. unlink doubles as rmdir, but a directory the image owns is never
     //     hidden: its subtree would become unreachable.
