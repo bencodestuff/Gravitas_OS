@@ -10,7 +10,9 @@ jobs:
     # image keeps a green run meaningful.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      # v5 rather than v4: v4 targets Node.js 20, which the runners now run on
+      # Node.js 24 and warn about on every job.
+      - uses: actions/checkout@v5
 
       - name: Install build prerequisites
         # clang, ninja-build, e2fsprogs and python3 run the job. lld, xorriso,
