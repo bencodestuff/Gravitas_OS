@@ -28,7 +28,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    static char cwd[64];
+    // A CWD can be PATH_MAX (512) bytes; getcwd truncates into a smaller one.
+    static char cwd[512];
     if (path == 0) {
         grv_getcwd(cwd, sizeof(cwd));
         path = cwd;
