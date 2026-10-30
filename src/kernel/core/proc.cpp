@@ -272,19 +272,26 @@ namespace Sched {
         // memory, and mapping it would let the later space teardown free it.
         // Undo this attempt (mappings and frames), then fail; the caller
         // disposes of the task, as the NOTE below says.
-        uint64_t frames[USER_STACK_PAGES];
-        uint64_t mapped = 0;
+        uint64_t mapped = 0;   // pages successfully mapped after the guard
         bool oom = false;
         for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {
-            uint64_t frame = PMM::alloc_page();
+            // Zeroed: the frame may still hold another task's data, and the
+            // stack below the initial RSP is readable by the new program.
+            uint64_t frame = PMM::alloc_page_zeroed();
             if (frame == 0) { oom = true; break; }
-            frames[mapped++] = frame;
-            VMM::map_page(frame, stack_base + (p + 1) * 4096, 0x07); // P|W|U
+            if (!VMM::map_page(frame, stack_base + (p + 1) * 4096, 0x07)) { // P|W|U
+                PMM::free_page(frame);
+                oom = true;
+                break;
+            }
+            mapped++;
         }
         if (oom) {
             kprint("[Sched] Out of physical memory for user stack!\n");
-            VMM::unmap_user_range(new_task->cr3, stack_base + 4096, mapped);
-            for (uint64_t i = 0; i < mapped; i++) PMM::free_page(frames[i]);
+            // Unmap the guard and every frame that made it, then release the
+            // frames themselves.
+            VMM::unmap_and_free_user_range(new_task->cr3, stack_base + 4096, mapped);
+            VMM::unmap_user_range(new_task->cr3, stack_base, 1); // guard marker
             if (switched) VMM::switch_pml4(old_cr3);
             // NOTE: caller must clean up the task on failure (id already used)
             return -1;

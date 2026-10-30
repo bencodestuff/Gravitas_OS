@@ -12,6 +12,11 @@ namespace PMM {
     // Ask for a free page (Returns the physical address)
     uint64_t alloc_page();
 
+    // Ask for a free page whose contents have been cleared. Use this for any
+    // frame handed to a user address space (heap pages, user stacks): the
+    // frame may still hold another task's data.
+    uint64_t alloc_page_zeroed();
+
     // Return a page (Free it)
     void free_page(uint64_t address);
 

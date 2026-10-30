@@ -12,10 +12,14 @@ namespace VMM {
     // an address at or above this as a user buffer.
     constexpr uint64_t USER_VA_LIMIT = 0x0000800000000000ull;
 
-    // Map into the CURRENT address space
-    void map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags);
-    // Map into an explicit address space (used for building new processes)
-    void map_page_in(uint64_t pml4_phys, uint64_t physical_addr,
+    // Map into the CURRENT address space. Returns false when the mapping
+    // could not be made (no frame for an intermediate table, or a leaf is
+    // already present, which this API refuses to overwrite).
+    bool map_page(uint64_t physical_addr, uint64_t virtual_addr, uint64_t flags);
+    // Map into an explicit address space (used for building new processes).
+    // Returns false under the same conditions as map_page(); the caller owns
+    // the frame it passed in and must free or reuse it on failure.
+    bool map_page_in(uint64_t pml4_phys, uint64_t physical_addr,
                      uint64_t virtual_addr, uint64_t flags);
 
     // Drop 'pages' mappings from an explicit address space: the PTEs are
@@ -24,6 +28,15 @@ namespace VMM {
     // the space is the one currently active; other spaces have no cached
     // translations to invalidate.
     void unmap_user_range(uint64_t pml4_phys, uint64_t virtual_addr, uint64_t pages);
+
+    // Drop 'pages' mappings and free the leaf frames the task owns (any leaf
+    // without PTE_SHARED). Used by brk to make its mapped top true again.
+    void unmap_and_free_user_range(uint64_t pml4_phys, uint64_t virtual_addr,
+                                   uint64_t pages);
+
+    // True when every page in the range is free of leaves and guard markers,
+    // so a caller may map over it without replacing someone else's mapping.
+    bool user_range_free(uint64_t pml4_phys, uint64_t virtual_addr, uint64_t pages);
 
     void switch_pml4(uint64_t pml4_phys_addr);
     uint64_t current_pml4();          // read CR3
@@ -36,6 +49,11 @@ namespace VMM {
     // Callers that must know whether the mapping belongs to a user (PTE_USER)
     // and whether it is writable use this; check PTE_PRESENT themselves.
     uint64_t leaf_pte_in(uint64_t pml4_phys, uint64_t virtual_addr);
+
+    // Where alloc_user_range starts handing out virtual ranges. The brk arena
+    // grows upward from BRK_BASE and must stop here: below it the allocator
+    // knows nothing about brk pages, and above it the allocator owns the VAs.
+    constexpr uint64_t USER_VA_BASE = 0x10000000; // 256MB
 
     // Leaf flags for map_page_in: the low 12 bits are stored in the PTE
     // verbatim, so anything here survives.

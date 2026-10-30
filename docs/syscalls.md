@@ -55,6 +55,8 @@ table.
 | `EPERM` | 1 | operation not permitted |
 | `ENOENT` | 2 | no such file/directory, or no such task (IPC) |
 | `EIO` | 5 | backend failure with no better code |
+| `E2BIG` | 7 | an image or argument list too large to load |
+| `ENOEXEC` | 8 | not an executable image |
 | `EBADF` | 9 | bad file descriptor |
 | `EAGAIN` | 11 | would block (mailbox full, or an empty non-blocking poll) |
 | `ENOMEM` | 12 | out of memory |
@@ -269,6 +271,11 @@ Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
 (`syscall_table` in `src/arch/x86_64/idt.cpp`); a retired hole or an unknown
 number returns `-ENOSYS`, and adding a call is one handler plus one row.
+
+`SPAWN` and `SPAWN_BG` stage the image in the kernel heap, so an image larger
+than 16 MiB is refused with `-E2BIG` before any bytes are read. A missing file
+reports the VFS error, an unreadable or malformed image `-ENOEXEC`, and a failed
+allocation `-ENOMEM`.
 
 ### The interrupt key
 

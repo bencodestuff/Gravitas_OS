@@ -26,8 +26,16 @@
 #include "kernel/core/user_ptr.h"
 // brk arena: every process gets the same start VA (they live in separate
 // address spaces now), kept far away from code (0x400000+) and stacks
-// (0x500000+). Grows upward in whole pages.
-#define BRK_BASE 0x8000000
+// (0x500000+). Grows upward in whole pages, and stops at VMM::USER_VA_BASE:
+// past that the per-space VA allocator owns the addresses.
+static constexpr uint64_t BRK_BASE = 0x8000000; // 128 MiB
+
+// A spawned image is copied into the kernel heap, which is 32 MB (HEAP_SIZE in
+// main.cpp). Keep the staging copy well below that so the ELF load itself and
+// the rest of the kernel still have room; every shipped program is far
+// smaller, and a sparse or corrupt inode reporting a huge size is refused
+// before a byte is read.
+static constexpr uint64_t MAX_SPAWN_IMAGE_BYTES = 16ull << 20; // 16 MiB
 
 // Boot mounts the tarfs here; bare filenames resolve through it (embryonic
 // PATH: "ls.elf" -> /bin/ls.elf)
@@ -168,17 +176,26 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     // Read the program's ELF image through the VFS (bare names resolve
     // through /bin). Heap buffer, freed after the load.
     int fd = VFS::open_fd(staged_name, VFS::O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
+    if (fd < 0) return fd;   // already a negated errno
 
     uint64_t fsize = VFS::fd_size(fd);
+    if (fsize == 0 || fsize > MAX_SPAWN_IMAGE_BYTES) {
+        VFS::close_fd(fd);
+        return fsize == 0 ? -(int)Errno::ENOEXEC : -(int)Errno::E2BIG;
+    }
     char* data = new char[fsize];
+    if (data == nullptr) {
+        VFS::close_fd(fd);
+        return -(int)Errno::ENOMEM;
+    }
     long got = VFS::read_fd(fd, data, fsize);
     VFS::close_fd(fd);
     if (got != (long)fsize) {
+        // A short read is an I/O failure, not an invalid image; a negative
+        // result is already the backend's errno.
+        int err = got < 0 ? (int)got : -(int)Errno::EIO;
         delete[] data;
-        return -1;
+        return err;
     }
 
     // Build the child in its OWN address space. This switches CR3 by hand,
@@ -190,6 +207,10 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     asm volatile("cli");
     uint64_t old_cr3 = VMM::current_pml4();
     uint64_t child_cr3 = VMM::clone_kernel_space();
+    if (child_cr3 == 0) {
+        delete[] data;
+        return -(int)Errno::ENOMEM;
+    }
     VMM::switch_pml4(child_cr3);
 
     uint64_t entry = ELF::load_elf((uint8_t*)data, fsize);
@@ -197,7 +218,7 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     if (entry == 0) {
         VMM::switch_pml4(old_cr3);
         VMM::destroy_user_space(child_cr3);
-        return -1;
+        return -(int)Errno::ENOEXEC;
     }
 
     // create_user_task switches to the child space itself and stages the
@@ -206,7 +227,7 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
     VMM::switch_pml4(old_cr3);
     if (child < 0) {
         VMM::destroy_user_space(child_cr3);
-        return -1;
+        return -(int)Errno::ENOMEM;
     }
     return child;
 }
@@ -820,7 +841,14 @@ static void spawn_impl(IDT::Registers* regs, bool background) {
     spawn_namebuf[ni] = '\0';
 
     int child = stage_spawn(regs, spawn_namebuf);   // returns with IRQs off
-    if (child < 0) { asm volatile("sti"); regs->rax = (uint64_t)-1; return; }
+    if (child < 0) {
+        // stage_spawn's failures are negated errnos; pass them through so the
+        // caller can tell an oversized image (E2BIG) from a bad one (ENOEXEC)
+        // or an out-of-memory condition (ENOMEM).
+        asm volatile("sti");
+        regs->rax = (uint64_t)(long)child;
+        return;
+    }
 
     if (!background) {
         // Foreground: the child takes over the console the parent is using
@@ -973,43 +1001,68 @@ static void sys_brk(IDT::Registers* regs) {
 
     if (want == 0) {
         regs->rax = Sched::current_task_brk();
-    } else if (want < BRK_BASE) {
+        return;
+    }
+    if (want < BRK_BASE || want > VMM::USER_VA_BASE) {
         regs->rax = (uint64_t)-Errno::EINVAL;
-    } else {
-        // Grow [brk_limit, round_up(want)); brk_limit is the true mapped top,
-        // so nothing is skipped when brk is not page-aligned. (Shrink is
-        // accepted but pages stay mapped.)
-        uint64_t limit = Sched::current_task_brk_limit();
-        uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
+        return;
+    }
+    // Round up without wrapping: the cap above already keeps 'want' small,
+    // but the explicit check documents the arithmetic the old code got wrong.
+    if (want > UINT64_MAX - 0xFFF) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    uint64_t new_top = (want + 0xFFF) & ~0xFFFull;
+    // The page allocator owns every VA from USER_VA_BASE upward. Stop before
+    // it even when rounding crosses the boundary.
+    if (new_top > VMM::USER_VA_BASE) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+
+    uint64_t limit = Sched::current_task_brk_limit();
+    uint64_t pml4 = VMM::current_pml4();
+
+    if (new_top < limit) {
+        // Shrink: brk_limit is the mapped top, so the pages above the new top
+        // are ours and go back to the PMM. Leaving them mapped made every
+        // later grow replace live PTEs and leak their frames.
+        VMM::unmap_and_free_user_range(pml4, new_top, (limit - new_top) / 4096);
+    } else if (new_top > limit) {
+        uint64_t pages = (new_top - limit) / 4096;
+        // Never map over a leaf that belongs to someone else (a stack, a
+        // surface, a shared region, or an ELF segment). The brk arena ends
+        // below the VA allocator, but this also catches a caller that somehow
+        // got there.
+        if (!VMM::user_range_free(pml4, limit, pages)) {
+            regs->rax = (uint64_t)-Errno::ENOMEM;
+            return;
+        }
+
         uint64_t va = limit;
         for (; va < new_top; va += 4096) {
-            uint64_t phys = PMM::alloc_page();
+            // A fresh user page must not expose whatever the frame held.
+            uint64_t phys = PMM::alloc_page_zeroed();
             if (phys == 0) break;
-            VMM::map_page(phys, va, 0x07);   // P|W|U
-            // map_page cannot report failure: it gives up silently when a
-            // page table cannot be allocated, so ask the tables instead.
-            if (!VMM::is_mapped(va)) {
+            if (!VMM::map_page(phys, va, 0x07)) { // P|W|U
                 PMM::free_page(phys);
                 break;
             }
         }
         if (va < new_top) {
-            // A frame ran out part way through. Take back everything this
-            // call mapped and leave brk where it was, so a failed call has
-            // no effect and the caller can retry after freeing memory.
-            uint64_t pml4 = VMM::current_pml4();
-            for (uint64_t undo = limit; undo < va; undo += 4096) {
-                uint64_t pte = VMM::leaf_pte_in(pml4, undo);
-                if (pte & VMM::PTE_PRESENT) PMM::free_page(pte & ~0xFFFull);
-            }
-            VMM::unmap_user_range(pml4, limit, (va - limit) / 4096);
+            // A frame or a page table ran out part way through. Take back
+            // everything this call mapped and leave brk where it was, so a
+            // failed call has no effect and the caller can retry.
+            VMM::unmap_and_free_user_range(pml4, limit, (va - limit) / 4096);
             regs->rax = (uint64_t)-Errno::ENOMEM;
             return;
         }
-        Sched::current_task_set_brk(want);
-        Sched::current_task_set_brk_limit(new_top);
-        regs->rax = want;
     }
+
+    Sched::current_task_set_brk(want);
+    Sched::current_task_set_brk_limit(new_top);
+    regs->rax = want;
 }
 
 // Number -> handler. A nullptr entry is a retired number.

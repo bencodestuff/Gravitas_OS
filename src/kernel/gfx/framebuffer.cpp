@@ -58,10 +58,17 @@ namespace Framebuffer {
         // HHDM (see VMM::init): one physical page must not be cached under
         // two different attributes, and the CPU must not serve stale pixels
         // from a cacheable alias of the scanout.
+        //
+        // PTE_SHARED keeps teardown away from the scanout: these frames belong
+        // to the device, not the task, and free_page must never see them.
         const uint64_t flags = VMM::PTE_PRESENT | VMM::PTE_WRITABLE |
-                               VMM::PTE_USER | VMM::PTE_NO_CACHE;
+                               VMM::PTE_USER | VMM::PTE_NO_CACHE |
+                               VMM::PTE_SHARED;
         for (uint64_t p = 0; p < pages; p++) {
-            VMM::map_page_in(cr3, phys + p * 4096, base + p * 4096, flags);
+            if (!VMM::map_page_in(cr3, phys + p * 4096, base + p * 4096, flags)) {
+                VMM::unmap_user_range(cr3, base, pages);
+                return false;
+            }
         }
 
         if (current_space) Sched::current_task_set_fb_map(base, pages);
