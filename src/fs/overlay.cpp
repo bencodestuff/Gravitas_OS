@@ -15,6 +15,16 @@
 //     lower file should not cost a copy).
 //   * Whiteouts are ordinary upper files named ".wh.<name>", the overlayfs
 //     convention: cheap, needs no new mechanism, and readdir hides them.
+//   * The invariant the delete and move paths enforce: an upper entry always
+//     shadows the lower one, and removing or moving a name that exists in
+//     either layer leaves a ".wh.<name>" marker in the upper. Without the
+//     marker the lower entry reappears as soon as the upper stops supplying
+//     the name, which is exactly what a delete after a copy-up would do.
+//   * ".wh." is reserved: a create or a rename destination whose name starts
+//     with it is refused, so a real file can never look like a marker.
+//   * Paths are carried whole or refused with ENAMETOOLONG. A truncated path
+//     names a different file, and a copy-up or a whiteout would then land on
+//     that other name.
 //   * Buffers are on the kernel stack, not static: a syscall can be preempted
 //     by the timer, and a static would then be shared with another task.
 
@@ -25,7 +35,7 @@ static VFS::Filesystem* lower_fs = nullptr;
 
 // What an overlay node holds.
 struct OvNode {
-    char path[256];
+    char path[VFS::PATH_MAX];
     VFS::Node* upper;   // the upper's view, or nullptr
     VFS::Node* lower;   // the lower's view, or nullptr
 };
@@ -65,15 +75,36 @@ static VFS::Filesystem fs = {
 
 // --- small helpers -----------------------------------------------------
 
-// "<dir>/<name>", or just <name> when dir is empty (the root).
-static void join(const char* dir, const char* name, char* out, uint64_t max) {
+// "<dir>/<name>", or just <name> when dir is empty (the root). False when the
+// result does not fit: a cut-down path names a different entry, so every caller
+// refuses rather than acts on the prefix.
+static bool join(const char* dir, const char* name, char* out, uint64_t max) {
     uint64_t n = 0;
     if (dir[0] != '\0') {
-        for (uint64_t i = 0; dir[i] && n + 1 < max; i++) out[n++] = dir[i];
-        if (n + 1 < max) out[n++] = '/';
+        for (uint64_t i = 0; dir[i]; i++) {
+            if (n + 1 >= max) return false;
+            out[n++] = dir[i];
+        }
+        if (n + 1 >= max) return false;
+        out[n++] = '/';
     }
-    for (uint64_t i = 0; name[i] && n + 1 < max; i++) out[n++] = name[i];
+    for (uint64_t i = 0; name[i]; i++) {
+        if (n + 1 >= max) return false;
+        out[n++] = name[i];
+    }
     out[n] = '\0';
+    return true;
+}
+
+// Copy a path into a fixed buffer; false when it does not fit.
+static bool copy_path(char* out, uint64_t max, const char* path) {
+    uint64_t i = 0;
+    for (; path[i]; i++) {
+        if (i + 1 >= max) return false;
+        out[i] = path[i];
+    }
+    out[i] = '\0';
+    return true;
 }
 
 // ".wh." + name; false when that would not fit.
@@ -102,6 +133,43 @@ static bool whited_out(VFS::Node* upper_dir, const char* name) {
     return true;
 }
 
+// Leave ".wh.<name>" in an upper directory, so a lower entry of that name stays
+// hidden. *created says whether this call made the marker rather than finding
+// one already there: a failed rename has to remove only its own.
+static int add_whiteout(VFS::Node* upper_dir, const char* name, bool* created) {
+    if (created) *created = false;
+    char wn[VFS::NAME_MAX];
+    if (!whiteout_name(name, wn, sizeof(wn))) return -Errno::ENAMETOOLONG;
+    if (upper_fs->create == nullptr) return -Errno::EROFS;
+
+    VFS::Node* w = upper_fs->lookup(upper_fs->priv, upper_dir, wn);
+    if (w != nullptr) { upper_fs->release(upper_fs->priv, w); return 0; }
+
+    int r = upper_fs->create(upper_fs->priv, upper_dir, wn, VFS::FT_FILE, &w);
+    if (r != 0) return r;
+    upper_fs->release(upper_fs->priv, w);
+    if (created) *created = true;
+    return 0;
+}
+
+// Drop a whiteout this call created, to undo it after a failed move.
+static void remove_whiteout(VFS::Node* upper_dir, const char* name) {
+    char wn[VFS::NAME_MAX];
+    if (upper_fs->unlink == nullptr) return;
+    if (!whiteout_name(name, wn, sizeof(wn))) return;
+    VFS::Node* w = upper_fs->lookup(upper_fs->priv, upper_dir, wn);
+    if (w == nullptr) return;
+    upper_fs->release(upper_fs->priv, w);
+    upper_fs->unlink(upper_fs->priv, upper_dir, wn);
+}
+
+// Does this backend directory hold any entry at all?
+static bool dir_has_entries(VFS::Filesystem* f, VFS::Node* dir) {
+    if (f == nullptr || dir == nullptr || f->readdir == nullptr) return false;
+    VFS::DirEntry e;
+    return f->readdir(f->priv, dir, 0, &e);
+}
+
 // Look up one name in a backend directory (null-safe).
 static VFS::Node* child_of(VFS::Filesystem* f, VFS::Node* dir, const char* name) {
     if (f == nullptr || dir == nullptr) return nullptr;
@@ -123,9 +191,13 @@ static VFS::Node* make_ov(const char* path, VFS::Node* upper, VFS::Node* lower) 
         return nullptr;
     }
 
-    uint64_t i = 0;
-    while (path[i] && i < sizeof(on->path) - 1) { on->path[i] = path[i]; i++; }
-    on->path[i] = '\0';
+    if (!copy_path(on->path, sizeof(on->path), path)) {
+        if (upper) upper_fs->release(upper_fs->priv, upper);
+        if (lower) lower_fs->release(lower_fs->priv, lower);
+        delete on;
+        delete n;
+        return nullptr;
+    }
     on->upper = upper;
     on->lower = lower;
 
@@ -235,8 +307,8 @@ static VFS::Node* ov_lookup(void* priv, VFS::Node* dir, const char* name) {
         l = child_of(lower_fs, d->lower, name);
     if (u == nullptr && l == nullptr) return nullptr;
 
-    char path[256];
-    join(d->path, name, path, sizeof(path));
+    char path[VFS::PATH_MAX];
+    if (!join(d->path, name, path, sizeof(path))) return nullptr;
     return make_ov(path, u, l);
 }
 
@@ -304,6 +376,12 @@ static int ov_create(void* priv, VFS::Node* dir, const char* name,
     (void)priv;
     OvNode* d = (OvNode*)dir->priv;
     if (name[0] == '\0' || upper_fs->create == nullptr) return -Errno::EINVAL;
+    // ".wh." means "hidden in the lower layer": a user entry by that name could
+    // never be opened and would collide with a marker.
+    if (name_is_whiteout(name)) return -Errno::EINVAL;
+
+    char path[VFS::PATH_MAX];
+    if (!join(d->path, name, path, sizeof(path))) return -Errno::ENAMETOOLONG;
 
     int derr = 0;
     if (ensure_dir(&d->upper, d->path, &derr) == nullptr) return derr;
@@ -320,8 +398,6 @@ static int ov_create(void* priv, VFS::Node* dir, const char* name,
     int r = upper_fs->create(upper_fs->priv, d->upper, name, type, &un);
     if (r != 0) return r;
 
-    char path[256];
-    join(d->path, name, path, sizeof(path));
     VFS::Node* n = make_ov(path, un, nullptr);
     if (n == nullptr) return -Errno::ENOMEM;
     *out = n;
@@ -331,32 +407,58 @@ static int ov_create(void* priv, VFS::Node* dir, const char* name,
 static int ov_unlink(void* priv, VFS::Node* dir, const char* name) {
     (void)priv;
     OvNode* d = (OvNode*)dir->priv;
-    if (name[0] == '\0' || upper_fs->unlink == nullptr) return -1;
+    if (name[0] == '\0') return -Errno::EINVAL;
+    if (name_is_whiteout(name)) return -Errno::EINVAL;   // a marker is not a file
+    if (upper_fs->unlink == nullptr) return -Errno::EROFS;
 
-    if (d->upper) {
-        VFS::Node* u = upper_fs->lookup(upper_fs->priv, d->upper, name);
-        if (u) {
-            upper_fs->release(upper_fs->priv, u);
-            return upper_fs->unlink(upper_fs->priv, d->upper, name);
+    VFS::Node* u = child_of(upper_fs, d->upper, name);
+    VFS::Node* l = whited_out(d->upper, name) ? nullptr
+                                             : child_of(lower_fs, d->lower, name);
+    if (u == nullptr && l == nullptr) return -Errno::ENOENT;
+
+    bool lower_here = (l != nullptr);
+    bool made = false;
+
+    // The lower layer cannot lose an entry, so a lower directory can only be
+    // hidden by a marker, and a marker over a non-empty directory makes the
+    // whole subtree unreachable. unlink doubles as rmdir here: an empty lower
+    // directory may be hidden, any directory with entries is refused.
+    if (l != nullptr && l->type == VFS::FT_DIR) {
+        bool empty = !dir_has_entries(lower_fs, l);
+        lower_fs->release(lower_fs->priv, l);
+        l = nullptr;
+        if (!empty) {
+            if (u) upper_fs->release(upper_fs->priv, u);
+            return -Errno::EISDIR;
         }
     }
 
-    // Only in the lower: leave a whiteout so it does not come back.
-    VFS::Node* l = child_of(lower_fs, d->lower, name);
-    if (l == nullptr) return -1;
-    lower_fs->release(lower_fs->priv, l);
+    // The marker goes in before the upper entry goes. A copy-up followed by a
+    // delete is the case that used to resurrect the image's file, and a marker
+    // that cannot be written must leave the name visible, not reveal the lower.
+    if (lower_here) {
+        int derr = 0;
+        if (ensure_dir(&d->upper, d->path, &derr) == nullptr) {
+            if (l) lower_fs->release(lower_fs->priv, l);
+            return derr ? derr : -Errno::EIO;
+        }
 
-    if (ensure_dir(&d->upper, d->path, nullptr) == nullptr) return -1;
+        int r = add_whiteout(d->upper, name, &made);
+        if (r != 0) {
+            if (l) lower_fs->release(lower_fs->priv, l);
+            if (u) upper_fs->release(upper_fs->priv, u);
+            return r;
+        }
+    }
+    if (l) lower_fs->release(lower_fs->priv, l);
 
-    char wn[VFS::NAME_MAX];
-    if (!whiteout_name(name, wn, sizeof(wn))) return -1;
-
-    VFS::Node* w = upper_fs->lookup(upper_fs->priv, d->upper, wn);
-    if (w) { upper_fs->release(upper_fs->priv, w); return 0; }  // already hidden
-
-    if (upper_fs->create(upper_fs->priv, d->upper, wn, VFS::FT_FILE, &w) != 0)
-        return -1;
-    upper_fs->release(upper_fs->priv, w);
+    if (u != nullptr) {
+        upper_fs->release(upper_fs->priv, u);
+        if (upper_fs->unlink(upper_fs->priv, d->upper, name) != 0) {
+            if (made) remove_whiteout(d->upper, name);
+            return -Errno::EIO;
+        }
+    }
     return 0;
 }
 
@@ -365,36 +467,88 @@ static int ov_rename(void* priv, VFS::Node* from_dir, const char* from,
     (void)priv;
     OvNode* fd = (OvNode*)from_dir->priv;
     OvNode* td = (OvNode*)to_dir->priv;
-    if (from[0] == '\0' || to[0] == '\0') return -1;
-    if (upper_fs->rename == nullptr) return -1;
+    if (from[0] == '\0' || to[0] == '\0') return -Errno::EINVAL;
+    if (name_is_whiteout(from) || name_is_whiteout(to)) return -Errno::EINVAL;
+    if (upper_fs->rename == nullptr) return -Errno::EROFS;
+
+    char from_path[VFS::PATH_MAX];
+    if (!join(fd->path, from, from_path, sizeof(from_path)))
+        return -Errno::ENAMETOOLONG;
 
     VFS::Node* fup = ensure_dir(&fd->upper, fd->path, nullptr);
-    if (fup == nullptr) return -1;
+    VFS::Node* tup = ensure_dir(&td->upper, td->path, nullptr);
+    if (fup == nullptr || tup == nullptr) return -Errno::EIO;
 
-    bool in_upper = false;
+    // What the two layers hold under the old and the new name. A whited-out
+    // lower name is not there as far as the overlay is concerned.
     VFS::Node* u = upper_fs->lookup(upper_fs->priv, fup, from);
-    if (u) { in_upper = true; upper_fs->release(upper_fs->priv, u); }
+    VFS::Node* l = whited_out(fup, from) ? nullptr
+                                         : child_of(lower_fs, fd->lower, from);
+    if (u == nullptr && l == nullptr) return -Errno::ENOENT;
 
-    if (!in_upper) {
-        VFS::Node* l = child_of(lower_fs, fd->lower, from);
-        if (l == nullptr) return -1;
-        if (l->type == VFS::FT_DIR) { lower_fs->release(lower_fs->priv, l); return -1; }
+    // A directory that the lower layer owns cannot move: its contents live in
+    // the image, there is nowhere to copy a tree to, and whiteouting the old
+    // name would put the whole subtree out of reach.
+    if (l != nullptr && l->type == VFS::FT_DIR) {
+        lower_fs->release(lower_fs->priv, l);
+        if (u) upper_fs->release(upper_fs->priv, u);
+        return -Errno::EISDIR;
+    }
+    bool lower_from = (l != nullptr);
 
+    // Replacing a lower directory with a file would hide its subtree, so the
+    // move is refused for the same reason unlink refuses one.
+    bool lower_to = false;
+    if (!whited_out(tup, to)) {
+        VFS::Node* lt = child_of(lower_fs, td->lower, to);
+        if (lt != nullptr) {
+            lower_to = true;
+            if (lt->type == VFS::FT_DIR) {
+                lower_fs->release(lower_fs->priv, lt);
+                if (l) lower_fs->release(lower_fs->priv, l);
+                if (u) upper_fs->release(upper_fs->priv, u);
+                return -Errno::EISDIR;
+            }
+            lower_fs->release(lower_fs->priv, lt);
+        }
+    }
+
+    // The upper backend can only move what it holds: a lower-only source is
+    // copied up first, exactly as a write would.
+    if (u == nullptr) {
         OvNode tmp;
-        join(fd->path, from, tmp.path, sizeof(tmp.path));
+        if (!copy_path(tmp.path, sizeof(tmp.path), from_path)) {
+            lower_fs->release(lower_fs->priv, l);
+            return -Errno::ENAMETOOLONG;
+        }
         tmp.upper = nullptr;
         tmp.lower = l;
         bool ok = make_upper(&tmp);
         if (tmp.upper) upper_fs->release(upper_fs->priv, tmp.upper);
-        lower_fs->release(lower_fs->priv, l);
-        if (!ok) return -1;
+        if (!ok) {
+            lower_fs->release(lower_fs->priv, l);
+            return -Errno::EIO;
+        }
     }
 
-    VFS::Node* tup = ensure_dir(&td->upper, td->path, nullptr);
-    if (tup == nullptr) return -1;
-
-    // An existing lower destination is fine: the upper entry shadows it.
-    return upper_fs->rename(upper_fs->priv, fup, from, tup, to);
+    // Both markers go in before the move, so a move that cannot be recorded as
+    // a removal is refused rather than leaving the lower name visible. A failed
+    // move puts back only the markers this call created.
+    bool made_from = false, made_to = false;
+    int r = 0;
+    if (lower_from) r = add_whiteout(fup, from, &made_from);
+    if (r == 0 && lower_to) r = add_whiteout(tup, to, &made_to);
+    if (r == 0) {
+        r = upper_fs->rename(upper_fs->priv, fup, from, tup, to);
+        if (r != 0) r = -Errno::EIO;
+    }
+    if (r != 0) {
+        if (made_from) remove_whiteout(fup, from);
+        if (made_to) remove_whiteout(tup, to);
+    }
+    if (l) lower_fs->release(lower_fs->priv, l);
+    if (u) upper_fs->release(upper_fs->priv, u);
+    return r;
 }
 
 static void ov_release(void* priv, VFS::Node* node) {
