@@ -1276,6 +1276,23 @@ static bool e2_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry
     return found;
 }
 
+// The inode's live length. A lookup copies i_size onto the E2Node, but a node
+// opened before another descriptor wrote would keep the old copy; reading it
+// back is what makes read, append, seek and fstat through both descriptors
+// agree. The block pointers are refreshed too: a node opened before the write
+// still has the old (empty) pointers, so a length alone would let it read holes
+// where the data now is. Falls back to the snapshot when the inode cannot be
+// read, rather than inventing a length.
+static uint64_t e2_size(void* priv, VFS::Node* node) {
+    Fs* f = (Fs*)priv;
+    E2Node* n = (E2Node*)node->priv;
+    if (n->is_dir) return 0;
+    Inode in;
+    if (!read_inode(f, n->ino, &in)) return n->size;
+    refresh_node(n, node, &in);
+    return n->size;
+}
+
 static uint64_t e2_read(void* priv, VFS::Node* node, void* buf,
                         uint64_t count, uint64_t offset) {
     Fs* f = (Fs*)priv;
@@ -1763,6 +1780,7 @@ static VFS::Filesystem make_fs(bool writable) {
         .readdir  = e2_readdir,
         .read     = e2_read,
         .write    = writable ? e2_write : nullptr,
+        .size     = e2_size,
         .truncate = writable ? e2_truncate : nullptr,
         .create   = writable ? e2_create : nullptr,
         .unlink   = writable ? e2_unlink : nullptr,

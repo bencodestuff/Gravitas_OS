@@ -139,6 +139,7 @@ static VFS::Node* ram_lookup(void* priv, VFS::Node* dir, const char* name);
 static bool ram_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
 static uint64_t ram_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
 static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf, uint64_t count, uint64_t offset);
+static uint64_t ram_size(void* priv, VFS::Node* node);
 static int ram_truncate(void* priv, VFS::Node* node, uint64_t size);
 static int ram_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type, VFS::Node** out);
 static int ram_unlink(void* priv, VFS::Node* dir, const char* name);
@@ -154,6 +155,7 @@ static VFS::Filesystem fs = {
     .readdir  = ram_readdir,
     .read      = ram_read,
     .write     = ram_write,
+    .size      = ram_size,
     .truncate = ram_truncate,
     .create   = ram_create,
     .unlink   = ram_unlink,
@@ -250,6 +252,14 @@ static uint64_t ram_write(void* priv, VFS::Node* node, const void* buf,
     n->mtime = Rtc::seconds_now();
     node->size = n->size;   // keep this window onto the file current
     return count;
+}
+
+// The durable node's length. Two VFS::Node windows onto one RamNode then agree
+// even when one of them was opened before the other wrote.
+static uint64_t ram_size(void* priv, VFS::Node* node) {
+    (void)priv;
+    RamNode* n = (RamNode*)node->priv;
+    return n->is_dir ? 0 : n->size;
 }
 
 static int ram_truncate(void* priv, VFS::Node* node, uint64_t size) {

@@ -46,6 +46,7 @@ static VFS::Node* ov_lookup(void* priv, VFS::Node* dir, const char* name);
 static bool ov_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntry* out);
 static uint64_t ov_read(void* priv, VFS::Node* node, void* buf, uint64_t count, uint64_t offset);
 static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf, uint64_t count, uint64_t offset);
+static uint64_t ov_size(void* priv, VFS::Node* node);
 static int ov_truncate(void* priv, VFS::Node* node, uint64_t size);
 static int ov_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType type, VFS::Node** out);
 static int ov_unlink(void* priv, VFS::Node* dir, const char* name);
@@ -63,6 +64,7 @@ static VFS::Filesystem fs = {
     .readdir  = ov_readdir,
     .read      = ov_read,
     .write     = ov_write,
+    .size      = ov_size,
     .truncate = ov_truncate,
     .create   = ov_create,
     .unlink   = ov_unlink,
@@ -361,6 +363,20 @@ static uint64_t ov_write(void* priv, VFS::Node* node, const void* buf,
     if (!make_upper(on)) return 0;
     if (on->upper->fs->write == nullptr) return 0;
     return on->upper->fs->write(on->upper->fs->priv, on->upper, buf, count, offset);
+}
+
+// The length of the view a read would use: the upper copy once a file has been
+// copied up, the lower entry otherwise. Asking the layer rather than copying
+// its snapshot at lookup is what keeps two descriptors on one overlay file in
+// agreement after either of them writes. (A lower-only file that another
+// descriptor has just copied up still reads through this node's lower view;
+// the size reported here matches the bytes this node can actually see.)
+static uint64_t ov_size(void* priv, VFS::Node* node) {
+    (void)priv;
+    OvNode* on = (OvNode*)node->priv;
+    VFS::Node* src = on->upper ? on->upper : on->lower;
+    if (src == nullptr) return 0;
+    return VFS::node_size(src);
 }
 
 static int ov_truncate(void* priv, VFS::Node* node, uint64_t size) {

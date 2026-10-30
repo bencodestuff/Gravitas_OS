@@ -81,6 +81,35 @@ int main(int argc, char** argv) {
     check(n == 11 && memcmp(buf, "onetwothree", 11) == 0, "appended contents");
     grv_close(fd);
 
+    // --- two descriptors on one file share its live size ---
+    // A node is a per-open snapshot, so a reader opened before the writer ran
+    // used to see EOF at the old length and an append opened then used to land
+    // at the old end. Reading, fstat, SEEK_END and O_APPEND through the older
+    // handle must all follow the file the writer extended.
+    const char* shared = "/tmp/ftdir/shared.txt";
+    grv_unlink(shared);
+    int sfd  = grv_open(shared, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_TRUNC);
+    int srd  = grv_open(shared, GRV_O_RDONLY);
+    int sap  = grv_open(shared, GRV_O_WRONLY | GRV_O_APPEND);
+    check(sfd >= 0 && srd >= 0 && sap >= 0, "open one file three times");
+    check(grv_write_fd(sfd, "abcdef", 6) == 6, "write through the first descriptor");
+    n = grv_read_fd(srd, buf, sizeof(buf));
+    check(n == 6 && memcmp(buf, "abcdef", 6) == 0,
+          "a reader opened before the write sees the new bytes");
+    check(grv_fstat(srd, &st) == 0 && st.size == 6,
+          "fstat through the older descriptor");
+    check(grv_lseek(srd, 0, 2) == 6, "SEEK_END through the older descriptor");
+    check(grv_write_fd(sap, "Z", 1) == 1,
+          "an append opened at 0 lands at the live end");
+    grv_close(sap);
+    check(grv_lseek(srd, 0, 0) == 0, "rewind the reader");
+    n = grv_read_fd(srd, buf, sizeof(buf));
+    check(n == 7 && memcmp(buf, "abcdefZ", 7) == 0,
+          "the appended byte is at the real end");
+    grv_close(srd);
+    grv_close(sfd);
+    check(grv_unlink(shared) == 0, "clean up the shared file");
+
     // --- O_EXCL: a create that refuses to clobber ---
     errno = 0;
     fd = grv_open(file, GRV_O_WRONLY | GRV_O_CREATE | GRV_O_EXCL);
