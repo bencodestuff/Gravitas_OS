@@ -221,6 +221,23 @@ def shared_memory(g):
 
 
 @test
+def memory_boundaries(g):
+    # Spawning a huge sparse file must be refused before the kernel stages it,
+    # brk shrink/regrow must not leak frames or expose stale pages, and a task
+    # that maps the framebuffer and exits must not return scanout frames to
+    # the PMM. The program checks each counter itself; the shell answering
+    # afterwards proves the rejected spawn did not wedge the kernel.
+    exited = g.count(r"Task 'memtest\.elf' exited")
+    g.shell("run memtest.elf")
+    g.wait_for("memtest: all checks pass")
+    g.wait_more(r"Task 'memtest\.elf' exited", exited + 1)
+
+    prompts = g.count("commands are programs")
+    g.shell("help")
+    g.wait_count("commands are programs", prompts + 1)
+
+
+@test
 def timer_wakeup(g):
     g.shell("run timertest.elf")
     g.wait_for("timertest: PASS")
