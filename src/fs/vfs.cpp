@@ -929,7 +929,12 @@ int ftruncate_fd(int fd, uint64_t size) {
     // the overlay's upper copy), so the length it acts on is the live one
     // however stale this descriptor's snapshot is.
     int r = n->fs->truncate(n->fs->priv, n, size);
-    if (r != 0) return -Errno::ENOSPC; // the only reason a truncate fails here
+    // The backend's reason travels on: a copy-up that ran out of room is
+    // ENOSPC, one that could not read the lower file is EIO, and flattening
+    // them made every failed truncate look like a full disk. -1 is the
+    // documented bare failure of an op that cannot say more, and a full disk is
+    // the reason a length cannot be set.
+    if (r < 0) return (r == -1) ? -Errno::ENOSPC : r;
     n->size = size;
     return 0;
 }

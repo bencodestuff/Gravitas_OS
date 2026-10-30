@@ -142,7 +142,11 @@ struct Filesystem {
     uint64_t (*size)(void* priv, Node* node) = nullptr;
 
     // Set a file's length (nullptr if the backend cannot). Shrinking discards;
-    // growing zero-fills. Returns 0 or -1.
+    // growing zero-fills. Returns 0, or a negated errno rather than a bare
+    // failure: ENOSPC when the bytes cannot be stored, EIO for an I/O failure,
+    // EROFS for a backend that has no writable length. The reason matters to
+    // the caller, so a failure the backend cannot explain is the only case that
+    // still reads as ENOSPC.
     int (*truncate)(void* priv, Node* node, uint64_t size);
 
     // Create an entry in 'dir'. Fills *out with a node the caller releases.
@@ -334,7 +338,8 @@ int unlink(const char* path);
 // or -errno (ENOENT/EINVAL/EISDIR/EROFS; the backend's own code).
 int rename(const char* from, const char* to);
 
-// Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO).
+// Set a file's length by fd. Returns 0 or -errno (EBADF/EROFS/EIO/ENOSPC; the
+// backend's own code for a failure).
 int ftruncate_fd(int fd, uint64_t size);
 
 // Look up a path's metadata without opening it. Returns 0, or -ENOENT.
