@@ -13,6 +13,14 @@
 
 __BEGIN_DECLS
 
+/* The version of the syscall contract and of every record in this header.
+   It starts at 1 and moves only when a shared record changes layout: a field
+   appended, reordered, removed or resized, or a record's size changes. The
+   kernel reports the same number in grv_sysinfo.abi_version, so a program
+   built outside this tree can refuse a kernel whose records it does not know.
+   In-tree binaries are always rebuilt together and do not need to check it. */
+#define GRV_ABI_VERSION 1
+
 static inline long syscall1(long n, long a) {
     long ret;
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(n), "D"(a) : "memory");
@@ -551,6 +559,7 @@ struct grv_sysinfo {
     unsigned long screen_h;
     unsigned long cursor_x;
     unsigned long cursor_y;
+    unsigned long abi_version; /* GRV_ABI_VERSION the kernel was built with */
 };
 
 static inline void grv_sysinfo(struct grv_sysinfo* out) {

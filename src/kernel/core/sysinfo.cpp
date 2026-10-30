@@ -31,6 +31,7 @@ void get(SysInfo* out) {
     out->screen_h = (uint64_t)Compositor::screen_height();
     out->cursor_x = (uint64_t)Compositor::cursor_x();
     out->cursor_y = (uint64_t)Compositor::cursor_y();
+    out->abi_version = ABI_VERSION;
 }
 
 } // namespace Sysinfo

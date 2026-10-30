@@ -5,6 +5,15 @@
 // Streams 3-byte relative packets: [flags, dx, dy].
 
 namespace Mouse {
+    // One drained packet, the record MOUSERD copies to userland. Mirrors
+    // struct grv_mouse_packet in grv/syscall.h; tools/test_abi.cpp pins the
+    // two together.
+    struct Packet {
+        int16_t dx, dy;        // movement since the last packet
+        uint8_t buttons;       // bit0 left, bit1 right, bit2 middle
+        int8_t  dz;            // wheel movement, signed; 0 if no wheel
+    };
+
     // Enable the aux device, handshake, hook IRQ12. Call once at boot.
     void init();
 

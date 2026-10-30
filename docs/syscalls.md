@@ -20,6 +20,28 @@ The kernel follows the project rule: **mechanisms only**. Syscalls move
 bytes, map frames and schedule tasks. What a message `type` means, which
 surface is a "window", and what is drawn are all userland policy.
 
+## ABI version and record growth
+
+The contract is versioned by `GRV_ABI_VERSION` (1 today) in
+`src/libc/include/grv/syscall.h`. The kernel reports the version it was built
+with in `grv_sysinfo.abi_version`, so a caller can compare before it relies on
+any shared record and refuse a kernel whose layout it does not know. The number
+covers the syscall numbers, the register convention, the error convention and
+every record described under [Structures](#structures).
+
+Records grow in one direction. A field is **appended**, so every existing field
+keeps its offset; fields are never reordered, removed or retyped. Any change to
+a record's layout or size bumps `GRV_ABI_VERSION`. There is no per-record size
+prefix, so this is a build-time compatibility marker rather than a runtime
+handshake: a caller built for another version may reject the kernel, and one
+that keeps a binary across a rebuild must be rebuilt rather than guess.
+
+In-tree binaries are always rebuilt together from the same header and cannot
+see a mismatch. The version exists for userland built outside this tree, which
+is exactly the case where a stale record would otherwise corrupt memory
+silently. Every shared record is pinned field by field against the kernel's
+type in `tools/test_abi.cpp`, which `ninja check` runs.
+
 ## Errors
 
 A syscall reports failure by returning a **negated errno**. The C wrappers in
@@ -206,7 +228,7 @@ value with a different meaning.
 | 26 | `SURFACE_DESTROY` | `id` | 0 or −1 (owner-checked) |
 | 27 | `SURFACE_Z` | `id, pos` | 0 or −1 (owner-checked) |
 | 28 | `SURFACE_LIST` | `out*, max` | count written, or −1 |
-| 29 | `SYSINFO` | `out*` | — |
+| 29 | `SYSINFO` | `out*` | — (fills the snapshot, including `abi_version`) |
 | 30 | `TASK_LIST` | `out*, max` | count written |
 | 31 | `FAULT_LAST` | `out*` | 1 if a fault was recorded, else 0 |
 | 32 | `WM_CLAIM` | — | 0 if the caller is/becomes the display authority, else −1 |
@@ -266,7 +288,8 @@ chord from the interrupt key, so the keyboard keeps the letter intact for it.
 ## Structures
 
 Layouts are shared with `grv/syscall.h`; on x86_64 LP64 every field is 8
-bytes unless noted.
+bytes unless noted. Each one is compared field by field with the kernel's type
+by `tools/test_abi.cpp`, and a field reorder or resize fails `ninja check`.
 
 ### Message (`SEND` / `RECV`)
 
@@ -331,8 +354,34 @@ struct grv_sysinfo {
     unsigned long screen_h;
     unsigned long cursor_x;    // pointer position (screen pixels)
     unsigned long cursor_y;
+    unsigned long abi_version; // GRV_ABI_VERSION the kernel was built with
 };
 ```
+
+`abi_version` was appended in ABI version 1, so the sixteen counters keep the
+offsets they had before the field existed.
+
+### Filesystem statistics (`STATFS`)
+
+```
+struct grv_statfs {
+    unsigned long total;         // bytes the medium holds (0 = unknown)
+    unsigned long free;          // bytes writable now (0 on a read-only fs)
+    unsigned long inodes_total;  // entries the medium holds (0 = unknown)
+    unsigned long inodes_free;   // entries still free (0 = unknown)
+    long          writable;      // nonzero if anything can be written
+    char          type[16];      // backend name, NUL-terminated
+};
+```
+
+This is the 56-byte record since ABI version 1: the two inode counts sit before
+`writable` and `type`. A backend with no inode limit (the ramfs and the tarfs)
+reports zero for both, so `0` means "unknown", not "full"; a caller that needs
+to distinguish those cases asks a backend that keeps inode counts, such as
+ext2. `total` and `free` count bytes, and `free` is zero on a read-only
+filesystem whatever the medium holds. `inodes_total` and `inodes_free` count
+directory entries the same way, so a disk that is out of inodes can be told
+from one that is out of bytes.
 
 ### Task record (`TASK_LIST`)
 

@@ -5,6 +5,12 @@
 // The mechanism behind the userland monitor (`/bin/mon`). The layout is
 // shared verbatim with libc's grv/syscall.h.
 
+// The layout version of every record shared with userland, and of the syscall
+// contract itself. It must equal GRV_ABI_VERSION in grv/syscall.h (the host
+// test tools/test_abi.cpp compares them). Bump it whenever a shared record's
+// layout changes; fields are otherwise appended, never reordered or removed.
+inline constexpr uint64_t ABI_VERSION = 1;
+
 struct SysInfo {
     uint64_t ticks;
     uint64_t tasks;
@@ -22,6 +28,7 @@ struct SysInfo {
     uint64_t screen_h;
     uint64_t cursor_x;     // pointer position (screen pixels)
     uint64_t cursor_y;
+    uint64_t abi_version;  // ABI_VERSION this kernel was built with
 };
 
 namespace Sysinfo {
