@@ -369,11 +369,13 @@ def main():
         ninja.write(f"  description = TEST GROUPS\n")
         ninja.write(f"  pool = console\n\n")
 
-        # Regenerate the graph when configure.py itself changes. Adding or
-        # removing a source file used to need a manual `python3 configure.py`,
-        # and forgetting it built a stale graph. `generator = 1` tells ninja
-        # this edge writes build.ninja, so it reloads quietly instead of
-        # treating the change as a normal dependency.
+        # Regenerate the graph when configure.py itself changes. A flag edit or
+        # a change to the special-cased programs used to need a manual
+        # `python3 configure.py`, and forgetting it built a stale graph. Adding
+        # a source file is still a manual configure: ninja cannot see a file
+        # that is not in the graph yet. `generator = 1` tells ninja this edge
+        # writes build.ninja, so it reloads quietly instead of treating the
+        # change as a normal dependency.
         ninja.write(f"rule configure\n")
         ninja.write(f"  command = python3 configure.py\n")
         ninja.write(f"  description = CONFIGURE (configure.py changed)\n")

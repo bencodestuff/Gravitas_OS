@@ -109,6 +109,9 @@ shell grammar is, all in code you can read and change.
   hang (40 boots catch a one-in-fifteen hang about 94% of the time).
 - A host test (`tools/check_syscalls.py`) asserts the syscall header, the kernel
   dispatcher and `docs/syscalls.md` all agree.
+- A GitHub Actions job runs `python3 configure.py` and `ninja check` on every
+  push and pull request. The guest groups stay local: they need QEMU and a
+  KVM-capable runner.
 - The soak found a roughly one-in-fifteen boot hang: the PIC was being
   reprogrammed with interrupts enabled. A longer run (`tests/soak.py -n 240`)
   then proved the fix over 336 consecutive clean boots.
@@ -265,9 +268,6 @@ Not done yet:
 - **`poll`/`select`.** The mailbox model covers Lua's single `recv` loop.
 - **SMP.** The system is idle- and I/O-bound; this is the largest rewrite
   available.
-- **CI.** There is no GitHub Actions job yet. `ninja check` needs no QEMU and
-  takes about two seconds, so it could run in one today; the guest suite still
-  has to be run locally.
 - **`panic()`.** A kernel-mode fault already dumps registers and a symbolised
   `RIP` and halts; what is missing is a call-stack trace (there is no unwinder)
   and a `panic()` entry point.
