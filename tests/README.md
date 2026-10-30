@@ -26,7 +26,7 @@ machine cannot hide the others.
     tests/kernel/init.py        the userland init and its Lua boot manifest
     tests/kernel/lua.py         the interpreter, REPL and scripts
     tests/kernel/power.py       leaving: poweroff and reset end the guest
-    tests/kernel/tasks.py       scheduling, IPC, the fd/VFS surface, mappings
+    tests/kernel/tasks.py       scheduling, IPC, the fd/VFS surface, mappings, capacities
     tests/kernel/virtio.py      the virtio-blk DMA driver (no IDE controller)
     tests/ui/windows.py         WM geometry and lifecycle
     tests/ui/apps.py            the apps and the IDE (the slowest group)
@@ -36,6 +36,10 @@ machine's free memory holds, capped at 4 — each guest wants 512MB, and a machi
 that swaps makes a parallel run slower *and* flakier, not faster). On a machine
 that is also busy, `-j2` is the safer choice. Output is buffered per group and
 printed when it finishes, so a run still reads top-to-bottom.
+
+The `tasks` group also runs `limittest.elf`, which drives the capacities a guest
+can reach (`EMFILE`, a full mailbox, a 200-byte ramfs name, a long `chdir`).
+The numbers and their boundaries are in [`docs/limits.md`](../docs/limits.md).
 
 ## Adding a test
 
