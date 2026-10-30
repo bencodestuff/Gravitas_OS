@@ -28,7 +28,10 @@ constexpr uint32_t PAGE_SECTORS = PAGE_SIZE / Block::SECTOR;  // 8
 constexpr uint32_t PAGES = 64;
 
 // Cached transfers, in sectors exactly like Block::Device::read/write.
-// An all-or-nothing range check: a request past the device end fails.
+// An all-or-nothing range check: a request past the device end fails. So does a
+// request the device answers short: the failed page is not installed, and a
+// short writeback leaves its page dirty so flush reports the failure and a
+// later sync retries it.
 bool read(Block::Device* dev, uint64_t lba, uint64_t count, void* buf);
 bool write(Block::Device* dev, uint64_t lba, uint64_t count, const void* buf);
 

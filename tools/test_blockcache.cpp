@@ -33,6 +33,13 @@ struct Fake {
     uint64_t write_calls = 0;
     uint64_t write_sectors = 0;
     uint64_t flush_calls = 0;
+    // A one-shot short transfer, the way a failing drive answers a command:
+    // fewer sectors than asked for, then the error. QEMU does not inject ATA
+    // errors, so this is the only exercise the short path gets.
+    bool short_read = false;
+    uint64_t short_read_sectors = 0;
+    bool short_write = false;
+    uint64_t short_write_sectors = 0;
 };
 
 struct Disk {
@@ -43,19 +50,29 @@ struct Disk {
 static uint64_t fake_read(void* priv, uint64_t lba, uint64_t count, void* buf) {
     Fake* f = static_cast<Fake*>(priv);
     if (lba > f->sectors || count > f->sectors - lba) return 0;
+    uint64_t moved = count;
+    if (f->short_read) {
+        moved = f->short_read_sectors < count ? f->short_read_sectors : count;
+        f->short_read = false;
+    }
     f->read_calls++;
-    f->read_sectors += count;
-    std::memcpy(buf, f->bytes.data() + lba * 512, (size_t)count * 512);
-    return count;
+    f->read_sectors += moved;
+    std::memcpy(buf, f->bytes.data() + lba * 512, (size_t)moved * 512);
+    return moved;
 }
 
 static uint64_t fake_write(void* priv, uint64_t lba, uint64_t count, const void* buf) {
     Fake* f = static_cast<Fake*>(priv);
     if (lba > f->sectors || count > f->sectors - lba) return 0;
+    uint64_t moved = count;
+    if (f->short_write) {
+        moved = f->short_write_sectors < count ? f->short_write_sectors : count;
+        f->short_write = false;
+    }
     f->write_calls++;
-    f->write_sectors += count;
-    std::memcpy(f->bytes.data() + lba * 512, buf, (size_t)count * 512);
-    return count;
+    f->write_sectors += moved;
+    std::memcpy(f->bytes.data() + lba * 512, buf, (size_t)moved * 512);
+    return moved;
 }
 
 static bool fake_flush(void* priv) {
@@ -280,7 +297,70 @@ static void test_tail_page() {
           "a read past the device end fails");
 }
 
-// 7. Bounds are all-or-nothing, exactly like Block's contract.
+// 7. A device that fails partway through a page read returns a short count.
+//    The page must not be installed: the sectors after the failure never
+//    arrived, so a later access to the same page must go to the device again
+//    instead of being served from the stale tail of a cache slot.
+static void test_short_read_not_installed() {
+    std::printf("-- a short device read does not install the page\n");
+    Disk* d = make_disk(320, 97);
+    unsigned char buf[512];
+    std::memset(buf, 0xaa, sizeof(buf));
+
+    BlockCache::reset_stats();
+    d->fake.short_read = true;
+    d->fake.short_read_sectors = 3;
+    bool ok = BlockCache::read(&d->dev, 0, 1, buf);
+    BlockCache::Stats s = BlockCache::stats();
+    check(!ok, "a read the device answers short fails");
+    check(buf[0] == 0xaa && buf[511] == 0xaa,
+          "the failed read hands the caller no data");
+    check(s.misses == 1 && s.hits == 0 && d->fake.read_calls == 1,
+          "the short read was one miss and one device request");
+
+    // Sector 7 is in the part the short read never delivered. If the page had
+    // been installed anyway, this would be a hit over the slot's old bytes.
+    ok = BlockCache::read(&d->dev, 7, 1, buf);
+    s = BlockCache::stats();
+    check(ok && std::memcmp(buf, d->fake.bytes.data() + 7 * 512, 512) == 0,
+          "the undelivered tail is fetched from the device");
+    check(s.misses == 2 && s.hits == 0 && d->fake.read_calls == 2,
+          "the failed page was not installed");
+}
+
+// 8. A writeback the device answers short must fail the flush and leave the
+//    page dirty. The next flush has to write it again; marking it clean would
+//    silently discard the part that never reached the medium.
+static void test_short_write_stays_dirty() {
+    std::printf("-- a short writeback keeps the page dirty\n");
+    Disk* d = make_disk(320, 103);
+    unsigned char pattern[512];
+    std::memset(pattern, 0x5c, sizeof(pattern));
+    const size_t off = 5 * 512;
+
+    BlockCache::reset_stats();
+    check(BlockCache::write(&d->dev, 5, 1, pattern) && d->fake.write_calls == 0,
+          "a partial write is held in the cache");
+
+    d->fake.short_write = true;
+    d->fake.short_write_sectors = 3;
+    bool ok = BlockCache::flush(&d->dev);
+    BlockCache::Stats s = BlockCache::stats();
+    check(!ok, "a flush whose writeback is answered short fails");
+    check(s.writebacks == 0 && d->fake.write_calls == 1,
+          "the short writeback is not counted as one");
+    check(std::memcmp(d->fake.bytes.data() + off, pattern, 512) != 0,
+          "the unwritten sector did not reach the device");
+
+    ok = BlockCache::flush(&d->dev);
+    s = BlockCache::stats();
+    check(ok && s.writebacks == 1 && d->fake.write_calls == 2,
+          "the page stayed dirty, so the next flush retries it");
+    check(std::memcmp(d->fake.bytes.data() + off, pattern, 512) == 0,
+          "the retried flush puts the sector on the device");
+}
+
+// 9. Bounds are all-or-nothing, exactly like Block's contract.
 static void test_bounds() {
     std::printf("-- out-of-range requests move nothing\n");
     Disk* d = make_disk(320, 83);
@@ -311,6 +391,8 @@ int main() {
     test_whole_page_write();
     test_eviction_writes_back();
     test_tail_page();
+    test_short_read_not_installed();
+    test_short_write_stays_dirty();
     test_bounds();
 
     BlockCache::Stats s = BlockCache::stats();

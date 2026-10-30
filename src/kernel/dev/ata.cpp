@@ -102,6 +102,20 @@ static bool wait_drq(uint64_t spins) {
     return false;
 }
 
+// Wait for the command to finish and report whether it succeeded. A drive can
+// latch a deferred write error only after the last data word has been handed
+// over, so this is the point that confirms a chunk; a command that ends in ERR
+// or DF is a failure even though every sector's data moved.
+static bool command_done(uint64_t spins) {
+    for (uint64_t i = 0; i < spins; i++) {
+        uint8_t s = inb(IO_BASE + R_STATUS);
+        if (s == 0xFF) return false;
+        if (s & ST_BSY) continue;
+        return (s & (ST_ERR | ST_DF)) == 0;
+    }
+    return false;
+}
+
 // `ins`/`outs` move one 16-bit word per count through the data register. A
 // sector is little-endian on the wire and x86 is little-endian, so the words
 // land in memory exactly as the bytes should. In 64-bit mode the string
@@ -171,7 +185,10 @@ static bool flush(Drive* d) {
     outb(IO_BASE + R_DRIVE, d->select);
     outb(IO_BASE + R_STATUS, CMD_FLUSH);
     delay_400ns();
-    return wait_ready(2000000);
+    if (!wait_ready(2000000)) return false;
+    // A flush that ends in ERR or DF has not put the data on the medium, and
+    // reporting success there would make sync lie.
+    return !(inb(IO_BASE + R_STATUS) & (ST_ERR | ST_DF));
 }
 
 static bool ata_flush(void* priv) { return flush((Drive*)priv); }
@@ -204,6 +221,11 @@ static bool identify(Drive* d, uint16_t* words) {
 
 // A short transfer is a hardware problem, and a hardware problem should say
 // something rather than look like a disk that ran out of room.
+//
+// QEMU does not inject ATA errors, so no guest test can make the code above
+// take its failure paths. The short-transfer behaviour they feed is covered
+// only on the host, by the fake device in tools/test_blockcache.cpp, and in
+// the field by a drive that really does drop DRQ or assert ERR.
 static void report_error(const char* what) {
     kprint("[ATA] ");
     kprint(what);
@@ -220,17 +242,27 @@ static uint64_t ata_read(void* priv, uint64_t lba, uint64_t count, void* buf) {
     uint8_t* p = (uint8_t*)buf;
     uint64_t done = 0;
     bool ok = true;
-    while (done < count && ok) {
+    while (done < count) {
         uint32_t chunk = (uint32_t)(count - done);
         if (chunk > MAX_CHUNK) chunk = MAX_CHUNK;
 
         if (!submit(d, false, lba + done, chunk)) { ok = false; break; }
         for (uint32_t s = 0; s < chunk; s++) {
+            // ERR and DF surface here, before the sector's data is fetched; a
+            // sector that never becomes ready is not counted, and the rest of
+            // the command is abandoned.
             if (!wait_drq(2000000)) { ok = false; break; }
             read_words(IO_BASE + R_DATA, p, SECTOR_WORDS);
             p += SECTOR;
+            // The last sector of a command is counted only once the drive says
+            // the command completed cleanly. A deferred error can arrive after
+            // the final data word, and that sector is then not a completed
+            // transfer, so the request can never return the requested count
+            // after a failure.
+            if (s + 1 == chunk && !command_done(2000000)) { ok = false; break; }
+            done++;
         }
-        done += chunk;
+        if (!ok) break;
     }
     if (!ok) report_error("read");
     return done;
@@ -245,17 +277,22 @@ static uint64_t ata_write(void* priv, uint64_t lba, uint64_t count,
     const uint8_t* p = (const uint8_t*)buf;
     uint64_t done = 0;
     bool ok = true;
-    while (done < count && ok) {
+    while (done < count) {
         uint32_t chunk = (uint32_t)(count - done);
         if (chunk > MAX_CHUNK) chunk = MAX_CHUNK;
 
         if (!submit(d, true, lba + done, chunk)) { ok = false; break; }
         for (uint32_t s = 0; s < chunk; s++) {
+            // Same rule as the read path: no DRQ, no transfer, no progress.
             if (!wait_drq(2000000)) { ok = false; break; }
             write_words(IO_BASE + R_DATA, p, SECTOR_WORDS);
             p += SECTOR;
+            // A write error is often deferred until the whole command has
+            // completed, so the last sector only counts after that check.
+            if (s + 1 == chunk && !command_done(2000000)) { ok = false; break; }
+            done++;
         }
-        done += chunk;
+        if (!ok) break;
     }
     if (!ok) report_error("write");
     else if (done > 0) flush(d);
