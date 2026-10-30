@@ -9,9 +9,10 @@ The contents are fixed here rather than in files/ so the image is reproducible,
 including a file deliberately larger than the twelve direct block pointers
 (12 KB at 1 KB blocks): reading it exercises the indirect path, which is the
 part of ext2 most likely to be quietly wrong. Two runs produce identical
-bytes: the UUID and hash seed are constants, the staged tree is passed to
-mke2fs as a tar archive with fixed ownership and timestamps, and
-SOURCE_DATE_EPOCH stops the superblock carrying the wall clock.
+bytes: the UUID and hash seed are constants, every staged file is stamped with
+epoch-zero times, SOURCE_DATE_EPOCH stops the superblock carrying the wall
+clock (e2fsprogs 1.47.1 or newer), and a debugfs pass rewrites the copied
+inodes to root:root so the result does not depend on who ran the build.
 
     hello.txt      one line
     sub/nested.txt a file reached through a directory
@@ -61,7 +62,6 @@ def big_byte(i):
 def main():
     tmp = tempfile.mkdtemp(prefix="gravitas-ext2-")
     stage = os.path.join(tmp, "stage")
-    archive = os.path.join(tmp, "stage.tar")
     os.mkdir(stage)
     try:
         with open(os.path.join(stage, "hello.txt"), "w") as f:
@@ -93,15 +93,12 @@ def main():
         if os.path.exists(OUT):
             os.unlink(OUT)
 
-        # A tar archive, not the directory: mke2fs 1.47 and later restore the
-        # ownership and timestamps recorded here, so the image does not depend
-        # on which user (or which day) ran the build. Passing the directory
-        # would stamp it with the build user's uid and the current time.
-        subprocess.check_call([
-            "tar", "--format=gnu", "--sort=name", "--mtime=@0",
-            "--owner=0", "--group=0", "--numeric-owner",
-            "-cf", archive, "-C", stage, ".",
-        ])
+        # mke2fs copies each source file's mtime and atime into the inode, so
+        # the staging tree has to carry fixed ones.
+        for base, dirs, files in os.walk(stage):
+            for name in dirs + files:
+                os.utime(os.path.join(base, name), (0, 0))
+        os.utime(stage, (0, 0))
 
         # ext2, no journal; dir_index off so directories stay a linear list
         # (the reader does not walk an htree). The image is the writable root's
@@ -115,11 +112,29 @@ def main():
             "-O", "^dir_index,^resize_inode",
             "-N", str(INODES),
             "-U", IMAGE_UUID,
-            "-E", "hash_seed=" + IMAGE_UUID,
-            "-d", archive,
+            "-E", "root_owner=0:0,hash_seed=" + IMAGE_UUID,
+            "-d", stage,
             "-F", "-L", "gravitas",
             OUT, str(BLOCKS),
         ], env=env)
+
+        # mke2fs stamps the copied files with the staging user's uid/gid.
+        # Rewrite every copied inode to root:root with debugfs, which ships
+        # with e2fsprogs; tarball input would need the optional libarchive
+        # support that many distributions leave out.
+        paths = []
+        for base, dirs, files in os.walk(stage):
+            for name in dirs + files:
+                rel = os.path.relpath(os.path.join(base, name), stage)
+                paths.append("/" + rel)
+        script = "".join("sif %s uid 0\nsif %s gid 0\n" % (p, p)
+                         for p in paths)
+        r = subprocess.run(["debugfs", "-w", "-f", "-", OUT],
+                           input=script, text=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if r.returncode != 0 or "not found" in r.stdout.lower():
+            sys.stdout.write(r.stdout)
+            sys.exit("debugfs could not set the image's ownership")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

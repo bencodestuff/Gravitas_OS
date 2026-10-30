@@ -190,7 +190,7 @@ Host tools, with the package that provides each on Arch as an example:
 | `ld.lld` | `lld` | linking |
 | `xorriso` | `xorriso` | making the ISO |
 | `tar` | `tar` | packing the image |
-| `mke2fs` | `e2fsprogs` (1.47 or newer) | making the ext2 test image; `tools/mkext2.py` hands it a tar archive so ownership and timestamps are fixed |
+| `mke2fs` | `e2fsprogs` (1.47.1 or newer) | making the ext2 test image; `tools/mkext2.py` relies on `SOURCE_DATE_EPOCH` for a reproducible image |
 | `ninja` | `ninja` | running the build |
 | `python3` | `python` | configure.py, the build helpers, the tests |
 | `qemu-system-x86_64` | `qemu-system-x86` | running and testing (not needed to build) |
