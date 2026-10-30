@@ -226,7 +226,8 @@ ninja soak          # boot the machine 40 times, checking for a boot hang
 `ninja check` runs the libc pieces that build and run natively plus
 `tools/check_syscalls.py`, which checks the syscall ABI against its
 documentation. The guest groups are documented in
-[`tests/README.md`](tests/README.md).
+[`tests/README.md`](tests/README.md), and a failing boot or test is diagnosed
+with [`docs/debugging.md`](docs/debugging.md).
 
 ## Layout
 
@@ -241,6 +242,7 @@ documentation. The guest groups are documented in
 | `tools/` | host-side build helpers |
 | [`docs/architecture.md`](docs/architecture.md) | how the OS is put together: the boot path and the major subsystems |
 | [`docs/adding-an-app.md`](docs/adding-an-app.md) | a new program: one `.cpp` and a line in `files/apps` |
+| [`docs/debugging.md`](docs/debugging.md) | QEMU, the serial log, GDB, fault dumps, F12 and `mon` |
 | [`docs/syscalls.md`](docs/syscalls.md) | the syscall ABI and the mechanisms below it |
 | [`tests/`](tests/) | the test suite; see [`tests/README.md`](tests/README.md) |
 

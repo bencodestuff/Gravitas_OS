@@ -301,5 +301,5 @@ same thing: `grv` is small, stable and mirrored by a host test, while
 | `src/libc/` | the C library, the POSIX facade, and the `gravity` library; `include/grv/` is the ABI surface |
 | `src/user/` | userland programs (one `.cpp` per program) |
 | `files/` | what is packed into the image root: `bin/` is built into it, plus `apps`, `init.lua`, `env`, `fonts/`, `Pictures/`, `lua/` |
-| `docs/` | this file, `syscalls.md`, and `adding-an-app.md` |
+| `docs/` | this file, `syscalls.md`, `adding-an-app.md`, and `debugging.md` |
 | `tests/` | the test suite; see `tests/README.md` |
