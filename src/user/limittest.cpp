@@ -24,6 +24,38 @@ static void check(int ok, const char* what) {
 // The VFS keeps 16 descriptor slots and 0, 1 and 2 are the standard streams.
 #define USABLE_FDS 13
 
+// C++ operator new must return memory aligned to
+// __STDCPP_DEFAULT_NEW_ALIGNMENT__ (16 on x86-64). Odd sizes are the point:
+// with an 8-byte-rounded allocator the second payload lands at 8 mod 16.
+static void test_new_alignment(void) {
+    const size_t sizes[10] = {1, 3, 9, 17, 33, 63, 65, 129, 257, 511};
+    char* p[10] = {0};
+
+    int allocated = 1;
+    int aligned = 1;
+    for (int i = 0; i < 10; i++) {
+        p[i] = new char[sizes[i]];
+        if (p[i] == 0) { allocated = 0; break; }
+        if (((unsigned long)p[i] & 15ul) != 0) aligned = 0;
+        memset(p[i], 0xA5, sizes[i]);
+    }
+    check(allocated, "odd-sized objects can be allocated");
+    check(aligned, "operator new returns 16-byte aligned memory for odd sizes");
+
+    // Free every other block and allocate into the holes again: split and
+    // reuse must not disturb the alignment of either the hole or its
+    // neighbours.
+    for (int i = 0; i < 10; i += 2) { delete[] p[i]; p[i] = 0; }
+    aligned = 1;
+    for (int i = 0; i < 10; i += 2) {
+        p[i] = new char[sizes[i] + 8];
+        if (p[i] == 0) { aligned = 0; break; }
+        if (((unsigned long)p[i] & 15ul) != 0) aligned = 0;
+    }
+    check(aligned, "reused odd-sized blocks stay 16-byte aligned");
+    for (int i = 0; i < 10; i++) delete[] p[i];
+}
+
 static void test_fd_capacity(void) {
     int fds[USABLE_FDS];
     int n = 0;
@@ -204,6 +236,7 @@ int main(int argc, char** argv) {
 
     test_fd_capacity();
     test_mailbox_capacity();
+    test_new_alignment();
     test_long_name();
     test_long_cwd();
 
