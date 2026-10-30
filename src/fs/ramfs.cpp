@@ -18,7 +18,11 @@ extern "C" void kprint(const char* str);
 namespace RamFS {
 
 struct RamNode {
-    char name[64];
+    // The VFS permits a component up to NAME_MAX (256 including the
+    // terminator). The stored name has to be able to hold every name the VFS
+    // accepts: a smaller field would truncate, and a truncated name cannot be
+    // opened again under the name that created it.
+    char name[VFS::NAME_MAX];
     bool is_dir;
     uint8_t* data;
     uint64_t size;
@@ -65,10 +69,20 @@ static bool reserve(RamNode* n, uint64_t need) {
 }
 
 // --- node helpers ---
+// True when 'name' fills the stored field and would have to be cut down. The
+// VFS refuses names past NAME_MAX first, so this is the backend's own defence:
+// a truncating copy here would create a file no later lookup could name.
+static bool name_too_long(const char* name) {
+    uint64_t n = 0;
+    while (name[n]) n++;
+    return n >= (uint64_t)sizeof(RamNode::name);
+}
+
 static RamNode* new_node(const char* name, bool is_dir) {
+    if (name_too_long(name)) return nullptr;
     RamNode* n = new RamNode;
     int i = 0;
-    while (name[i] && i < (int)sizeof(n->name) - 1) { n->name[i] = name[i]; i++; }
+    while (name[i]) { n->name[i] = name[i]; i++; }
     n->name[i] = '\0';
     n->is_dir = is_dir;
     n->data = nullptr;
@@ -185,7 +199,9 @@ static bool ram_readdir(void* priv, VFS::Node* dir, uint64_t index, VFS::DirEntr
     if (c == nullptr) return false;
 
     uint64_t n = 0;
-    while (c->name[n] && n + 1 < sizeof(out->name)) { out->name[n] = c->name[n]; n++; }
+    // Stored names always fit the same field readdir reports, so this copies
+    // the whole name rather than truncating it.
+    while (c->name[n]) { out->name[n] = c->name[n]; n++; }
     out->name[n] = '\0';
     out->type = c->is_dir ? VFS::FT_DIR : VFS::FT_FILE;
     out->ino = c->ino;
@@ -257,9 +273,11 @@ static int ram_create(void* priv, VFS::Node* dir, const char* name,
     RamNode* d = (RamNode*)dir->priv;
     if (!d->is_dir) return -Errno::ENOTDIR;
     if (name[0] == '\0') return -Errno::EINVAL;
+    if (name_too_long(name)) return -Errno::ENAMETOOLONG;
     if (find_child(d, name) != nullptr) return -Errno::EEXIST;   // already there
 
     RamNode* c = new_node(name, type == VFS::FT_DIR);
+    if (c == nullptr) return -Errno::ENOMEM;   // the name was checked above
     c->next_sibling = d->first_child;
     d->first_child = c;
 
@@ -293,6 +311,9 @@ static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
     RamNode* tdir = (RamNode*)to_dir_node->priv;
     if (!fdir->is_dir || !tdir->is_dir) return -1;
     if (from[0] == '\0' || to[0] == '\0') return -1;
+    // Refuse a destination that would be cut down; a shortened name would move
+    // the file somewhere the caller cannot find it.
+    if (name_too_long(to)) return -Errno::ENAMETOOLONG;
 
     RamNode* src = find_child(fdir, from);
     if (src == nullptr) return -1;
@@ -307,7 +328,7 @@ static int ram_rename(void* priv, VFS::Node* from_dir_node, const char* from,
     detach(fdir, src);
 
     int i = 0;
-    while (to[i] && i < (int)sizeof(src->name) - 1) { src->name[i] = to[i]; i++; }
+    while (to[i]) { src->name[i] = to[i]; i++; }
     src->name[i] = '\0';
     src->next_sibling = tdir->first_child;
     tdir->first_child = src;

@@ -351,8 +351,14 @@ namespace Sched {
         new_task->fb_map_base = 0;  // mapped on the first FBINFO call
         new_task->fb_map_pages = 0;
         // CWD is inherited from the spawning process (Unix semantics) —
-        // otherwise `cd /bin` + `ls` would list "/" in every child
-        strcpy(new_task->cwd, current_task->cwd);
+        // otherwise `cd /bin` + `ls` would list "/" in every child. The copy is
+        // bounded like the setter: a path cannot be longer than the field.
+        int ci = 0;
+        while (current_task->cwd[ci] && ci < (int)sizeof(new_task->cwd) - 1) {
+            new_task->cwd[ci] = current_task->cwd[ci];
+            ci++;
+        }
+        new_task->cwd[ci] = '\0';
 
         // FPU area: separately allocated (heap is only 8-aligned; fxsave
         // needs 16) and seeded with the boot-clean template so the first
@@ -427,10 +433,15 @@ namespace Sched {
     }
 
     // chdir: validate that the target exists and is a directory (done by
-    // the caller via VFS), then store the canonical path
+    // the caller via VFS), then store the canonical path. The field is
+    // VFS::PATH_MAX, the same limit canonicalize enforces, so a path the VFS
+    // accepted cannot be cut down here.
     void current_task_set_cwd(const char* path) {
         int i = 0;
-        while (path[i] && i < 63) { current_task->cwd[i] = path[i]; i++; }
+        while (path[i] && i < (int)sizeof(current_task->cwd) - 1) {
+            current_task->cwd[i] = path[i];
+            i++;
+        }
         current_task->cwd[i] = '\0';
     }
 

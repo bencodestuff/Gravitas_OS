@@ -57,7 +57,7 @@ namespace Sched {
         uint64_t fb_map_base;   // user VA of that mapping (0 = none yet)
         uint64_t fb_map_pages;  // pages in it, so a mode change remaps
         VFS::FileHandle* fds[VFS::MAX_FDS]; // per-task file descriptors
-        char cwd[64];           // current working directory (starts "/")
+        char cwd[VFS::PATH_MAX];   // current working directory (starts "/")
         uint64_t exit_code;     // value passed to exit(), or a fault code
                                 // if the task died from an exception
         uint64_t exit_code_inbox;   // exit code of the task this task WAITED
