@@ -1662,24 +1662,41 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         inode_put(f, dst_ino, dst_is_dir);
     }
 
-    // Link accounting for a directory that changes parent. The moved directory
-    // gives up its old ".." and gains the new one.
-    if (src_is_dir && !same_dir) {
-        if (fdin.links_count > 0) fdin.links_count--;
-        tdin.links_count++;
-        if (!set_dotdot(f, &src, tdn->ino)) {
-            irq_restore(flags);
-            return -1;
-        }
-    }
-
     // Insert first, then remove: a failure halfway leaves the name reachable in
-    // the old place rather than nowhere.
+    // the old place rather than nowhere. The new ".." is written only after the
+    // name exists, because set_dotdot needs no free block while dir_insert does:
+    // a full disk must fail the rename before ".." moves anywhere.
     uint8_t ftype = f->dev->has_filetype ? (src_is_dir ? 2 : 1) : 0;
     if (dir_insert(f, tdir, to, tlen, src_ino, ftype) != 0) {
         irq_restore(flags);
         return -1;
     }
+
+    // Link accounting for a directory that changes parent. The moved directory
+    // gives up its old ".." and gains the new one.
+    bool dropped_link = false;
+    if (src_is_dir && !same_dir) {
+        if (fdin.links_count > 0) {
+            fdin.links_count--;
+            dropped_link = true;
+        }
+        tdin.links_count++;
+        if (!set_dotdot(f, &src, tdn->ino)) {
+            // Undo both the name and the counts: ".." still names the old
+            // parent, which still holds the name, so the tree is as it was.
+            if (dropped_link) fdin.links_count++;
+            tdin.links_count--;
+            dir_remove(f, tdir, to, tlen, nullptr, nullptr);
+            // The insertion may have given the new parent a block. Writing its
+            // inode keeps that block reachable instead of leaking it.
+            tdin.blocks = blocks_to_512(f, count_blocks(f, &tdin));
+            write_inode(f, tdn->ino, &tdin);
+            refresh_node(tdn, to_dir, &tdin);
+            irq_restore(flags);
+            return -1;
+        }
+    }
+
     if (!dir_remove(f, &fdin, from, flen, nullptr, nullptr)) {
         irq_restore(flags);
         return -1;
