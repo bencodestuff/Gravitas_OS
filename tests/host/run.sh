@@ -78,6 +78,25 @@ printf -- '-- test_vmm (address-space teardown)\n'
     -o "$ART/test_vmm" || fail "test_vmm: compile failed"
 "$ART/test_vmm" || fail "test_vmm: checks failed"
 
+# Not a C program: ext2 writes through the page cache, so a guest cannot make a
+# rename's last directory removal fail: the block it just searched is a cache
+# hit, and a cached write never reaches a device. The failure is injected inside
+# write_block instead (EXT2_HOST_TEST, off in the kernel) and the rename state
+# machine runs natively over an image tools/mkext2.py made, which is the same
+# builder as the shipped disk. Without e2fsprogs the image cannot be made, and
+# that skips this check rather than failing a machine with only a compiler.
+printf -- '-- test_ext2_rename (a rename whose last removal fails)\n'
+if python3 tools/mkext2.py "$ART/rename.img" >"$ART/rename.mkext2.log" 2>&1; then
+    "${CXX:-c++}" -O2 -std=c++17 -Isrc -DEXT2_HOST_TEST -DBLOCKCACHE_HOST_TEST \
+        tools/test_ext2_rename.cpp src/kernel/dev/ext2.cpp \
+        src/kernel/core/blockcache.cpp \
+        -o "$ART/test_ext2_rename" || fail "test_ext2_rename: compile failed"
+    "$ART/test_ext2_rename" "$ART/rename.img" || fail "test_ext2_rename: checks failed"
+else
+    printf '   skipped: no ext2 image (e2fsprogs missing?)\n'
+    tail -2 "$ART/rename.mkext2.log" | sed 's/^/   /'
+fi
+
 # Not a C program: the kernel and the libc describe the same syscall records in
 # two headers that cannot include each other, so this is the only place they can
 # be compared.
