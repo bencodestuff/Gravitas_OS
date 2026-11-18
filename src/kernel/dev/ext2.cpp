@@ -1644,6 +1644,22 @@ static void inode_put(Fs* f, uint32_t ino, bool is_dir) {
     else free_inode(f, ino, is_dir);
 }
 
+// Give up the replaced inode of an e2_rename whose destination name cannot be
+// restored: the same shape e2_unlink writes when a file's last name goes, no
+// links and a dtime. The destination is destroyed either way, because the name
+// that used to reach it now reaches the source. An orphan inode with a live
+// link count is worse than a freed one: no name can ever reach it to free it,
+// and e2fsck has to repair a file nothing points at.
+static void discard_replaced(Fs* f, Inode* d, uint32_t ino, bool is_dir) {
+    uint32_t now = (uint32_t)Rtc::seconds_now();
+    d->links_count = 0;
+    d->ctime = now;
+    d->mtime = now;
+    d->dtime = now ? now : 1;
+    write_inode(f, ino, d);
+    inode_put(f, ino, is_dir);
+}
+
 static int e2_unlink(void* priv, VFS::Node* dir, const char* name) {
     Fs* f = (Fs*)priv;
     if (!f->writable) return -Errno::EROFS;
@@ -1844,7 +1860,8 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
             // of, so the destination is not lost either.
             if (dropped_link) fdin.links_count++;
             tdin.links_count--;
-            if (!dir_remove(f, tdir, to, tlen, nullptr, nullptr)) {
+            bool new_name_out = dir_remove(f, tdir, to, tlen, nullptr, nullptr);
+            if (!new_name_out) {
                 // The same third state the removal below can leave, and here it
                 // cannot be repaired at all: this branch only runs for a
                 // directory that changed parent, and a directory named in two
@@ -1852,7 +1869,15 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
                 // is reported rather than disguised.
                 kprint("[Ext2] rename left two names for one directory!\n");
             }
-            if (dst_removed) restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
+            if (dst_removed) {
+                // Only a name that actually came out can go back in. dir_reinsert
+                // looks for a free record and never checks for a live entry with
+                // this name, so restoring over a name that is still there would
+                // either duplicate it or orphan the replaced inode.
+                if (new_name_out)
+                    restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
+                else discard_replaced(f, &dst, dst_ino, dst_is_dir);
+            }
             // The insertion may have given the new parent a block. Writing its
             // inode keeps that block reachable instead of leaking it. The old
             // parent's link count was put back a few lines above too, and that
@@ -1902,7 +1927,15 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
                 undone = false;
             }
         }
-        if (dst_removed) restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
+        if (dst_removed) {
+            // The same rule as the set_dotdot branch: the replaced name goes
+            // back only if the name standing in its place actually came out.
+            // When it did not, the replaced inode has no name and cannot get
+            // one, so it is freed rather than left as an unreachable orphan.
+            if (undone)
+                restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
+            else discard_replaced(f, &dst, dst_ino, dst_is_dir);
+        }
         // Both counts were adjusted whether or not the destination name went,
         // and the insertion may have given the new parent a block, so both
         // inodes are written: an undo that only exists in memory is not an undo.
@@ -1954,12 +1987,7 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         // cannot be seen next to a name that still points at it. Until here the
         // on-disk inode was untouched, which is what made the restore above
         // possible without rewriting it.
-        dst.links_count = 0;
-        dst.ctime = now;
-        dst.mtime = now;
-        dst.dtime = now ? now : 1;
-        write_inode(f, dst_ino, &dst);
-        inode_put(f, dst_ino, dst_is_dir);
+        discard_replaced(f, &dst, dst_ino, dst_is_dir);
     }
 
     irq_restore(flags);

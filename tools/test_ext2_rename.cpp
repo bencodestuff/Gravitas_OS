@@ -173,6 +173,49 @@ static uint32_t dotdot_of(const uint8_t* img, const Meta& m, uint32_t dir_ino) {
     return 0;
 }
 
+static uint32_t inode_dtime(const uint8_t* img, const Meta& m, uint32_t ino) {
+    return u32_at(img, inode_off(m, ino) + 20);
+}
+
+// Every entry called 'name' in a directory, counted across the whole block the
+// way e2fsck would. A lookup stops at the first match, so it cannot see a
+// duplicate entry, and a duplicate is one of the two outcomes this test is
+// built to catch.
+struct NameScan {
+    int count;       // entries with this name
+    uint32_t ino;    // the inode the first of them names
+};
+
+static NameScan scan_name(const uint8_t* img, const Meta& m, uint32_t dir_ino,
+                          const char* name) {
+    NameScan s;
+    s.count = 0;
+    s.ino = 0;
+    uint64_t off = inode_off(m, dir_ino);
+    uint32_t size = u32_at(img, off + 4);
+    uint32_t len = (uint32_t)strlen(name);
+    uint32_t nblocks = (size + m.bs - 1) / m.bs;
+
+    for (uint32_t b = 0; b < nblocks && b < 12; b++) {
+        uint32_t blk = u32_at(img, off + 40 + b * 4);
+        if (blk == 0) continue;
+        const uint8_t* raw = img + (uint64_t)blk * m.bs;
+        uint32_t p = 0;
+        while (p + 8 <= m.bs) {
+            uint32_t rec = u16_at(raw, p + 4);
+            uint32_t ino = u32_at(raw, p);
+            if (rec < 8 || p + rec > m.bs) break;
+            if (ino != 0 && raw[p + 6] == len &&
+                memcmp(raw + p + 8, name, len) == 0) {
+                s.count++;
+                if (s.ino == 0) s.ino = ino;
+            }
+            p += rec;
+        }
+    }
+    return s;
+}
+
 // --- checks ---
 
 static int checks;
@@ -256,7 +299,7 @@ int main(int argc, char** argv) {
     // One image per case, and each at its own address: the page cache keys its
     // pages by device pointer, so two cases sharing a stack slot would read one
     // image's cached pages while looking at another's bytes.
-    static Case cases[4];
+    static Case cases[5];
 
     if (argc < 2) {
         printf("usage: %s <ext2 image>\n", argv[0]);
@@ -449,6 +492,107 @@ int main(int argc, char** argv) {
             if (sub != nullptr) fs->release(fs->priv, sub);
             if (upper != nullptr) fs->release(fs->priv, upper);
             fs->release(fs->priv, top);
+        }
+    }
+
+    // --- E: both removals fail over an existing destination ---
+    //
+    // The third state again, this time with a name to replace. 'moved.txt' is
+    // still there and now names the source, and the inode it used to name has
+    // no name left anywhere. Putting that entry back would either duplicate the
+    // name (dir_reinsert only looks for a free record, never for a live entry
+    // with the same name) or orphan the inode when no free record is big
+    // enough. It is freed instead, which is the only state nothing can be
+    // trapped behind.
+    {
+        Case& c = cases[4];
+        VFS::Filesystem* fs = mount_case(c, argv[1]);
+        check(fs != nullptr, "E: mount");
+        if (fs != nullptr) {
+            Meta m = meta_of(c.bytes);
+            VFS::Node* root = fs->root(fs->priv);
+            VFS::Node* sub = look(fs, root, "sub");
+            VFS::Node* hello = look(fs, root, "hello.txt");
+            check(sub != nullptr && hello != nullptr,
+                  "E: the image has hello.txt and sub/");
+            if (sub != nullptr && hello != nullptr) {
+                uint32_t root_ino = root->ino;
+                uint32_t sub_ino = sub->ino;
+                uint32_t hello_ino = hello->ino;
+
+                char source[128];
+                memset(source, 0, sizeof(source));
+                uint64_t source_len =
+                    fs->read(fs->priv, hello, source, sizeof(source) - 1, 0);
+                check(source_len > 0, "E: hello.txt reads");
+
+                // The destination has to exist before the rename, with content
+                // of its own, so "the name now reads the source" says something
+                // about which file the surviving entry reaches.
+                static const char replaced_text[] = "the replaced file, not the source";
+                VFS::Node* dst = nullptr;
+                int crc = fs->create(fs->priv, sub, "moved.txt", VFS::FT_FILE, &dst);
+                check(crc == 0 && dst != nullptr, "E: created sub/moved.txt");
+                uint32_t dst_ino = dst ? dst->ino : 0;
+                if (dst != nullptr) {
+                    uint64_t n = fs->write(fs->priv, dst, replaced_text,
+                                           sizeof(replaced_text) - 1, 0);
+                    check(n == sizeof(replaced_text) - 1,
+                          "E: the replaced file has content");
+                    fs->release(fs->priv, dst);
+                }
+                fs->release(fs->priv, hello);
+
+                if (dst_ino != 0) {
+                    sync_disk(c);
+                    uint32_t root_blk = block_holding(c.bytes, m, root_ino, "hello.txt");
+                    uint32_t sub_blk = block_holding(c.bytes, m, sub_ino, "moved.txt");
+                    check(inode_links(c.bytes, m, dst_ino) == 1,
+                          "E: the replaced file starts with one link");
+                    disarm();
+                    check(root_blk != 0 && sub_blk != 0 && root_blk != sub_blk,
+                          "E: found both directory blocks");
+
+                    // The old parent's removal fails, and so does the removal
+                    // from the new parent that would take the new name back
+                    // out. The replaced name's removal and the insertion after
+                    // it are let through, or there would be nothing to restore
+                    // and the case would not be the one under test.
+                    Ext2::host_fail_write_block[0] = (int)root_blk;
+                    Ext2::host_fail_write_block[1] = (int)sub_blk;
+                    Ext2::host_fail_write_skip[1] = 2;
+
+                    int rc = fs->rename(fs->priv, root, "hello.txt", sub, "moved.txt");
+                    check(rc == -Errno::EIO, "E: rename reports EIO");
+                    check(Ext2::host_fail_write_block[0] == 0 &&
+                              Ext2::host_fail_write_block[1] == 0,
+                          "E: both faults were taken");
+                    check(exists(fs, root, "hello.txt"), "E: the old name survived");
+
+                    sync_disk(c);
+                    NameScan got = scan_name(c.bytes, m, sub_ino, "moved.txt");
+                    check(got.count == 1, "E: exactly one entry is called moved.txt");
+                    check(got.ino == hello_ino, "E: that entry names the source inode");
+                    check(inode_links(c.bytes, m, dst_ino) == 0,
+                          "E: the replaced inode was given up");
+                    check(inode_dtime(c.bytes, m, dst_ino) != 0,
+                          "E: the replaced inode has a deletion time");
+
+                    VFS::Node* moved = look(fs, sub, "moved.txt");
+                    check(moved != nullptr, "E: moved.txt resolves");
+                    if (moved != nullptr) {
+                        char back[128];
+                        memset(back, 0, sizeof(back));
+                        uint64_t n = fs->read(fs->priv, moved, back,
+                                              sizeof(back) - 1, 0);
+                        check(n == source_len && memcmp(back, source, n) == 0,
+                              "E: moved.txt reads hello.txt's content");
+                        fs->release(fs->priv, moved);
+                    }
+                }
+            }
+            if (sub != nullptr) fs->release(fs->priv, sub);
+            fs->release(fs->priv, root);
         }
     }
 
