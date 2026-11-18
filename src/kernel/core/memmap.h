@@ -27,7 +27,9 @@ struct Mapping {
 // (the caller's handle), or -1.
 int create(uint64_t size);
 
-// Let 'task' attach the region (owner only). 0, or -1.
+// Let 'task' attach the region (owner only). 0, or -1 (unknown id, or not the
+// owner). A target that names no live task is refused with -EINVAL rather than
+// consuming one of the eight slots; when every slot is taken it is -ENOSPC.
 int grant(int id, int task);
 
 // Map the region into the CALLER's address space and fill the address of its

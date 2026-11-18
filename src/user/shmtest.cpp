@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <grv/syscall.h>
 
 // shmtest — the two kinds of mapping:
@@ -129,6 +130,47 @@ int main(int argc, char** argv) {
 
     // A handle we do not own cannot be closed.
     check(grv_shm_close(9999) != 0, "closing an unknown region is refused");
+
+    // --- a grant to a task that names nothing is refused, and burns no slot ---
+    // MAX_GRANT is 8, so twelve refusals prove the failed calls took nothing:
+    // the real grant that follows still has to land. Before the id was checked
+    // each of these returned 0 and the ninth silently filled the table.
+    int slots = grv_shm_create(4096);
+    check(slots > 0, "create the region for the grant checks");
+    if (slots > 0) {
+        int refused = 1;
+        for (int i = 0; i < 12; i++)
+            if (grv_shm_grant(slots, 12000 + i) != -EINVAL) refused = 0;
+        check(refused, "a grant to a task that does not exist is EINVAL");
+
+        const char* xargv[2] = { "shmhelper.elf", "exit" };
+        long child = grv_spawn_bg("shmhelper.elf", xargv, 2);
+        check(child > 0 && grv_shm_grant(slots, (int)child) == 0,
+              "a refused grant leaves its slot free");
+        if (child > 0) {
+            struct grv_msg go;
+            go.from = 0; go.type = MSG_GO; go.a = (unsigned long)slots; go.b = 0;
+            grv_send(child, &go);
+            grv_wait(child);
+        }
+
+        // --- a grantee that dies gives its slot back ---
+        // Twelve deaths against eight slots: without the sweep the ninth grant
+        // fails, because the table still holds the first eight as corpses.
+        int reused = 1;
+        for (int i = 0; i < 12; i++) {
+            long c = grv_spawn_bg("shmhelper.elf", xargv, 2);
+            if (c <= 0) { reused = 0; break; }
+            if (grv_shm_grant(slots, (int)c) != 0) reused = 0;
+            // Send the go message either way, so no child is left waiting.
+            struct grv_msg go;
+            go.from = 0; go.type = MSG_GO; go.a = (unsigned long)slots; go.b = 0;
+            grv_send(c, &go);
+            if (grv_wait(c) != 0) reused = 0;
+        }
+        check(reused, "a task that exits gives its grant slot back");
+        check(grv_shm_close(slots) == 0, "close the grant region");
+    }
 
     if (fails == 0) { printf("shmtest: all checks pass\n"); return 0; }
     printf("shmtest: %d check(s) failed\n", fails);

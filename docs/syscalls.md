@@ -276,7 +276,7 @@ value with a different meaning.
 | 50 | `MAP_FILE` | `path, out*` | 0 or −1; fills `{address, size}` with a read-only, zero-copy mapping |
 | 51 | `MUNMAP` | `address` | 0 or −1 (the address a mapping call returned) |
 | 52 | `SHM_CREATE` | `size` | region id (> 0) or −1 |
-| 53 | `SHM_GRANT` | `id, task` | 0 or −1 (owner only) |
+| 53 | `SHM_GRANT` | `id, task` | 0, or −1 (owner only); `−EINVAL` when `task` names no live task, `−ENOSPC` when the region's 8 grant slots are full |
 | 54 | `SHM_MAP` | `id, out*` | 0 or −1; fills `{address, size}` |
 | 55 | `SHM_CLOSE` | `id` | 0 or −1 (owner only) |
 | 56 | `POWEROFF` | — | does not return: the machine switches off |
@@ -475,6 +475,9 @@ whoever owns them frees them.
 - **A shared region** (`SHM_*`) is anonymous pages one task creates and others
   attach. The id is a handle, but knowing it is not enough: the owner *grants*
   the region to a task (`SHM_GRANT`), so a region is handed over deliberately.
+  A grant names a task that must exist at that moment: an id that names nothing
+  is refused with `-EINVAL` instead of taking one of the region's eight slots,
+  and a grantee that exits gives its slot back.
   It is zeroed on creation and reference counted, so its frames outlive the
   owner if another task still has it attached.
 
