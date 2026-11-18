@@ -317,6 +317,9 @@ namespace VMM {
     }
 
     // Recursively free a table page and everything below it (tables + frames).
+    // Ownership rule: this call owns the table page it is handed and frees it
+    // once its entries are done, so a caller that recurses into a child must
+    // not free that child's page itself.
     // Frames marked PTE_SHARED belong to someone else (an image, a shared
     // region): the mapping goes, the memory does not.
     static void free_space_level(uint64_t table_phys, int level) {
@@ -327,9 +330,8 @@ namespace VMM {
             uint64_t next_phys = entry & 0x000FFFFFFFFFF000;
 
             if (level < 4) {
-                // Intermediate table: recurse, then free the table itself
+                // Intermediate table: the callee frees its own page.
                 free_space_level(next_phys, level + 1);
-                PMM::free_page(next_phys);
             } else if (!(entry & PTE_SHARED)) {
                 // Leaf: a data frame this task owns
                 PMM::free_page(next_phys);
