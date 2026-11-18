@@ -58,6 +58,16 @@ printf -- '-- test_path (the pure path rule)\n'
     -o "$ART/test_path" || fail "test_path: compile failed"
 "$ART/test_path" || fail "test_path: checks failed"
 
+# Not a C program: tearing down an address space is a tree walk that frees
+# pages, so it is driven over a stub frame manager that records every free. On
+# a boot the real PMM silently ignores an already-free frame, which is what hid
+# the double free this pins.
+printf -- '-- test_vmm (address-space teardown)\n'
+"${CXX:-c++}" -O2 -std=c++17 -Isrc \
+    tools/test_vmm.cpp src/kernel/core/vmm.cpp \
+    -o "$ART/test_vmm" || fail "test_vmm: compile failed"
+"$ART/test_vmm" || fail "test_vmm: checks failed"
+
 # Not a C program: the kernel and the libc describe the same syscall records in
 # two headers that cannot include each other, so this is the only place they can
 # be compared.
