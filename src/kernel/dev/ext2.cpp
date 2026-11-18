@@ -1374,6 +1374,9 @@ static uint64_t e2_read(void* priv, VFS::Node* node, void* buf,
     uint64_t done = 0;
     while (done < count) {
         uint64_t pos = offset + done;
+        // Safe for the same reason as the write path: 'offset < n->size' and a
+        // size is at most MAX_FILE_BYTES (the write and truncate paths both
+        // refuse anything longer), so the index fits a uint32_t.
         uint32_t idx = (uint32_t)(pos / bs);
         uint32_t boff = (uint32_t)(pos % bs);
         uint32_t chunk = bs - boff;
@@ -1403,6 +1406,16 @@ static uint64_t e2_write(void* priv, VFS::Node* node, const void* buf,
     E2Node* n = (E2Node*)node->priv;
     if (!f->writable || n->is_dir || count == 0) return 0;
 
+    // i_size is 32 bits, so a file cannot be longer than MAX_FILE_BYTES and a
+    // write that would end past it cannot be recorded. Refuse the whole write
+    // before a block is touched: the alternative is to write the tail anyway and
+    // store a wrapped length, which quietly detaches every earlier block from the
+    // file. 0 is how this backend says "nothing written", and the VFS turns that
+    // into ENOSPC, which is the same answer e2_truncate's -1 gets for the same
+    // limit. A caller therefore never sees a partial write that stops at the
+    // limit: it sees the whole request refused.
+    if (write_past_limit(offset, count)) return 0;
+
     uint64_t flags = irq_save();
 
     Inode in;
@@ -1415,6 +1428,10 @@ static uint64_t e2_write(void* priv, VFS::Node* node, const void* buf,
 
     while (done < count) {
         uint64_t pos = offset + done;
+        // Both casts are safe because write_past_limit() above keeps 'pos' at or
+        // below MAX_FILE_BYTES: that bounds the index by MAX_FILE_BYTES / 1024,
+        // pinned as a compile-time fact in ext2.h, and leaves the in-block offset
+        // a small remainder of the block size.
         uint32_t idx = (uint32_t)(pos / bs);
         uint32_t boff = (uint32_t)(pos % bs);
         uint32_t chunk = bs - boff;
@@ -1446,6 +1463,9 @@ static uint64_t e2_write(void* priv, VFS::Node* node, const void* buf,
     }
 
     if (changed) {
+        // The cast is exact, not a truncation: write_past_limit() refused any
+        // request whose end is above MAX_FILE_BYTES, so offset + done fits the
+        // inode's 32-bit size field.
         if (offset + done > in.size) in.size = (uint32_t)(offset + done);
         uint32_t now = (uint32_t)Rtc::seconds_now();
         in.mtime = now;
@@ -1462,7 +1482,7 @@ static int e2_truncate(void* priv, VFS::Node* node, uint64_t size) {
     Fs* f = (Fs*)priv;
     E2Node* n = (E2Node*)node->priv;
     if (!f->writable || n->is_dir) return -1;
-    if (size > 0xFFFFFFFFull) return -1;   // i_size is 32 bits here
+    if (size > MAX_FILE_BYTES) return -1;   // i_size is 32 bits here
 
     uint64_t flags = irq_save();
 
