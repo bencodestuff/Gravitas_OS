@@ -65,8 +65,6 @@ shell grammar is, all in code you can read and change.
 - The `Block::Device` contract is: a name, a size, and read/write of a 512-byte
   sector run, so a filesystem does not care where its bytes come from.
 
-![A power cut leaves the ext2 image dirty, and the next boot refuses it](docs/images/phase7-power-cut.png)
-
 ### Processes, IPC and memory
 - Round-robin preemptive scheduling at 50 Hz. Each task owns its CR3, a kernel
   stack with a canary, an FPU/SSE save area, its `brk`, its working directory
