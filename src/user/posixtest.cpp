@@ -3,8 +3,10 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <string.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <grv/syscall.h>
 
 // posixtest — exercises the POSIX facade (fcntl/unistd/sys-stat/dirent) against
 // the filesystem and the console descriptors 0/1/2. Prints PASS/FAIL for the
@@ -15,8 +17,94 @@ static void check(int ok, const char* what) {
     if (!ok) { printf("posixtest: FAIL: %s\n", what); fails++; }
 }
 
+// --- five readers on one pipe ---------------------------------------------
+// A pipe parks blocked tasks by task id in a fixed four-slot list, and every
+// wake path walks that list. Five concurrent readers therefore force the one
+// case the kernel must survive: a reader that cannot be registered must not be
+// parked with no way back. Writers then write and close, and every reader must
+// come away with its byte (or EOF, on the pipe that never gets one) instead of
+// sleeping forever.
+#define MSG_GO     0x7101
+#define MSG_RESULT 0x7102
+#define READERS    5
+
+// Reader mode: the parent spawned this copy of the program with the pipe's two
+// ends. argv[1] is "pipe-read", argv[2] the read end, argv[3] the write end it
+// inherited and must drop: a reader that kept its own write end would hold the
+// writer count above zero, so no reader could ever reach EOF.
+static int pipe_reader(int argc, char** argv) {
+    if (argc < 4) return 2;
+    int rd = atoi(argv[2]);
+    int wr = atoi(argv[3]);
+    grv_close(wr);
+    struct grv_msg go;
+    if (grv_recv(&go, 1) != 0 || go.type != MSG_GO) return 3;
+    char c = 0;
+    long n = grv_read_fd(rd, &c, 1);
+    struct grv_msg out;
+    out.from = 0;
+    out.type = MSG_RESULT;
+    out.a = n < 0 ? (unsigned long)-1 : (unsigned long)n;
+    out.b = (unsigned char)c;
+    grv_send((long)go.from, &out);     // the sender id is kernel-stamped
+    return n < 0 ? 1 : 0;
+}
+
+// Five readers on one fresh pipe, all blocked before anything happens, then
+// either five bytes and a close, or just a close. 'want_data' picks which.
+static void pipe_competing_readers(int want_data) {
+    int pfd[2];
+    if (grv_pipe(pfd) != 0) { check(0, "pipe() for five readers"); return; }
+    char rd[8], wr[8];
+    snprintf(rd, sizeof rd, "%d", pfd[0]);
+    snprintf(wr, sizeof wr, "%d", pfd[1]);
+
+    long pid[READERS];
+    int spawned = 0;
+    for (int i = 0; i < READERS; i++) {
+        const char* av[4] = {"posixtest.elf", "pipe-read", rd, wr};
+        pid[i] = grv_spawn_bg("posixtest.elf", av, 4);
+        if (pid[i] > 0) spawned++;
+    }
+    check(spawned == READERS, want_data ? "spawn five readers (data)"
+                                        : "spawn five readers (EOF)");
+    for (int i = 0; i < READERS; i++) {
+        if (pid[i] <= 0) continue;
+        struct grv_msg go;
+        go.from = 0; go.type = MSG_GO; go.a = 0; go.b = 0;
+        grv_send(pid[i], &go);
+    }
+
+    // Give every reader time to block on the empty pipe: that is the state
+    // under test, with more waiters than the kernel's list can hold.
+    grv_sleep(300);
+    if (want_data)
+        check(grv_write_fd(pfd[1], "ABCDE", READERS) == READERS,
+              "write five bytes to a contended pipe");
+    grv_close(pfd[1]);                 // last writer: data is in, or EOF
+    grv_close(pfd[0]);                 // our own read end is no reader
+
+    int got = 0, with_bytes = 0;
+    unsigned long end = grv_ticks() + 200;    // 4 s at 50 Hz
+    while (got < READERS && (long)(grv_ticks() - end) < 0) {
+        struct grv_msg m;
+        if (grv_recv(&m, 0) == 0 && m.type == MSG_RESULT) {
+            got++;
+            if (m.a != 0) with_bytes++;
+        } else {
+            grv_sleep(10);
+        }
+    }
+    check(got == READERS, want_data ? "all five readers reported after data"
+                                    : "all five readers reported EOF");
+    check(with_bytes == (want_data ? READERS : 0),
+          want_data ? "every reader got its byte"
+                    : "no reader got a byte on the empty pipe");
+}
+
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;
+    if (argc > 1 && argv[1] != 0 && strcmp(argv[1], "pipe-read") == 0)
+        return pipe_reader(argc, argv);
 
     const char* path = "/tmp/posix.txt";
     unlink(path);   // clean slate if a previous run left it
@@ -98,6 +186,12 @@ int main(int argc, char** argv) {
 
     check(unlink(path) == 0, "unlink");
     check(access(path, F_OK) == -1, "gone after unlink");
+
+    // --- five readers on one pipe ---------------------------------------
+    // Data first, then the empty pipe: the second case exercises the close
+    // wake, where the last writer's exit is the only thing a reader can run on.
+    pipe_competing_readers(1);
+    pipe_competing_readers(0);
 
     if (fails == 0) { printf("posixtest: all checks pass\n"); return 0; }
     printf("posixtest: %d check(s) failed\n", fails);

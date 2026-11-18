@@ -548,10 +548,15 @@ static void pipe_wake(int* ids, int* n) {
 // than pipe_wake (an IPC message, say) comes back through the same loop while
 // its id is still in the list, and two copies would eat two of the four slots
 // for one task.
-static void pipe_wait_add(int* ids, int* n, int id) {
+//
+// False means the list is full, and then the caller must NOT block: every wake
+// path works by walking the registered ids, so a task asleep with no id in the
+// list can never be reached. Answering honestly is what keeps that impossible.
+static bool pipe_wait_add(int* ids, int* n, int id) {
     for (int i = 0; i < *n; i++)
-        if (ids[i] == id) return;
-    if (*n < MAX_PIPE_WAITERS) ids[(*n)++] = id;
+        if (ids[i] == id) return true;
+    if (*n < MAX_PIPE_WAITERS) { ids[(*n)++] = id; return true; }
+    return false;
 }
 
 // Drop one id from a waiter list, keeping the order of the rest. The lists are
@@ -590,9 +595,16 @@ static long pipe_read_fd(FileHandle* h, void* buf, uint64_t count) {
             return (long)got;
         }
         if (p->writers == 0) return 0;         // EOF: the last writer has closed
-        pipe_wait_add(p->rd_wait, &p->rd_n, Sched::current_task_id());
-        Sched::block_until_woken();
-        Sched::yield();                        // returns with interrupts on
+        if (pipe_wait_add(p->rd_wait, &p->rd_n, Sched::current_task_id())) {
+            Sched::block_until_woken();
+            Sched::yield();                    // returns with interrupts on
+        } else {
+            // No slot to be woken through. Sleep on the timer instead (the
+            // same fallback IPC recv uses with no mailbox slot): the task
+            // wakes itself and re-tests the ring, so no wake is needed for it.
+            Sched::sleep_current(2);
+            Sched::yield();
+        }
         asm volatile("cli");
     }
 }
@@ -613,9 +625,15 @@ static long pipe_write_fd(FileHandle* h, const void* buf, uint64_t count) {
         }
         if (put > 0) pipe_wake(p->rd_wait, &p->rd_n);  // data available
         if (put == count) return (long)put;
-        pipe_wait_add(p->wr_wait, &p->wr_n, Sched::current_task_id());
-        Sched::block_until_woken();
-        Sched::yield();
+        if (pipe_wait_add(p->wr_wait, &p->wr_n, Sched::current_task_id())) {
+            Sched::block_until_woken();
+            Sched::yield();
+        } else {
+            // Full list: a park here would never be woken. Nap and re-test,
+            // as the reader side does.
+            Sched::sleep_current(2);
+            Sched::yield();
+        }
         asm volatile("cli");
     }
 }
