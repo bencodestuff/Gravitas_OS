@@ -48,6 +48,12 @@ constexpr uint32_t INCOMPAT_RECOVER  = 0x0004;
 constexpr uint32_t INCOMPAT_EXTENTS  = 0x0040;
 constexpr uint32_t INCOMPAT_64BIT = 0x0080;
 constexpr uint32_t S_IFREG_BIT = 0100000;
+
+// s_state. EXT2_VALID_FS set means the last mount set it back after a sync;
+// clear means a writer went down between syncs and the medium may hold half a
+// write. EXT2_ERROR_FS (0x0002) records errors a cleaner run found; it does not
+// make the image unclean by itself.
+constexpr uint16_t VALID_FS = 0x0001;
 constexpr uint32_t S_IFDIR_BIT = 0040000;
 
 #ifdef EXT2_HOST_TEST
@@ -152,6 +158,8 @@ struct Dev {
     uint32_t groups;
     uint32_t free_blocks;      // as in the superblock, kept current in memory
     uint32_t free_inodes;
+    uint16_t state;            // s_state as last read or written
+    bool     dirty_marked;     // VALID_FS cleared on the medium, not yet set back
     uint32_t feature_incompat;
     bool     has_filetype;
     Track*   tracked;          // live inode references held by Nodes
@@ -358,6 +366,36 @@ static bool zero_block(Fs* f, uint32_t blk) {
                                 (off + done) / Block::SECTOR, 1, zero))
             return false;
     }
+    return true;
+}
+
+// --- clean state ---
+//
+// s_state is the one field that carries a promise across a power cut: set
+// (EXT2_VALID_FS) after a sync, clear from the first write until the next one.
+// It only means anything if it reaches the medium before the writes it is meant
+// to protect, so the first mutation of a session writes it and flushes the
+// device before returning. That flush is cheap there and only there: at that
+// point the superblock page is the only dirty page the cache holds, so nothing
+// else is forced out ahead of its time.
+//
+// Called at the top of every mutating operation, with interrupts still on: the
+// cache takes its own lock and the flush may reach the drive.
+static bool mark_dirty(Fs* f) {
+    if (!f->writable || f->dev->dirty_marked) return true;
+    if ((f->dev->state & VALID_FS) == 0) {
+        // Already clear on the medium, so there is nothing to write: this boot
+        // inherited a dirty image (a read-only mount let it be used) and every
+        // write from here on is covered by the flag already there.
+        f->dev->dirty_marked = true;
+        return true;
+    }
+    uint16_t dirty = 0;
+    if (!write_bytes(f, 1024 + 58, &dirty, sizeof(dirty))) return false;
+    if (!BlockCache::flush(f->dev->dev)) return false;
+    f->dev->state = dirty;
+    f->dev->dirty_marked = true;
+    kprint("[Ext2] s_state cleared: writing, so the image is dirty until sync\n");
     return true;
 }
 
@@ -1451,6 +1489,11 @@ static uint64_t e2_write(void* priv, VFS::Node* node, const void* buf,
     // limit: it sees the whole request refused.
     if (write_past_limit(offset, count)) return 0;
 
+    // The dirty flag goes to the medium before the first byte it protects.
+    // Failing to write it means the write cannot be made honest, so nothing is
+    // written at all.
+    if (!mark_dirty(f)) return 0;
+
     uint64_t flags = irq_save();
 
     Inode in;
@@ -1518,6 +1561,7 @@ static int e2_truncate(void* priv, VFS::Node* node, uint64_t size) {
     E2Node* n = (E2Node*)node->priv;
     if (!f->writable || n->is_dir) return -1;
     if (size > MAX_FILE_BYTES) return -1;   // i_size is 32 bits here
+    if (!mark_dirty(f)) return -Errno::EIO;
 
     uint64_t flags = irq_save();
 
@@ -1575,6 +1619,7 @@ static int e2_create(void* priv, VFS::Node* dir, const char* name, VFS::FileType
     // a slash. A name that is merely too long is refused in the VFS path layer
     // as ENAMETOOLONG before it gets here, so EINVAL is what is left.
     if (!name_valid(name, &len)) return -Errno::EINVAL;
+    if (!mark_dirty(f)) return -Errno::EIO;
 
     uint64_t flags = irq_save();
 
@@ -1686,6 +1731,7 @@ static int e2_unlink(void* priv, VFS::Node* dir, const char* name) {
     if (dir->type != VFS::FT_DIR) return -Errno::ENOTDIR;
     uint32_t len = 0;
     if (!name_valid(name, &len)) return -Errno::EINVAL;
+    if (!mark_dirty(f)) return -Errno::EIO;
 
     uint64_t flags = irq_save();
 
@@ -1761,6 +1807,7 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
     if (flen == 1 && from[0] == '.') {
         return -Errno::EINVAL;
     }
+    if (!mark_dirty(f)) return -Errno::EIO;
 
     uint64_t flags = irq_save();
 
@@ -2048,17 +2095,32 @@ static int e2_statfs(void* priv, VFS::StatFs* out) {
 }
 
 // Writes are held in the page cache, so "sync" means: stamp the superblock and
-// counts, write every dirty page back, then flush the drive's own cache. That
-// order matters, because the drive flush only covers writes it has already
-// seen. The counts are written as they change.
+// counts, put the clean flag back, write every dirty page back, then flush the
+// drive's own cache. That order matters, because the drive flush only covers
+// writes it has already seen, and the clean flag must not be on the medium
+// before the writes it vouches for. The counts are written as they change.
 static int e2_sync(void* priv) {
     Fs* f = (Fs*)priv;
+    bool ok = true;
     if (f->writable) {
         uint32_t now = (uint32_t)Rtc::seconds_now();
-        write_bytes(f, 1024 + 48, &now, sizeof(now));
-        save_counts(f);
+        ok = write_bytes(f, 1024 + 48, &now, sizeof(now)) && ok;
+        ok = save_counts(f) && ok;
+        // Only a session that cleared the flag writes it back; a sync on an
+        // image that was never written has nothing to vouch for.
+        if (f->dev->dirty_marked) {
+            uint16_t clean = VALID_FS;
+            ok = write_bytes(f, 1024 + 58, &clean, sizeof(clean)) && ok;
+        }
     }
-    return BlockCache::flush(f->dev->dev) ? 0 : -1;
+    ok = BlockCache::flush(f->dev->dev) && ok;
+    // The flag counts as clean only once the page holding it is on the medium:
+    // a failed writeback leaves it dirty so the next write re-arms it.
+    if (ok && f->writable && f->dev->dirty_marked) {
+        f->dev->state = VALID_FS;
+        f->dev->dirty_marked = false;
+    }
+    return ok ? 0 : -1;
 }
 
 static VFS::Filesystem make_fs(bool writable) {
@@ -2089,6 +2151,14 @@ static VFS::Filesystem make_fs(bool writable) {
 // the same disk twice must not produce two sets of free counts.
 static Dev* devices = nullptr;
 
+// Why the last mount() returned nullptr, as an errno from the kernel's own set.
+// There is no mount syscall to carry it, so the boot log names it and callers
+// can ask. EIO is the closest existing code for a filesystem that has to be
+// checked and repaired outside this kernel (there is no EUCLEAN here).
+static long last_mount_error = 0;
+
+long mount_error() { return last_mount_error; }
+
 static Dev* dev_find(Block::Device* dev) {
     for (Dev* d = devices; d; d = d->next)
         if (d->dev == dev) return d;
@@ -2096,6 +2166,7 @@ static Dev* dev_find(Block::Device* dev) {
 }
 
 VFS::Filesystem* mount(Block::Device* dev, bool writable, uint32_t root_ino) {
+    last_mount_error = 0;
     if (dev == nullptr) return nullptr;
 
     Dev* d = dev_find(dev);
@@ -2161,6 +2232,8 @@ VFS::Filesystem* mount(Block::Device* dev, bool writable, uint32_t root_ino) {
         probe.groups = groups;
         probe.free_blocks = sb.free_blocks_count;
         probe.free_inodes = sb.free_inodes_count;
+        probe.state = sb.state;
+        probe.dirty_marked = false;
         probe.feature_incompat = sb.rev_level >= 1 ? sb.feature_incompat : 0;
         probe.has_filetype = (probe.feature_incompat & INCOMPAT_FILETYPE) != 0;
         probe.tracked = nullptr;
@@ -2179,6 +2252,21 @@ VFS::Filesystem* mount(Block::Device* dev, bool writable, uint32_t root_ino) {
         (d->feature_incompat & (INCOMPAT_EXTENTS | INCOMPAT_RECOVER |
                                 INCOMPAT_64BIT)))
         return nullptr;
+
+    // An image the last mount left dirty may hold half a write, and there is no
+    // fsck in this kernel to tell how much of it landed. Refuse the write mount
+    // and say why, rather than hand a damaged filesystem to the layer above:
+    // the boot falls back to RAM, and repairing the image is a host job. A
+    // read-only mount is still allowed, because it cannot make the damage
+    // worse. A second mount of a disk this boot already marked is ours, not a
+    // leftover, so it passes.
+    if (writable && !d->dirty_marked && (d->state & VALID_FS) == 0) {
+        last_mount_error = Errno::EIO;
+        kprint("[Ext2] s_state=");
+        kprint_hex(d->state);
+        kprint(" (not clean); refusing a read-write mount (EIO)\n");
+        return nullptr;
+    }
 
     Fs* f = new Fs;
     if (f == nullptr) return nullptr;

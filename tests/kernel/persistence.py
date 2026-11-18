@@ -21,6 +21,7 @@ over an existing name fails with ENOSPC, and requires the name it was replacing
 to survive the reboot and e2fsck. Each test owns its own image, so one failing
 does not decide the other.
 """
+
 import atexit
 import os
 import re
@@ -39,8 +40,9 @@ PRISTINE = os.path.join(ROOT, "iso_root", "disk.img")
 def _prepare():
     """Make a writable copy of the image the boot would otherwise snapshot."""
     if not os.path.exists(PRISTINE):
-        raise SystemExit("persistence: iso_root/disk.img missing - "
-                         "run 'ninja iso' first")
+        raise SystemExit(
+            "persistence: iso_root/disk.img missing - run 'ninja iso' first"
+        )
     if shutil.which("e2fsck") is None:
         raise SystemExit("persistence: e2fsck is missing (install e2fsprogs)")
     tmp = tempfile.mkdtemp(prefix="gravitas-persist-")
@@ -59,7 +61,7 @@ ROOT_TMPDIR, ROOT_DISK = _prepare()
 # The full-disk rename test makes its own, much smaller image (see _full_disk):
 # it deliberately fills every block, and filling 16 MB a page at a time through
 # the guest costs minutes of QEMU for the same end state.
-FULL_BLOCKS = 2048   # 2 MB
+FULL_BLOCKS = 2048  # 2 MB
 
 
 def _full_disk():
@@ -79,15 +81,32 @@ def _full_disk():
     stage = os.path.join(tmp, "stage")
     os.makedirs(os.path.join(stage, "root"))
     image = os.path.join(tmp, "disk.img")
-    subprocess.check_call([
-        "mke2fs", "-q", "-t", "ext2", "-b", "1024",
-        "-O", "^dir_index,^resize_inode",
-        "-N", "256",
-        "-E", "root_owner=0:0",
-        "-d", stage, "-F", "-L", "gravitas",
-        image, str(FULL_BLOCKS),
-    ], env=dict(os.environ, SOURCE_DATE_EPOCH="946684800"))
+    subprocess.check_call(
+        [
+            "mke2fs",
+            "-q",
+            "-t",
+            "ext2",
+            "-b",
+            "1024",
+            "-O",
+            "^dir_index,^resize_inode",
+            "-N",
+            "256",
+            "-E",
+            "root_owner=0:0",
+            "-d",
+            stage,
+            "-F",
+            "-L",
+            "gravitas",
+            image,
+            str(FULL_BLOCKS),
+        ],
+        env=dict(os.environ, SOURCE_DATE_EPOCH="946684800"),
+    )
     return tmp, image
+
 
 # The group's first guest boots on the copy, not on the repo image.
 BOOT = {"disk_image": DISK}
@@ -117,8 +136,9 @@ def cat(g, path, expected):
     run(g, "cat " + path)
     out = g.since(mark)
     if expected not in out:
-        g.fail("cat %s did not print %r; it printed:\n%s"
-               % (path, expected, out.strip()))
+        g.fail(
+            "cat %s did not print %r; it printed:\n%s" % (path, expected, out.strip())
+        )
 
 
 def leave(g, why):
@@ -133,8 +153,12 @@ def leave(g, why):
 
 def fsck(path):
     """Run e2fsck read-only; returns (returncode, output)."""
-    p = subprocess.run(["e2fsck", "-fn", path], stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT, text=True)
+    p = subprocess.run(
+        ["e2fsck", "-fn", path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
     return p.returncode, p.stdout.strip()
 
 
@@ -144,8 +168,9 @@ def disk_writes_survive_reboot(g):
     # this test did not cause.
     rc, out = fsck(DISK)
     if rc != 0:
-        g.fail("the copied image was not clean before boot (e2fsck rc %d):\n%s"
-               % (rc, out))
+        g.fail(
+            "the copied image was not clean before boot (e2fsck rc %d):\n%s" % (rc, out)
+        )
 
     # First boot: write under /disk, including an overwrite of an image file
     # and a file created then removed.
@@ -177,13 +202,13 @@ def disk_writes_survive_reboot(g):
         listing = g2.since(mark)
         for name in ("hello-copy.txt", "big-copy.bin"):
             if not re.search(r"^%s$" % re.escape(name), listing, re.M):
-                g2.fail("ls /disk/persist lost %r:\n%s"
-                        % (name, listing.strip()))
+                g2.fail("ls /disk/persist lost %r:\n%s" % (name, listing.strip()))
         if re.search(r"^gone\.txt$", listing, re.M):
             g2.fail("the removed file came back:\n%s" % listing.strip())
         if re.search(r"^deep/$", listing, re.M):
-            g2.fail("the moved directory is still in its old parent:\n%s"
-                    % listing.strip())
+            g2.fail(
+                "the moved directory is still in its old parent:\n%s" % listing.strip()
+            )
 
         # And it arrived in its new parent, with its own entry intact.
         mark = g2.mark()
@@ -191,8 +216,7 @@ def disk_writes_survive_reboot(g):
         listing = g2.since(mark)
         for name in ("nested.txt", "moved/"):
             if not re.search(r"^%s$" % re.escape(name), listing, re.M):
-                g2.fail("ls /disk/sub lost %r:\n%s"
-                        % (name, listing.strip()))
+                g2.fail("ls /disk/sub lost %r:\n%s" % (name, listing.strip()))
 
         # Still writable after a reboot, into the directory rm emptied a slot
         # in. That used to split a freed record below ext2's 12-byte minimum
@@ -207,8 +231,7 @@ def disk_writes_survive_reboot(g):
     # A clean ext2 image, not just one that happens to read back.
     rc, out = fsck(DISK)
     if rc != 0:
-        g.fail("e2fsck -fn says the disk is not clean (rc %d):\n%s"
-               % (rc, out))
+        g.fail("e2fsck -fn says the disk is not clean (rc %d):\n%s" % (rc, out))
     print("  e2fsck clean: %s" % out.splitlines()[-1], flush=True)
 
     shutil.rmtree(TMPDIR, ignore_errors=True)
@@ -225,8 +248,9 @@ def root_writes_survive_reboot(g):
     # this one boots its own, the way tests/kernel/power.py does.
     rc, out = fsck(ROOT_DISK)
     if rc != 0:
-        g.fail("the copied image was not clean before boot (e2fsck rc %d):\n%s"
-               % (rc, out))
+        g.fail(
+            "the copied image was not clean before boot (e2fsck rc %d):\n%s" % (rc, out)
+        )
 
     # First boot. The file starts from the image's own /hello.txt, and a fresh
     # image has no /root-persist.txt, so nothing is read before it is written.
@@ -244,19 +268,22 @@ def root_writes_survive_reboot(g):
     # Second boot on the same file: both writes are on the medium.
     second = Guest("persistence-root-second", disk_image=ROOT_DISK)
     try:
-        cat(second, "/root-persist.txt",
-            "Hello from the Gravitas tar filesystem!")
+        cat(second, "/root-persist.txt", "Hello from the Gravitas tar filesystem!")
 
         # The image's line and the appended one: the copy-up carried the
         # original bytes across, and the append landed on top of them.
         mark = second.mark()
         run(second, "cat /hello.txt")
         text = second.since(mark)
-        for want in ("Hello from the Gravitas tar filesystem!",
-                     "Hello from the ext2 disk"):
+        for want in (
+            "Hello from the Gravitas tar filesystem!",
+            "Hello from the ext2 disk",
+        ):
             if want not in text:
-                second.fail("cat /hello.txt lost %r after the reboot; it read:"
-                            "\n%s" % (want, text.strip()))
+                second.fail(
+                    "cat /hello.txt lost %r after the reboot; it read:"
+                    "\n%s" % (want, text.strip())
+                )
 
         leave(second, "root second boot")
     finally:
@@ -265,8 +292,7 @@ def root_writes_survive_reboot(g):
     # A clean ext2 image, not just one that happens to read back.
     rc, out = fsck(ROOT_DISK)
     if rc != 0:
-        g.fail("e2fsck -fn says the root image is not clean (rc %d):\n%s"
-               % (rc, out))
+        g.fail("e2fsck -fn says the root image is not clean (rc %d):\n%s" % (rc, out))
     print("  e2fsck clean (root): %s" % out.splitlines()[-1], flush=True)
 
     shutil.rmtree(ROOT_TMPDIR, ignore_errors=True)
@@ -286,8 +312,10 @@ def failed_rename_keeps_destination(g):
     tmp, image = _full_disk()
     rc, out = fsck(image)
     if rc != 0:
-        g.fail("the prepared image was not clean before boot (e2fsck rc %d):\n%s"
-               % (rc, out))
+        g.fail(
+            "the prepared image was not clean before boot (e2fsck rc %d):\n%s"
+            % (rc, out)
+        )
 
     first = Guest("persistence-renamefull", disk_image=image)
     try:
@@ -310,8 +338,7 @@ def failed_rename_keeps_destination(g):
         listing = second.since(mark)
         for name in ("a00", "b01"):
             if not re.search(r"^%s$" % re.escape(name), listing, re.M):
-                second.fail("the failed rename lost %r:\n%s"
-                            % (name, listing.strip()))
+                second.fail("the failed rename lost %r:\n%s" % (name, listing.strip()))
         leave(second, "rename-full second boot")
     finally:
         second.close()
@@ -320,9 +347,89 @@ def failed_rename_keeps_destination(g):
     # kernel reads back.
     rc, out = fsck(image)
     if rc != 0:
-        g.fail("e2fsck -fn says the full-disk image is not clean (rc %d):\n%s"
-               % (rc, out))
+        g.fail(
+            "e2fsck -fn says the full-disk image is not clean (rc %d):\n%s" % (rc, out)
+        )
     print("  e2fsck clean (full disk): %s" % out.splitlines()[-1], flush=True)
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def superblock_state(path):
+    """s_state out of the image, read the way e2fsck reads it.
+
+    It sits at byte 1024 + 58 in the superblock; bit 0 (EXT2_VALID_FS) is the
+    clean flag. Read from the file, not through the guest, because the point is
+    what the medium holds after the machine died.
+    """
+    with open(path, "rb") as f:
+        f.seek(1024 + 58)
+        return int.from_bytes(f.read(2), "little")
+
+
+@test
+def power_cut_marks_the_image_dirty(g):
+    # A machine that loses power between writes leaves the clean flag clear, and
+    # the next boot has to notice instead of mounting the image as if nothing
+    # happened. The shell has no background jobs yet, so the write is cut in
+    # flight rather than started behind the prompt: either way nothing has been
+    # synced, which is exactly the state the flag describes.
+    tmp, image = _prepare()
+    rc, out = fsck(image)
+    if rc != 0:
+        g.fail(
+            "the copied image was not clean before boot (e2fsck rc %d):\n%s" % (rc, out)
+        )
+
+    first = Guest("persistence-powercut", disk_image=image)
+    try:
+        # This lands, and marks the image dirty on the medium. No sync follows.
+        run(first, "mkdir -p /disk/powercut")
+        # Then a bigger write with the power cut still coming.
+        first.shell("cp /disk/big.bin /disk/powercut/copy.bin")
+        first.power_cut()
+    finally:
+        first.close()
+
+    state = superblock_state(image)
+    if state & 0x0001:
+        g.fail(
+            "the image still says it is clean (s_state=0x%04x) after a "
+            "power cut, so the next boot would trust it" % state
+        )
+    print("  s_state=0x%04x on the medium after the cut" % state, flush=True)
+
+    # Second boot on the same file. The disk must be refused by name and the
+    # machine must still come up, on RAM. Mounting it, or dying on it, fails.
+    second = Guest("persistence-powercut-second", disk_image=image)
+    try:
+        second.expect(
+            "[Ext2] s_state=0x0000000000000000 (not clean); "
+            "refusing a read-write mount (EIO)"
+        )
+        second.expect("[Ext2] the disk is not clean; leaving it alone")
+        second.expect("[VFS] Mounted / (overlay: ramfs over tarfs).")
+    finally:
+        second.close()
+
+    # Refusing is not a dead end: a person repairs the image on the host, and
+    # what comes back is a clean filesystem. The forbidden outcome is a boot
+    # that mounts the damage silently.
+    p = subprocess.run(
+        ["e2fsck", "-fy", image],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if p.returncode not in (0, 1):
+        g.fail(
+            "e2fsck -fy could not repair the image (rc %d):\n%s"
+            % (p.returncode, p.stdout.strip())
+        )
+    rc, out = fsck(image)
+    if rc != 0:
+        g.fail("the repaired image is still not clean (rc %d):\n%s" % (rc, out))
+    print("  e2fsck clean after repair: %s" % out.splitlines()[-1], flush=True)
 
     shutil.rmtree(tmp, ignore_errors=True)
 

@@ -14,6 +14,7 @@ Hard-won rules baked in here:
   * Waits are anchored on the serial log, never a fixed sleep: a wedged step
     fails on its timeout instead of passing on a lucky sleep.
 """
+
 import os
 import re
 import json
@@ -25,11 +26,11 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCREEN_W, SCREEN_H = 1280, 800      # the guest's framebuffer
-CURSOR = 1                          # the pointer hotspot reaches the last pixel
-                                    # (the kernel clips the sprite at the edge)
+SCREEN_W, SCREEN_H = 1280, 800  # the guest's framebuffer
+CURSOR = 1  # the pointer hotspot reaches the last pixel
+# (the kernel clips the sprite at the edge)
 TASKBAR_H = 24
-MENU_W, MENU_ITEM_H = 150, 22       # WM launcher geometry (src/user/wm.cpp)
+MENU_W, MENU_ITEM_H = 150, 22  # WM launcher geometry (src/user/wm.cpp)
 
 
 class TestFailure(Exception):
@@ -66,8 +67,7 @@ class Guest:
     # it. 15ms is ~2.5x faster than the old 40ms and still green across runs.
     PACE = 0.03
 
-    def __init__(self, name, disk=True, scratch=False, virtio=False,
-                 disk_image=None):
+    def __init__(self, name, disk=True, scratch=False, virtio=False, disk_image=None):
         self.name = name
         self.disk = disk
         self.scratch = scratch
@@ -158,26 +158,36 @@ class Guest:
             # (1.0) interface, whose registers sit behind PCI capabilities.
             if self.disk:
                 ctrl += [
-                    "-drive", "if=none,id=disk0,file=%s,format=raw%s" % (disk, snap),
-                    "-device", "virtio-blk-pci,drive=disk0,"
-                               "disable-modern=on,disable-legacy=off",
+                    "-drive",
+                    "if=none,id=disk0,file=%s,format=raw%s" % (disk, snap),
+                    "-device",
+                    "virtio-blk-pci,drive=disk0,disable-modern=on,disable-legacy=off",
                 ]
             if self.scratch:
                 ctrl += [
-                    "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch_img,
-                    "-device", "virtio-blk-pci,drive=scratch0,"
-                               "disable-modern=on,disable-legacy=off",
+                    "-drive",
+                    "if=none,id=scratch0,file=%s,format=raw" % scratch_img,
+                    "-device",
+                    "virtio-blk-pci,drive=scratch0,"
+                    "disable-modern=on,disable-legacy=off",
                 ]
         else:
             # A group may ask for no drive (see BOOT in tests/kernel/fallback.py):
             # the disk is then only the Limine module, which is the path a
             # machine without a disk takes.
             ctrl = [
-                "-device", "piix4-ide,id=ideb",
-            ] + ([
-                "-drive", "if=none,id=disk0,file=%s,format=raw%s" % (disk, snap),
-                "-device", "ide-hd,drive=disk0,bus=ideb.0",
-            ] if self.disk else [])
+                "-device",
+                "piix4-ide,id=ideb",
+            ] + (
+                [
+                    "-drive",
+                    "if=none,id=disk0,file=%s,format=raw%s" % (disk, snap),
+                    "-device",
+                    "ide-hd,drive=disk0,bus=ideb.0",
+                ]
+                if self.disk
+                else []
+            )
             # One drive is the realistic machine and the default; a second one
             # is asked for only where the ATA *write* path should be exercised
             # (the kernel treats a drive besides the data disk as scratch and
@@ -187,28 +197,45 @@ class Guest:
             # drive-select bug hid here until the single-drive case was booted.
             if self.scratch:
                 ctrl += [
-                    "-drive", "if=none,id=scratch0,file=%s,format=raw" % scratch_img,
-                    "-device", "ide-hd,drive=scratch0,bus=ideb.0",
+                    "-drive",
+                    "if=none,id=scratch0,file=%s,format=raw" % scratch_img,
+                    "-device",
+                    "ide-hd,drive=scratch0,bus=ideb.0",
                 ]
-        self.qemu = subprocess.Popen([
-            "qemu-system-x86_64", "-cdrom", iso, "-m", "512M",
-            # q35 boots in ~3.4s against the default i440fx's ~7.3s: the older
-            # machine's IDE path makes Limine's read of the (tens of MB) tar
-            # module the slowest thing in the whole suite. Both machines are
-            # exercised by hand, and the kernel is happy on either.
-            "-machine", "q35",
-            *ctrl,
-            "-display", "none", "-no-reboot", *accel,
-            "-serial", "file:" + self.log_path,
-            "-monitor", "unix:%s,server,nowait" % self.sock_path,
-            # QMP is needed for input the HMP cannot express (the wheel).
-            "-qmp", "unix:%s,server,nowait" % self.qmp_path,
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.qemu = subprocess.Popen(
+            [
+                "qemu-system-x86_64",
+                "-cdrom",
+                iso,
+                "-m",
+                "512M",
+                # q35 boots in ~3.4s against the default i440fx's ~7.3s: the older
+                # machine's IDE path makes Limine's read of the (tens of MB) tar
+                # module the slowest thing in the whole suite. Both machines are
+                # exercised by hand, and the kernel is happy on either.
+                "-machine",
+                "q35",
+                *ctrl,
+                "-display",
+                "none",
+                "-no-reboot",
+                *accel,
+                "-serial",
+                "file:" + self.log_path,
+                "-monitor",
+                "unix:%s,server,nowait" % self.sock_path,
+                # QMP is needed for input the HMP cannot express (the wheel).
+                "-qmp",
+                "unix:%s,server,nowait" % self.qmp_path,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
         self.sock = self._connect(self.sock_path)
         self.sock.settimeout(1.0)
         try:
-            self.sock.recv(65536)   # monitor banner
+            self.sock.recv(65536)  # monitor banner
         except OSError:
             pass
         self.sock.settimeout(None)
@@ -216,7 +243,7 @@ class Guest:
         self.qmp = self._connect(self.qmp_path)
         self.qmp.settimeout(2.0)
         try:
-            self.qmp.recv(65536)    # QMP greeting
+            self.qmp.recv(65536)  # QMP greeting
         except OSError:
             pass
         self._qmp({"execute": "qmp_capabilities"})
@@ -245,6 +272,18 @@ class Guest:
                 return True
             time.sleep(0.05)
         return False
+
+    def power_cut(self):
+        """Kill QEMU without a shutdown, the way the mains does.
+
+        QMP's quit is not a power button: no driver flush, no ACPI handshake,
+        no poweroff, the process is gone between one instruction and the next.
+        Everything the guest still held in its page cache is lost, which is the
+        state the ext2 dirty flag exists to describe.
+        """
+        self._qmp({"execute": "quit"})
+        if not self.await_exit(timeout=10.0):
+            fail("QEMU did not quit")
 
     def close(self):
         try:
@@ -372,16 +411,36 @@ class Guest:
     # Punctuation QEMU names by key, not by character. Shifted symbols are
     # shift-<key>. (Uppercase letters are handled as shift-<letter>.)
     NAMED = {
-        "-": "minus", "=": "equal", ",": "comma", ";": "semicolon",
-        "'": "apostrophe", "[": "bracket_left", "]": "bracket_right",
-        "\\": "backslash", "`": "grave_accent",
-        "!": "shift-1", "@": "shift-2", "#": "shift-3", "$": "shift-4",
-        "%": "shift-5", "^": "shift-6", "&": "shift-7", "*": "shift-8",
-        "(": "shift-9", ")": "shift-0", "_": "shift-minus", "+": "shift-equal",
-        ":": "shift-semicolon", '"': "shift-apostrophe",
-        "{": "shift-bracket_left", "}": "shift-bracket_right",
-        "|": "shift-backslash", "<": "shift-comma", ">": "shift-dot",
-        "?": "shift-slash", "~": "shift-grave_accent",
+        "-": "minus",
+        "=": "equal",
+        ",": "comma",
+        ";": "semicolon",
+        "'": "apostrophe",
+        "[": "bracket_left",
+        "]": "bracket_right",
+        "\\": "backslash",
+        "`": "grave_accent",
+        "!": "shift-1",
+        "@": "shift-2",
+        "#": "shift-3",
+        "$": "shift-4",
+        "%": "shift-5",
+        "^": "shift-6",
+        "&": "shift-7",
+        "*": "shift-8",
+        "(": "shift-9",
+        ")": "shift-0",
+        "_": "shift-minus",
+        "+": "shift-equal",
+        ":": "shift-semicolon",
+        '"': "shift-apostrophe",
+        "{": "shift-bracket_left",
+        "}": "shift-bracket_right",
+        "|": "shift-backslash",
+        "<": "shift-comma",
+        ">": "shift-dot",
+        "?": "shift-slash",
+        "~": "shift-grave_accent",
     }
 
     def type(self, text):
@@ -452,10 +511,16 @@ class Guest:
         goes through QMP's input-send-event."""
         button = "wheel-up" if notches > 0 else "wheel-down"
         for _ in range(abs(int(notches))):
-            self._qmp({"execute": "input-send-event",
-                       "arguments": {"events": [
-                           {"type": "btn",
-                            "data": {"down": True, "button": button}}]}})
+            self._qmp(
+                {
+                    "execute": "input-send-event",
+                    "arguments": {
+                        "events": [
+                            {"type": "btn", "data": {"down": True, "button": button}}
+                        ]
+                    },
+                }
+            )
             time.sleep(0.05)
         time.sleep(0.2)
 
@@ -522,16 +587,21 @@ class Guest:
         creation name) and "title" (what it ended up showing)."""
         out = {}
         for m in re.finditer(
-                r"wm: window #(\d+) '([^']*)' (\d+)x(\d+) at (-?\d+),(-?\d+)", self.log()):
+            r"wm: window #(\d+) '([^']*)' (\d+)x(\d+) at (-?\d+),(-?\d+)", self.log()
+        ):
             out[int(m.group(1))] = {
-                "id": int(m.group(1)), "task": m.group(2), "title": m.group(2),
-                "w": int(m.group(3)), "h": int(m.group(4)),
-                "x": int(m.group(5)), "y": int(m.group(6)),
+                "id": int(m.group(1)),
+                "task": m.group(2),
+                "title": m.group(2),
+                "w": int(m.group(3)),
+                "h": int(m.group(4)),
+                "x": int(m.group(5)),
+                "y": int(m.group(6)),
             }
         for m in re.finditer(r"wm: title #(\d+) '([^']*)'", self.log()):
             w = out.get(int(m.group(1)))
             if w:
-                w["title"] = m.group(2)   # the last title the WM logged
+                w["title"] = m.group(2)  # the last title the WM logged
         return list(out.values())
 
     def window(self, title_pat):
@@ -608,6 +678,7 @@ class Guest:
 
 # --- screenshots -------------------------------------------------------
 
+
 def ppm(path):
     with open(path, "rb") as f:
         d = f.read()
@@ -625,7 +696,7 @@ def diff_region(a, b, x0, y0, x1, y1, step=2):
         row = y * w
         for x in range(x0, x1, step):
             j = (row + x) * 3
-            if A[j:j + 3] != B[j:j + 3]:
+            if A[j : j + 3] != B[j : j + 3]:
                 n += 1
     return n
 

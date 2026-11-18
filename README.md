@@ -55,11 +55,17 @@ shell grammar is, all in code you can read and change.
   block layer: a 1 KB block read fetches one 4 KB page and its neighbours become
   hits, while `Block` itself stays a cacheless sector contract.
 - Writes are durable only once they are flushed: `sync`, `fsync` and `poweroff`
-  write dirty pages back before flushing the drive's cache. There is no journal
-  and no crash consistency, and a power cut can leave an image that `e2fsck`
-  repairs but the kernel cannot mount. Call `sync` before removing power.
+  write dirty pages back before flushing the drive's cache. There is no journal,
+  so a power cut mid-write can still leave an image only `e2fsck` repairs; what
+  the kernel does guarantee is that it knows. The first write after mount
+  clears ext2's clean flag on the medium before any write it covers, and a
+  mount of an image with that flag clear is refused with `EIO`: the boot log
+  names the state, the machine still comes up on RAM, and `sync` sets the flag
+  back once everything is on the disk.
 - The `Block::Device` contract is: a name, a size, and read/write of a 512-byte
   sector run, so a filesystem does not care where its bytes come from.
+
+![A power cut leaves the ext2 image dirty, and the next boot refuses it](docs/images/phase7-power-cut.png)
 
 ### Processes, IPC and memory
 - Round-robin preemptive scheduling at 50 Hz. Each task owns its CR3, a kernel

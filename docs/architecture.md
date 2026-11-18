@@ -156,23 +156,37 @@ records tidy, and refuses a filesystem that would need symlinks, extents or
 
 ### Durability and crash consistency
 
-There is no journal, and there is no crash consistency. ext2 metadata and data
-share the same write-back page cache, so LRU eviction can put an inode, a
-directory record or a bitmap on the medium before the data block it points at.
-A power cut or a reset in the middle of a write can therefore leave a
-filesystem that `e2fsck` repairs but this kernel cannot. Mount does not refuse
-an unclean image: it checks the superblock magic, the geometry and the feature
-flags (and refuses a journal that needs recovery, extents or 64-bit block
-numbers), but not the clean/dirty state, so a machine that lost power boots the
-damaged image.
+There is no journal and no intent log, and ext2 metadata and data share the
+same write-back page cache, so LRU eviction can put an inode, a directory
+record or a bitmap on the medium before the data block it points at. A power
+cut or a reset in the middle of a write can therefore leave a filesystem that
+`e2fsck` repairs but this kernel cannot.
 
-What is guaranteed is narrower. `sync`, `fsync` and `poweroff` write dirty
-pages back before flushing the drive's write cache, so data that has been
-synced is on the medium, and a clean shutdown leaves an `e2fsck`-clean image.
-Call `sync` before removing power, or use `poweroff`, which does it for you.
-The persistence test powers off cleanly and runs `e2fsck` afterwards; it does
-not kill the guest mid-write, so this boundary is untested as well as
-unprotected.
+What the filesystem can say is whether it was left clean, and the mount path
+now reads that. ext2 keeps the answer in the superblock's `s_state`: bit 0
+(`EXT2_VALID_FS`) set means every write reached the medium before the machine
+stopped. The first write after mount clears the bit and flushes the superblock
+to the medium before any metadata or data write it covers, so a machine that
+loses power in between leaves an image that says so. `sync` puts the bit back
+once every dirty page is written back and the drive's own write cache is
+flushed; `fsync` and `poweroff` do the same before returning, so a clean
+shutdown still leaves an `e2fsck`-clean image.
+
+Mount refuses an image whose bit is clear, with `EIO`, rather than handing the
+layer above a filesystem that may hold half a write. The boot log names the
+state (`[Ext2] s_state=0x… (not clean); refusing a read-write mount (EIO)`),
+the disk driver prints that it is leaving the disk alone, and the root falls
+back to RAM: the machine still boots, it just cannot use the disk. A
+read-only mount is still allowed, because it cannot make the damage worse. The
+way back is `e2fsck` on the host; this kernel does not carry one.
+
+Storage flags that would need recovery are still refused at mount (a journal
+that wants replay, extents, 64-bit block numbers), and the clean flag is the
+only crash-consistency claim made: it says the filesystem was not left clean,
+not which blocks are affected. The persistence test powers off cleanly and runs
+`e2fsck` afterwards; the power-cut test kills the guest mid-write with no sync,
+requires the next boot to refuse the disk by name, repairs the image on the
+host and requires `e2fsck` to call the result clean.
 
 ### Scheduler, tasks and file descriptors
 

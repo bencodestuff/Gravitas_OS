@@ -59,4 +59,11 @@ extern int host_fail_write_skip[FAULT_SLOTS];
 VFS::Filesystem* mount(Block::Device* dev, bool writable = false,
                        uint32_t root_ino = 2);
 
+// Why the last mount() returned nullptr, as one of the kernel's errno values
+// (0 after a mount that succeeded, or one that refused for a feature or
+// geometry this backend cannot handle). EIO is a dirty image: s_state says the
+// last mount was not left clean, so the image has to be checked and repaired
+// outside this kernel before it can be written again.
+long mount_error();
+
 } // namespace Ext2

@@ -27,6 +27,7 @@
 #include "kernel/core/symbols.h"
 #include "kernel/core/env.h"
 #include "kernel/core/block.h"
+#include "kernel/core/errno.h"
 #include "kernel/dev/memblock.h"
 #include "kernel/dev/modules.h"
 #include "kernel/dev/ata.h"
@@ -289,7 +290,13 @@ extern "C" void kmain(void) {
     if (disk != nullptr) {
         data = Ext2::mount(disk, true);
         if (data == nullptr) {
-            kprint("[Ext2] the disk is not ext2\n");
+            // The ext2 layer has already logged the specific reason (a feature
+            // it will not write, or an image the last mount left dirty). Do not
+            // tell the log it is "not ext2" when it was.
+            if (Ext2::mount_error() == Errno::EIO)
+                kprint("[Ext2] the disk is not clean; leaving it alone\n");
+            else
+                kprint("[Ext2] the disk is not ext2\n");
         } else {
             // An image made before this directory existed gets it created here,
             // so an older disk still boots with a persistent root.
