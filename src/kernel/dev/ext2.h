@@ -12,6 +12,15 @@ namespace Block { struct Device; }
 
 namespace Ext2 {
 
+#ifdef EXT2_HOST_TEST
+// tools/test_ext2_rename.cpp drives the rename state machine over an image in
+// memory. FAULT_SLOTS write faults can be nominated at once, because the
+// documented third outcome needs two removals to fail rather than one.
+constexpr int FAULT_SLOTS = 4;
+extern int host_fail_write_block[FAULT_SLOTS];
+extern int host_fail_write_skip[FAULT_SLOTS];
+#endif
+
 // Mount 'dev' at 'root_ino' (2 is the filesystem root; another inode makes a
 // directory inside it the root of this mount). 'writable' installs the write,
 // truncate, create, unlink and rename operations; a read-only mount leaves them

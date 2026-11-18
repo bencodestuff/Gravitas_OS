@@ -50,6 +50,13 @@ constexpr uint32_t INCOMPAT_64BIT = 0x0080;
 constexpr uint32_t S_IFREG_BIT = 0100000;
 constexpr uint32_t S_IFDIR_BIT = 0040000;
 
+#ifdef EXT2_HOST_TEST
+// See write_block: a one-shot write fault per nominated block, for the host
+// rename test. Not compiled into the kernel at all.
+int host_fail_write_block[FAULT_SLOTS] = {0, 0, 0, 0};
+int host_fail_write_skip[FAULT_SLOTS] = {0, 0, 0, 0};
+#endif
+
 struct Superblock {
     uint32_t inodes_count;        // 0
     uint32_t blocks_count;        // 4
@@ -207,6 +214,13 @@ static bool valid_gd(const Fs* f, const GroupDesc* gd) {
 // The timer can preempt a syscall halfway through a directory or bitmap update,
 // so mutations run with interrupts off. Everything below that takes this lock is
 // a top-level operation; the helpers assume it is already held.
+//
+// A host build (tools/test_ext2_rename.cpp) drives the same code over an image
+// in memory, where a userspace process may not touch the interrupt flag at all.
+#ifdef EXT2_HOST_TEST
+static inline uint64_t irq_save() { return 0; }
+static inline void irq_restore(uint64_t) {}
+#else
 static inline uint64_t irq_save() {
     uint64_t f;
     asm volatile("pushfq; popq %0; cli" : "=r"(f) :: "memory");
@@ -215,6 +229,7 @@ static inline uint64_t irq_save() {
 static inline void irq_restore(uint64_t f) {
     if (f & (1ull << 9)) asm volatile("sti"); else asm volatile("cli");
 }
+#endif
 
 // --- reading ---
 // The transfer unit is the sector, so this is the one place partial-sector reads
@@ -307,6 +322,26 @@ static bool read_block(Fs* f, uint32_t blk, void* buf) {
 
 static bool write_block(Fs* f, uint32_t blk, const void* buf) {
     if (!valid_blk(f, blk)) return false;
+#ifdef EXT2_HOST_TEST
+    // The only failure a guest cannot produce: the page cache answers a read of
+    // a directory block it has just searched out of memory, and a cached write
+    // never reaches the device, so a rename's last directory removal can only be
+    // made to fail from inside. Each slot is one-shot, so a test can fail two
+    // removals and see what the second failure leaves behind.
+    for (int i = 0; i < Ext2::FAULT_SLOTS; i++) {
+        if (host_fail_write_block[i] == 0 || host_fail_write_block[i] != (int)blk)
+            continue;
+        // A nomination can be asked to let the first writes to this block
+        // through: a rename inserts its new name into that block before the
+        // removal the test wants to fail, and the insertion has to succeed.
+        if (host_fail_write_skip[i] > 0) {
+            host_fail_write_skip[i]--;
+            continue;
+        }
+        host_fail_write_block[i] = 0;
+        return false;
+    }
+#endif
     return write_bytes(f, (uint64_t)blk * f->dev->block_size, buf, f->dev->block_size);
 }
 
@@ -1650,13 +1685,27 @@ static int e2_unlink(void* priv, VFS::Node* dir, const char* name) {
     write_inode(f, d->ino, &din);
     refresh_node(d, dir, &din);
 
-    in.links_count = 0;
-    in.ctime = now;
-    in.mtime = now;
-    in.dtime = now ? now : 1;
-    write_inode(f, ino, &in);
+    if (!is_dir && in.links_count > 1) {
+        // Another name still points here, so this one going is not the file
+        // going. A count above one can only come from a picture the writer did
+        // not intend (e2_rename gives a file a second link when it cannot take
+        // a rename back) or from an image made with hard links: freeing the
+        // inode now would leave that other name pointing at a freed file.
+        // Directories never take this branch: their count is their own entry
+        // plus their children's "..", which is not a name count.
+        in.links_count--;
+        in.ctime = now;
+        in.mtime = now;
+        write_inode(f, ino, &in);
+    } else {
+        in.links_count = 0;
+        in.ctime = now;
+        in.mtime = now;
+        in.dtime = now ? now : 1;
+        write_inode(f, ino, &in);
 
-    inode_put(f, ino, is_dir);
+        inode_put(f, ino, is_dir);
+    }
     irq_restore(flags);
     return 0;
 }
@@ -1795,10 +1844,23 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
             // of, so the destination is not lost either.
             if (dropped_link) fdin.links_count++;
             tdin.links_count--;
-            dir_remove(f, tdir, to, tlen, nullptr, nullptr);
+            if (!dir_remove(f, tdir, to, tlen, nullptr, nullptr)) {
+                // The same third state the removal below can leave, and here it
+                // cannot be repaired at all: this branch only runs for a
+                // directory that changed parent, and a directory named in two
+                // parents has no link count that could express it, so the state
+                // is reported rather than disguised.
+                kprint("[Ext2] rename left two names for one directory!\n");
+            }
             if (dst_removed) restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
             // The insertion may have given the new parent a block. Writing its
-            // inode keeps that block reachable instead of leaking it.
+            // inode keeps that block reachable instead of leaking it. The old
+            // parent's link count was put back a few lines above too, and that
+            // one lives on disk as well: restoring the count only in memory
+            // would leave the image a link short.
+            fdin.blocks = blocks_to_512(f, count_blocks(f, &fdin));
+            write_inode(f, fdn->ino, &fdin);
+            refresh_node(fdn, from_dir, &fdin);
             tdin.blocks = blocks_to_512(f, count_blocks(f, &tdin));
             write_inode(f, tdn->ino, &tdin);
             refresh_node(tdn, to_dir, &tdin);
@@ -1807,7 +1869,63 @@ static int e2_rename(void* priv, VFS::Node* from_dir, const char* from,
         }
     }
 
+    // The last step that can fail, and the reason for the ordering above: until
+    // the old name is gone the rename can still be taken back out. A failure
+    // here is undone with the same helpers the earlier paths use, and every undo
+    // write touches something the failed removal did not (the new parent's
+    // directory, the moved directory's first block, the inodes), so one bad
+    // block at the source is not by itself enough to stop the rollback.
+    //
+    // The contract after this function returns is "renamed" or "unchanged".
+    // There is one third state, and it is written down rather than hoped away:
+    // when the destination name cannot be taken out again, both names point at
+    // the source inode. For a file that is made consistent by giving the inode
+    // the second link it now has, so freeing either name frees the file once and
+    // the other keeps it alive (e2_unlink honours a count above one for exactly
+    // this reason). For a directory it cannot be made consistent, because a
+    // directory's link count is its own entry plus its children's "..", never a
+    // second name; that state is reported instead of being disguised.
     if (!dir_remove(f, &fdin, from, flen, nullptr, nullptr)) {
+        bool undone = dir_remove(f, tdir, to, tlen, nullptr, nullptr);
+        if (src_is_dir && !same_dir) {
+            // ".." has already moved, and it is what the old parent's link count
+            // was decremented for. When the rename can be taken back out, both
+            // go back together. When it cannot, the directory is still named in
+            // the old parent as well, so that parent keeps the link for the name
+            // it holds; ".." can only name one of the two, and that is the part
+            // reported below rather than counted away.
+            if (undone && set_dotdot(f, &src, fdn->ino)) {
+                if (dropped_link) fdin.links_count++;
+                if (tdin.links_count > 0) tdin.links_count--;
+            } else {
+                if (dropped_link) fdin.links_count++;
+                undone = false;
+            }
+        }
+        if (dst_removed) restore_replaced(f, tdir, to, tlen, dst_ino, dst_link_dropped, dst_ftype);
+        // Both counts were adjusted whether or not the destination name went,
+        // and the insertion may have given the new parent a block, so both
+        // inodes are written: an undo that only exists in memory is not an undo.
+        fdin.blocks = blocks_to_512(f, count_blocks(f, &fdin));
+        write_inode(f, fdn->ino, &fdin);
+        refresh_node(fdn, from_dir, &fdin);
+        if (!same_dir) {
+            tdin.blocks = blocks_to_512(f, count_blocks(f, &tdin));
+            write_inode(f, tdn->ino, &tdin);
+            refresh_node(tdn, to_dir, &tdin);
+        }
+        if (!undone) {
+            if (!src_is_dir) {
+                // Two names, one link, was the broken state: give the inode the
+                // link the second name needs, which is what makes "two names"
+                // survivable at all.
+                src.links_count++;
+                src.ctime = (uint32_t)Rtc::seconds_now();
+                write_inode(f, src_ino, &src);
+            } else {
+                kprint("[Ext2] rename left two names for one directory!\n");
+            }
+        }
         irq_restore(flags);
         return -Errno::EIO;
     }

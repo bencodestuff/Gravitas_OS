@@ -63,6 +63,9 @@ def big_byte(i):
 
 
 def main():
+    # A second argument writes the image somewhere else, which is how the host
+    # rename test gets a real mke2fs image without touching the shipped one.
+    out = sys.argv[1] if len(sys.argv) > 1 else OUT
     tmp = tempfile.mkdtemp(prefix="gravitas-ext2-")
     stage = os.path.join(tmp, "stage")
     os.mkdir(stage)
@@ -92,9 +95,9 @@ def main():
         os.mkdir(os.path.join(stage, "root"))
         os.chmod(os.path.join(stage, "root"), 0o755)
 
-        os.makedirs(os.path.dirname(OUT), exist_ok=True)
-        if os.path.exists(OUT):
-            os.unlink(OUT)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        if os.path.exists(out):
+            os.unlink(out)
 
         # mke2fs copies each source file's mtime and atime into the inode, so
         # the staging tree has to carry fixed ones.
@@ -119,7 +122,7 @@ def main():
             "-E", "root_owner=0:0,hash_seed=" + IMAGE_UUID,
             "-d", stage,
             "-F", "-L", "gravitas",
-            OUT, str(BLOCKS),
+            out, str(BLOCKS),
         ], env=env)
 
         # mke2fs stamps the copied files with the staging user's uid/gid.
@@ -133,7 +136,7 @@ def main():
                 paths.append("/" + rel)
         script = "".join("sif %s uid 0\nsif %s gid 0\n" % (p, p)
                          for p in paths)
-        r = subprocess.run(["debugfs", "-w", "-f", "-", OUT],
+        r = subprocess.run(["debugfs", "-w", "-f", "-", out],
                            input=script, text=True,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if r.returncode != 0 or "not found" in r.stdout.lower():
@@ -142,7 +145,7 @@ def main():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    print("ext2 image: %s (%d KB)" % (os.path.relpath(OUT, ROOT), BLOCKS))
+    print("ext2 image: %s (%d KB)" % (out, BLOCKS))
     return 0
 
 
