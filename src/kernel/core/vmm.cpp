@@ -236,19 +236,55 @@ namespace VMM {
         return true;
     }
 
-    // Claim a VA with a software guard PTE (no backing frame). The range
-    // becomes invisible to range_free() until the caller maps over it —
-    // structurally safe, and unlike the old scheme it burns no frame that
-    // the caller would then overwrite and leak.
-    static bool reserve_guard(uint64_t pml4_phys, uint64_t va, bool user) {
-        uint64_t pml4_idx = (va >> 39) & 0x1FF;
-        uint64_t pdp_idx  = (va >> 30) & 0x1FF;
-        uint64_t pd_idx   = (va >> 21) & 0x1FF;
-        uint64_t pt_idx   = (va >> 12) & 0x1FF;
+    // Take guard markers back out of a range that was never handed out. Only
+    // markers are cleared, so this can never drop a real mapping, and it
+    // allocates nothing on the way back.
+    static void drop_guard(uint64_t pml4_phys, uint64_t va, uint64_t pages) {
+        for (uint64_t p = 0; p < pages; p++) {
+            uint64_t addr = va + p * 4096;
+            uint64_t pml4_idx = (addr >> 39) & 0x1FF;
+            uint64_t pdp_idx  = (addr >> 30) & 0x1FF;
+            uint64_t pd_idx   = (addr >> 21) & 0x1FF;
+            uint64_t pt_idx   = (addr >> 12) & 0x1FF;
 
-        uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx, pd_idx, true, user);
-        if (pt == nullptr) return false;
-        pt[pt_idx] = PTE_GUARD;
+            uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx,
+                                             pd_idx, false, false);
+            if (pt == nullptr) continue;
+            if (pt[pt_idx] & PTE_GUARD) pt[pt_idx] = 0;
+        }
+    }
+
+    // Claim every page of a VA range with a software guard PTE (no backing
+    // frame). range_free() tests pages one at a time, so EVERY page has to
+    // carry a marker: guarding only the first would leave the tail looking
+    // free and a later reservation could overlap it. The guards are
+    // non-present, so map_page_in() replaces them as the caller maps real
+    // pages, and the ones that are never mapped stay as reservations.
+    // Cost is one page table per 2MB of range, created only where the range
+    // reaches a table that does not exist yet, and bounded by the arena: the
+    // 768MB user region holds at most 384 of them. Nothing had to be tracked
+    // separately, and address-space teardown frees those tables like any
+    // other, which releases the reservation with them.
+    static bool reserve_guard(uint64_t pml4_phys, uint64_t va, uint64_t pages,
+                              bool user) {
+        for (uint64_t p = 0; p < pages; p++) {
+            uint64_t addr = va + p * 4096;
+            uint64_t pml4_idx = (addr >> 39) & 0x1FF;
+            uint64_t pdp_idx  = (addr >> 30) & 0x1FF;
+            uint64_t pd_idx   = (addr >> 21) & 0x1FF;
+            uint64_t pt_idx   = (addr >> 12) & 0x1FF;
+
+            uint64_t* pt = get_next_level_in(pml4_phys, pml4_idx, pdp_idx,
+                                             pd_idx, true, user);
+            if (pt == nullptr) {
+                // Out of table pages part way through: hand back the markers
+                // already written, so a failed allocation leaves no
+                // reservation behind.
+                drop_guard(pml4_phys, va, p);
+                return false;
+            }
+            pt[pt_idx] = PTE_GUARD;
+        }
         return true;
     }
 
@@ -257,9 +293,8 @@ namespace VMM {
         uint64_t candidate = USER_VA_BASE;
         while (candidate + pages * 4096 <= USER_VA_END) {
             if (range_free(pml4_phys, candidate, pages)) {
-                // Guard on the FIRST page only: one bit is enough to make
-                // the whole scanned range non-free.
-                if (!reserve_guard(pml4_phys, candidate, true)) return 0;
+                if (!reserve_guard(pml4_phys, candidate, pages, true))
+                    return 0;
                 return candidate;
             }
             candidate += 4096;

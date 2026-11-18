@@ -203,6 +203,73 @@ static void teardown_uses_the_user_half_only() {
     check(used[page_index(kernel_side)], "the kernel half is untouched");
 }
 
+// A reservation must cover every page it hands out, not just the first.
+// range_free() tests pages one at a time, so a range guarded only at its base
+// has a tail that reads as free and a second allocation can start inside it.
+// That overlap is not cosmetic: whoever maps the second range clears the
+// first one's PTEs on the way out and the first task faults.
+static void a_reserved_range_covers_its_whole_length() {
+    int live_before = live_pages();
+    uint64_t pml4 = PMM::alloc_page();
+    check(pml4 != 0, "space for the allocator test");
+
+    uint64_t pages = 4;
+    uint64_t first = VMM::alloc_user_range(pml4, pages);
+    check(first != 0, "the allocator returns a range");
+    check(first == VMM::USER_VA_BASE, "it starts at the bottom of the arena");
+
+    check(!VMM::user_range_free(pml4, first, pages),
+          "the whole reserved range reads as taken");
+    check(!VMM::user_range_free(pml4, first + 4096, pages - 1),
+          "the tail of a reservation is not free");
+
+    uint64_t second = VMM::alloc_user_range(pml4, pages);
+    check(second != 0, "a second range can still be allocated");
+    check(second >= first + pages * 4096,
+          "the second range starts after the first, not inside it");
+
+    // Neither map_page_in() nor unmap_user_range() can run here: both finish
+    // by touching CR3 or the TLB, which a host process may not do. The
+    // release they perform is unchanged by this fix, so what is pinned below
+    // is the two things the fix introduces: the overlap, and that a space
+    // whose tables hold nothing but markers is still torn down cleanly.
+    int owned = live_pages() - live_before;
+    frees.clear();
+    VMM::destroy_user_space(pml4);
+    check(double_frees == 0, "reservation tables are not freed twice");
+    check((int)frees.size() == owned,
+          "teardown returns every page the reserved space owned");
+    check(live_pages() == live_before, "nothing is left allocated");
+}
+
+// A reservation that runs out of table pages part way through must take its
+// markers back out, or every ENOMEM leaks the pages it had claimed.
+static void a_failed_reservation_leaves_nothing_behind() {
+    int live_before = live_pages();
+    uint64_t pml4 = PMM::alloc_page();
+    uint64_t first = VMM::alloc_user_range(pml4, 1);
+    check(first != 0, "the range that will be left standing allocates");
+
+    std::vector<uint64_t> held;
+    for (uint64_t p = PMM::alloc_page(); p != 0; p = PMM::alloc_page())
+        held.push_back(p); // drain the pool so a second table cannot exist
+
+    // 600 pages need two page tables and only one exists, so this fails after
+    // it has marked the 511 pages that fit in the first.
+    uint64_t big = VMM::alloc_user_range(pml4, 600);
+    check(big == 0, "a reservation that cannot get a table fails");
+    check(!VMM::user_range_free(pml4, first, 1),
+          "the range that did allocate is still reserved");
+    check(VMM::user_range_free(pml4, first + 4096, 511),
+          "the guards installed before the failure were released");
+
+    for (uint64_t p : held) PMM::free_page(p);
+    frees.clear();
+    VMM::destroy_user_space(pml4);
+    check(double_frees == 0, "failed reservation: no page freed twice");
+    check(live_pages() == live_before, "failed reservation leaves no leak");
+}
+
 int main() {
     for (int i = 0; i < POOL_PAGES; i++) {
         void* p = nullptr;
@@ -216,6 +283,8 @@ int main() {
 
     teardown_of_a_full_space();
     teardown_uses_the_user_half_only();
+    a_reserved_range_covers_its_whole_length();
+    a_failed_reservation_leaves_nothing_behind();
 
     if (failures) {
         std::printf("test_vmm: %d of %d checks failed\n", failures, checks);

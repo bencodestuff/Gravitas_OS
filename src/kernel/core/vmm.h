@@ -82,7 +82,12 @@ namespace VMM {
 
     // Find and reserve a free virtual range in 'pml4' (user region:
     // USER_VA_BASE .. USER_VA_END). Returns the base VA, or 0 on failure.
-    // Used for stacks, ELF loads, shared buffers — anything that needs a
+    // Every page of the returned range is marked as taken (guard PTEs, no
+    // frames), so a second call cannot hand out an overlapping range. The
+    // caller maps over the markers; whatever it maps stays, and what it
+    // never maps stays reserved. unmap_user_range() and address-space
+    // teardown both clear or free them.
+    // Used for stacks, ELF loads, shared buffers: anything that needs a
     // guaranteed-unique mapping in that address space.
     uint64_t alloc_user_range(uint64_t pml4_phys, uint64_t pages);
 
