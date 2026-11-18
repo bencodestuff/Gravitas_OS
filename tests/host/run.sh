@@ -58,6 +58,16 @@ printf -- '-- test_path (the pure path rule)\n'
     -o "$ART/test_path" || fail "test_path: compile failed"
 "$ART/test_path" || fail "test_path: checks failed"
 
+# Not a C program: the ext2 write path's length rule is arithmetic, and the
+# shipped image is far too small for a guest to reach the 4 GiB edge it guards.
+# This drives the rule and the 32-bit store it replaced, which is what would
+# wrap a file's recorded length back below the write.
+printf -- '-- test_ext2_limits (the ext2 write path size rule)\n'
+"${CXX:-c++}" -O2 -std=c++17 -Isrc \
+    tools/test_ext2_limits.cpp \
+    -o "$ART/test_ext2_limits" || fail "test_ext2_limits: compile failed"
+"$ART/test_ext2_limits" || fail "test_ext2_limits: checks failed"
+
 # Not a C program: tearing down an address space is a tree walk that frees
 # pages, so it is driven over a stub frame manager that records every free. On
 # a boot the real PMM silently ignores an already-free frame, which is what hid
