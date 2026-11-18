@@ -4,8 +4,9 @@
 // shmhelper — shmtest's partner. It waits for the go message (which carries the
 // region's id), attaches it, and proves the two tasks see the same pages.
 //
-// argv[1] is "ok" (we were granted it, so attaching must work) or "deny" (we
-// were not, so it must be refused).
+// argv[1] is "ok" (we were granted it, so attaching must work), "deny" (we
+// were not, so it must be refused), or "exit" (we were granted it, but leave
+// at once without attaching, so the parent can watch the slot come back).
 
 #define MSG_GO     0x7001
 #define MSG_RESULT 0x7002
@@ -24,13 +25,18 @@ static void reply(long to, unsigned long what) {
 }
 
 int main(int argc, char** argv) {
-    int expect_granted = !(argc > 1 && argv[1] && argv[1][0] == 'd');
+    char mode = (argc > 1 && argv[1] != nullptr) ? argv[1][0] : 'o';
+    int expect_granted = mode != 'd';
 
     struct grv_msg go;
     if (grv_recv(&go, 1) != 0 || go.type != MSG_GO) {
         printf("shmhelper: no go message\n");
         return 1;
     }
+
+    // A grantee that dies without attaching: the short-lived mode leaves now,
+    // and the slot must be free again for the next task.
+    if (mode == 'e') return 0;
 
     struct grv_map a;
     int r = grv_shm_map((int)go.a, &a);

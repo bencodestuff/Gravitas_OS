@@ -3,6 +3,7 @@
 #include "kernel/core/pmm.h"
 #include "kernel/core/heap.h"
 #include "kernel/core/sched.h"
+#include "kernel/core/errno.h"
 #include "kernel/klib/klib.h"   // memset
 #include "fs/vfs.h"
 
@@ -147,9 +148,15 @@ int grant(int id, int task) {
     Region* r = region_by_id(id);
     if (r == nullptr || r->owner != Sched::current_task_id()) return -1;
     if (task == r->owner) return 0; // it can already attach
+    // A slot names a task that has to exist NOW. Only eight fit per region and
+    // nothing else ever removes one on the owner's behalf, so an id that names
+    // no task (a typo, or one that already exited) would hold a slot for the
+    // region's whole life. task_exists walks the ready queue: read-only, no
+    // allocation, safe under the syscall layer's interrupts-off invariant.
+    if (!Sched::task_exists(task)) return -Errno::EINVAL;
     for (int i = 0; i < r->ngranted; i++)
         if (r->granted[i] == task) return 0; // already allowed
-    if (r->ngranted >= MAX_GRANT) return -1;
+    if (r->ngranted >= MAX_GRANT) return -Errno::ENOSPC;
     r->granted[r->ngranted++] = task;
     return 0;
 }
@@ -277,6 +284,24 @@ void task_gone(int task_id) {
             if (r != nullptr) region_unref(r);
         }
         maps[i].used = false;
+    }
+    // A region can outlive the tasks it was granted to, so its granted[] must
+    // not outlive them: drop this id from every region and compact the array,
+    // and a dead task gives its slot back instead of pinning it until the owner
+    // closes the region. Fixed arrays only (O(regions * MAX_GRANT), no
+    // allocation), which is what makes it safe in both teardown contexts: a
+    // kill with interrupts off, and the zombie reap under cli. Task ids only
+    // climb (task_counter), so a stale id could never name a later task even if
+    // one were left behind.
+    for (int i = 0; i < MAX_REGION; i++) {
+        Region* r = &regions[i];
+        if (!r->used) continue;
+        int keep = 0;
+        for (int g = 0; g < r->ngranted; g++) {
+            if (r->granted[g] == task_id) continue;
+            r->granted[keep++] = r->granted[g];
+        }
+        r->ngranted = keep;
     }
     for (int i = 0; i < MAX_REGION; i++)
         if (regions[i].used && regions[i].owner == task_id) region_unref(&regions[i]);
