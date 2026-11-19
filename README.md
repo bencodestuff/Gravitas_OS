@@ -292,6 +292,8 @@ Gravitas' own code is BSD 3-Clause (below). The built image also bundles:
   `bin/lua.elf` and `bin/init.elf`.
 - **Bizcat.** The console font, CC licensed (share and adapt).
 - **Pictures.** Wallpapers under `files/Pictures/`, not committed to the repo.
+  When that directory holds no bitmap, the build writes a small generated
+  placeholder so the image viewer has something to open.
 
 ## License
 

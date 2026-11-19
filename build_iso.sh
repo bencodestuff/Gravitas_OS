@@ -20,6 +20,15 @@ cp bin/gravitas.elf iso_root/gravitas.elf
 rm -rf tar_root
 mkdir -p tar_root/bin tar_root/tmp
 cp -r files/* tar_root/
+# The image viewer opens the first picture in /Pictures. The wallpapers under
+# files/Pictures are personal and not committed, so a fresh clone has an empty
+# (or missing) directory and the viewer has nothing to show. Generate one small
+# placeholder only when there is no bitmap: a checkout with wallpapers ships
+# exactly those.
+mkdir -p tar_root/Pictures
+if [ -z "$(find tar_root/Pictures -maxdepth 1 -type f -iname '*.bmp' -print -quit)" ]; then
+    python3 tools/mkpicture.py tar_root/Pictures/placeholder.bmp
+fi
 for f in bin/*.elf; do
     [ "$(basename "$f")" = "gravitas.elf" ] && continue
     cp "$f" tar_root/bin/
