@@ -19,7 +19,11 @@
 //   8. an output buffer the kernel stores into directly still works on both
 //      sides after the fork, including pages that are copy-on-write and were
 //      never written before the split, and each side sees only its own copy;
-//   9. ordinary spawn still works afterwards.
+//   9. a status kept for a later wait survives exits that were handed straight
+//      to a blocked waiter, a status handed to a blocked waiter is collected
+//      exactly once (whether it arrived through WAIT or a foreground SPAWN),
+//      and a child that outlives its parent leaves no uncollectable record;
+//  10. ordinary spawn still works afterwards.
 
 #include <stdio.h>
 #include <string.h>
@@ -221,6 +225,134 @@ int main(int argc, char** argv) {
             fail("status of a child that exited first");
         }
         if (grv_wait(quick) != -1) fail("early child waited for twice");
+    }
+
+    // --- a kept status survives exits handed straight to a waiter ---
+    // A task already blocked in WAIT takes its child's code directly. That
+    // hand-off must not spend one of the eight status records, or a parent
+    // with a few uncollected children loses the oldest of them for nothing.
+    long kept = grv_fork();
+    if (kept == 0) grv_exit(91);
+    if (kept < 0) {
+        fail("fork for the kept status");
+    } else {
+        grv_sleep(150);                 // it exits with nobody waiting
+        for (int i = 0; i < 10; ++i) {
+            long c = grv_fork();
+            if (c == 0) {
+                // Park for a few ticks first, so the parent is already
+                // blocked inside WAIT when this exit happens.
+                grv_sleep(50);
+                grv_exit(100 + i);
+            }
+            if (c < 0) {
+                fail("fork in the direct-delivery loop");
+                break;
+            }
+            long got = grv_wait(c);
+            if (got != 100 + i) {
+                printf("[forktest] direct delivery %d returned %d, want %d\n",
+                       i, (int)got, 100 + i);
+                fail("a status delivered to a blocked waiter");
+            }
+            if (grv_wait(c) != -1)
+                fail("a status delivered to a blocked waiter came back twice");
+        }
+        long kc = grv_wait(kept);
+        if (kc != 91) {
+            printf("[forktest] kept status returned %d, want 91\n", (int)kc);
+            fail("a pending status was evicted by direct deliveries");
+        }
+        if (grv_wait(kept) != -1) fail("the kept status was collected twice");
+    }
+
+    // --- a status handed over by a foreground SPAWN is collectable once ---
+    // A foreground SPAWN blocks on the child and takes its code directly; WAIT
+    // on the same id must still see that code, once, and not a second time.
+    {
+        const char* fg_argv[] = {"sleeper"};
+        long fg1 = grv_spawn("sleeper.elf", fg_argv, 1);
+        long fg2 = (fg1 > 0) ? grv_spawn("sleeper.elf", fg_argv, 1) : -1;
+        if (fg1 <= 0 || fg2 <= 0) {
+            printf("[forktest] foreground spawn failed (%d, %d)\n",
+                   (int)fg1, (int)fg2);
+            fail("foreground spawn before a wait");
+        } else {
+            if (grv_wait(fg1) != 0) fail("status of the first foreground child");
+            if (grv_wait(fg1) != -1) fail("first foreground status twice");
+            if (grv_wait(fg2) != 0) fail("status of the second foreground child");
+            if (grv_wait(fg2) != -1) fail("second foreground status twice");
+        }
+    }
+
+    // --- a child that outlives its parent leaves no record behind ---
+    // Fill all eight slots with statuses this task has not collected, then let
+    // a child of a dead parent exit. Spending a slot on that exit would push
+    // the oldest status here out, where nobody could ever collect it again.
+    {
+        long held[8];
+        for (int i = 0; i < 8; ++i) {
+            held[i] = grv_fork();
+            if (held[i] == 0) {
+                grv_sleep(8000);        // parked until this side kills it
+                grv_exit(0);
+            }
+        }
+
+        // Take the orphan's id from its parent through a pipe, then let that
+        // parent die, so the orphan's exit has no possible collector.
+        int link[2];
+        long orphan = -1;
+        long mid = -1;
+        if (grv_pipe(link) != 0) {
+            fail("pipe for the orphan id");
+        } else {
+            mid = grv_fork();
+            if (mid == 0) {
+                grv_close(link[0]);
+                long o = grv_fork();
+                if (o == 0) {
+                    grv_sleep(8000);    // outlives the parent below
+                    grv_exit(7);
+                }
+                long sent = (o > 0) ? grv_write_fd(link[1], &o, sizeof o) : -1;
+                grv_exit(sent == (long)sizeof o ? 0 : 1);
+            }
+            grv_close(link[1]);
+            if (mid < 0) {
+                fail("fork for the orphan's parent");
+            } else {
+                if (grv_read_fd(link[0], &orphan, sizeof orphan) !=
+                    (long)sizeof orphan)
+                    fail("could not read the orphan id");
+                if (grv_wait(mid) != 0) fail("the orphan's parent did not exit 0");
+            }
+            grv_close(link[0]);
+        }
+
+        // Eight kills, each recorded synchronously because this task is not
+        // blocked on anything: the table is now exactly full.
+        for (int i = 0; i < 8; ++i) {
+            if (held[i] <= 0) { fail("fork for a held status"); continue; }
+            if (grv_kill(held[i], 120 + i) != 0)
+                fail("kill of a held child");
+        }
+
+        // Now the orphan, whose parent is gone: it must not take a slot.
+        if (orphan > 0 && grv_kill(orphan, 7) != 0)
+            fail("kill of the orphan");
+
+        for (int i = 0; i < 8; ++i) {
+            if (held[i] <= 0) continue;
+            long c = grv_wait(held[i]);
+            if (c != 120 + i) {
+                printf("[forktest] held status %d returned %d, want %d\n",
+                       i, (int)c, 120 + i);
+                fail("a status was evicted by a child with no collector");
+            }
+        }
+        if (held[0] > 0 && grv_wait(held[0]) != -1)
+            fail("a held status was collected twice");
     }
 
     // --- descriptors survive the fork ---

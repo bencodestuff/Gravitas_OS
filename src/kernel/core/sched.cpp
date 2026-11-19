@@ -74,6 +74,10 @@ namespace Sched {
         current_task->fb_map_base = 0;
         current_task->fb_map_pages = 0;
         current_task->exit_code = 0;
+        current_task->exit_code_inbox = 0;
+        current_task->exit_inbox_id = -1;
+        current_task->parent_id = 0;
+        current_task->zombie_next = nullptr;
         current_task->waiting_on = -1;
         current_task->getc_waiting = false;
         current_task->event_input = false;

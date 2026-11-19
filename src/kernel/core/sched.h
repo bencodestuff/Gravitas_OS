@@ -160,8 +160,11 @@ namespace Sched {
     // pass a distinctive GRV_EXIT_* value.
     void exit_current(uint64_t code);
 
-    // Exit code of the task the current task WAITED on (or 0)
-    uint64_t current_exit_inbox();
+    // Collect the status an exit handed straight to this task while it was
+    // blocked on 'id' (a blocking WAIT, or a foreground SPAWN). Returns false
+    // when the one-slot inbox holds no status for that id. Taking it empties
+    // the slot, so each child's status is seen once.
+    bool take_exit_status(int id, uint64_t* out_code);
 
     // Collect the recorded exit of one of this task's children. Returns false
     // when the id is a different task's child, is unknown, or has already been

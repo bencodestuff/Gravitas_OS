@@ -322,6 +322,14 @@ code, and a second wait on the same id does not. A parent that never waits
 loses the status when the table wraps; the child task itself is cleaned up
 either way.
 
+A foreground `SPAWN` blocks until the child exits, and the code that arrives
+that way is kept until a `WAIT` on the same id collects it, so a program can
+run a command and then read its status. An exit that arrives while the caller
+is already blocked in `WAIT` or `SPAWN` uses no record in the table; a child
+that outlives its parent takes no record either, since nobody could collect
+it. Only a status that has to wait for a later `WAIT` spends one of the eight
+slots.
+
 ### The interrupt key
 
 `0x03` (Ctrl+C) in a task's console input is not text: it terminates that

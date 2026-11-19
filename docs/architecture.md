@@ -202,8 +202,21 @@ its stdio rings.
 loads the program into a freshly cloned address space with `ELF::load_elf`
 (`src/fs/elf.cpp`) and lays `argc`/`argv`/`environ` onto the new stack in
 System V order. Spawning returns a task id; a task can `WAIT` on it, or be
-`KILL`ed. Exits are recorded so `WAIT` can reap an already-exited child, and
-faults leave a distinctive exit code (`EXIT_FAULT`, `EXIT_STACK_SMASH`).
+`KILL`ed, and faults leave a distinctive exit code (`EXIT_FAULT`,
+`EXIT_STACK_SMASH`).
+
+`FORK` is the other way to make a task: it clones the caller's address space
+with every writable page left read-only and marked copy-on-write, and the new
+task resumes from the same trap on its own kernel stack, with `rax = 0`. The
+first write to a shared page faults, the fault handler resolves it (ring 3
+only; a kernel store into a user page cannot be resolved, which is why the
+syscall boundary makes an output buffer private before writing it), and the
+instruction is retried. `WAIT` is parent-owned: only the task that spawned or
+forked a child may collect its status, once. A child that exits before the
+wait leaves its code in a small fixed table, so a parent that runs two
+foreground jobs without waiting between them still gets both; an exit handed
+to a parent already blocked in `WAIT` or `SPAWN` takes no table slot, and a
+child that outlives its parent leaves nothing behind.
 
 ### IPC and mailboxes
 

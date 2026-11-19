@@ -898,15 +898,21 @@ static void sys_wait(IDT::Registers* regs) {
     if (Sched::consume_child_exit((int)id, &code)) {
         // Exited before the wait: the status was kept for us.
         regs->rax = code;
+    } else if (Sched::take_exit_status((int)id, &code)) {
+        // Delivered while we were blocked earlier: a foreground SPAWN or a
+        // previous WAIT handed us this code, and it is still ours to collect.
+        regs->rax = code;
     } else if (Sched::task_is_child((int)id)) {
         // Live child: block until it exits (exit fills our inbox).
         Sched::block_current((int)id);
         Sched::yield();
-        regs->rax = Sched::current_exit_inbox();
+        regs->rax = Sched::take_exit_status((int)id, &code) ? code
+                                                           : (uint64_t)-1;
     } else {
         // Unknown, already collected, or another task's child. A parent may
-        // wait only for the tasks it spawned or forked.
-        asm volatile("sti");
+        // wait only for the tasks it spawned or forked. No STI: returning
+        // through the stub's iretq restores the caller's flags, and the
+        // successful paths above never re-enable interrupts either.
         regs->rax = (uint64_t)-1;
     }
 }

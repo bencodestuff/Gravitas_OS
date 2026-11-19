@@ -132,6 +132,7 @@ namespace Sched {
         child->fb_map_pages = parent->fb_map_pages;
         child->exit_code = 0;
         child->exit_code_inbox = 0;
+        child->exit_inbox_id = -1;
         child->parent_id = parent->id;
         child->zombie_next = nullptr;
         child->console_owner = parent->console_owner;
@@ -209,24 +210,65 @@ namespace Sched {
     static ChildExit child_exits[CHILD_EXITS];
     static int child_exit_next = 0;    // overwrite cursor, oldest first
 
+    // Is any task with this id in the queue? Unlike task_exists this does not
+    // depend on there being a current task, so the exit paths can ask whether
+    // a status still has someone to collect it.
+    static bool task_alive(int id) {
+        Task* t = ready_queue;
+        if (t == nullptr || id <= 0) return false;
+        do {
+            if (t->id == id) return true;
+            t = t->next;
+        } while (t != ready_queue);
+        return false;
+    }
+
     static void record_child_exit(int parent, int id, uint64_t code) {
+        // Only a living parent can ever collect, so a child that outlives its
+        // parent must not take a slot: it would push out a status that a
+        // parent still waiting somewhere can use.
+        if (!task_alive(parent)) return;
         child_exits[child_exit_next].parent = parent;
         child_exits[child_exit_next].id = id;
         child_exits[child_exit_next].code = code;
         child_exit_next = (child_exit_next + 1) % CHILD_EXITS;
     }
 
-    // Drop an id record without delivering it: the exit already went into the
-    // parent inbox, so WAIT on this id must not resolve a second time.
-    static void drop_child_exit(int id) {
-        for (int i = 0; i < CHILD_EXITS; i++)
-            if (child_exits[i].id == id) child_exits[i].id = -1;
-    }
-
     // A dead parent can never collect, so its records are dropped with it.
     static void drop_child_exits_of(int parent) {
         for (int i = 0; i < CHILD_EXITS; i++)
             if (child_exits[i].parent == parent) child_exits[i].id = -1;
+    }
+
+    // Settle a dying task's status: hand it straight to a task already blocked
+    // on it, or keep it in the table for a later WAIT, and drop the statuses
+    // the dying task itself never collected. Runs with interrupts off.
+    //
+    // A hand-off uses no record, and must not touch the overwrite cursor: the
+    // waiter has somewhere to put the code right now, so spending a slot (and
+    // evicting the oldest pending status) would discard a status for nothing.
+    static void finish_child_exit(int parent, int id, uint64_t code) {
+        bool taken = false;
+        Task* t = ready_queue;
+        if (t != nullptr) do {
+            if (t->waiting_on == id) {
+                // A status already sitting in the inbox unread (two foreground
+                // SPAWNs without a WAIT between them) is kept in the table so
+                // it is not silently lost when this one replaces it.
+                if (t->exit_inbox_id >= 0 && t->exit_inbox_id != id)
+                    record_child_exit(t->id, t->exit_inbox_id,
+                                      t->exit_code_inbox);
+                t->exit_code_inbox = code;
+                t->exit_inbox_id = id;
+                t->state = READY;
+                t->waiting_on = -1;
+                taken = true;
+            }
+            t = t->next;
+        } while (t != ready_queue);
+
+        if (!taken) record_child_exit(parent, id, code);
+        drop_child_exits_of(id);
     }
 
     bool task_exists(int id) {
@@ -264,8 +306,17 @@ namespace Sched {
         return false;
     }
 
-    uint64_t current_exit_inbox() {
-        return current_task->exit_code_inbox;
+    // Collect the status an exit delivered while this task was blocked on
+    // 'id' (a blocking WAIT, or a foreground SPAWN): the one-slot inbox holds
+    // it until it is taken, and taking it empties the slot so the same child
+    // cannot be collected twice. The blocked path of WAIT and a later
+    // explicit WAIT therefore see one status between them.
+    bool take_exit_status(int id, uint64_t* out_code) {
+        if (current_task == nullptr || id <= 0) return false;
+        if (current_task->exit_inbox_id != id) return false;
+        if (out_code != nullptr) *out_code = current_task->exit_code_inbox;
+        current_task->exit_inbox_id = -1;
+        return true;
     }
 
 
@@ -310,18 +361,7 @@ namespace Sched {
         // Same bookkeeping as a normal exit: the status for the parent, the
         // wakeup for whoever is blocked on this id, and the drop of statuses
         // this task itself never collected.
-        record_child_exit(victim->parent_id, victim->id, victim->exit_code);
-        drop_child_exits_of(victim->id);
-        Task* t = ready_queue;
-        do {
-            if (t->waiting_on == victim->id) {
-                t->exit_code_inbox = victim->exit_code;
-                t->state = READY;
-                t->waiting_on = -1;
-                drop_child_exit(victim->id);
-            }
-            t = t->next;
-        } while (t != ready_queue);
+        finish_child_exit(victim->parent_id, victim->id, victim->exit_code);
 
         // The victim may be parked in a pipe's waiter list; it can never run
         // again to be woken, and four such ids would fill that pipe's list.
@@ -384,6 +424,7 @@ namespace Sched {
         new_task->timer_armed = false;
         new_task->exit_code = 0;
         new_task->exit_code_inbox = 0;
+        new_task->exit_inbox_id = -1;
         new_task->parent_id = current_task->id;
         new_task->zombie_next = nullptr;
         new_task->cr3 = cr3;
@@ -640,32 +681,18 @@ namespace Sched {
         dead->exit_code = code;
         kprint3("[Sched] Task '", dead->name, "' exited.\n");
 
-        // 1. Record this exit where only the parent can collect it. A waiter
-        //    already blocked on this id takes the code directly below.
-        record_child_exit(dead->parent_id, dead->id, dead->exit_code);
-        drop_child_exits_of(dead->id);
+        // 1. Settle the status: the parent collects it later, or takes it now
+        //    if it is already blocked on this id. Statuses this task itself
+        //    never collected are dropped with it.
+        finish_child_exit(dead->parent_id, dead->id, dead->exit_code);
 
-        // 2. Wake anyone blocked on this task (and give them the code).
-        //    A waking waiter consumes the record: the deliverable is the inbox
-        //    now, and WAIT on this id must not resolve twice.
-        Task* t = ready_queue;
-        do {
-            if (t->waiting_on == dead->id) {
-                t->exit_code_inbox = dead->exit_code;
-                t->state = READY;
-                t->waiting_on = -1;
-                drop_child_exit(dead->id);
-            }
-            t = t->next;
-        } while (t != ready_queue);
-
-        // 3. Last task standing? Nothing to switch to — halt forever.
+        // 2. Last task standing? Nothing to switch to, so halt for ever.
         if (dead->next == dead) {
             kprint("[Sched] No tasks left. Halting.\n");
             while (1) asm("hlt");
         }
 
-        // 4. Unlink from the circular list
+        // 3. Unlink from the circular list
         // The task may be parked in a pipe's waiter list and will never run
         // again to be woken, so its ids must go before the slot can be reused.
         VFS::forget_task(dead->id);
@@ -675,7 +702,7 @@ namespace Sched {
         prev->next = dead->next;
         if (ready_queue == dead) ready_queue = dead->next;
 
-        // 5. Pick the next ready task (single CPU: no SMP races here)
+        // 4. Pick the next ready task (single CPU: no SMP races here)
         Task* next = dead->next;
         while (next->state != READY) {
             if (next->state == SLEEPING &&
@@ -686,7 +713,7 @@ namespace Sched {
             next = next->next;
         }
 
-        // 6. Queue the Task struct for cleanup AFTER the next switch (we are
+        // 5. Queue the Task struct for cleanup AFTER the next switch (we are
         //    standing on the dying kernel stack, so we can't free it here).
         queue_zombie(dead);
 
