@@ -41,6 +41,16 @@ build_and_run "test_printf (formatter)" \
 build_and_run "test_libm_std (math + stdlib)" \
     test_libm_std tools/test_libm_std.c -fno-builtin -lm
 
+# Not a C program, and not a boot: grep's matcher is bounded and streamed, so
+# the cases a guest boot cannot arrange reliably are a line split across two
+# reads, a match that spans the split, a match past the print window, and a
+# final line with no newline. The engine takes no libc and no syscalls, so it
+# is included here and fed from an in-memory stream.
+printf -- '-- test_grep (the streaming line matcher)\n'
+"${CXX:-c++}" -O2 -std=c++17 \
+    tools/test_grep.cpp -o "$ART/test_grep" || fail "test_grep: compile failed"
+"$ART/test_grep" || fail "test_grep: checks failed"
+
 # Not a C program: the page cache is C++, and it links against block.h alone so
 # it can be driven over a fake sector device without booting the kernel.
 printf -- '-- test_blockcache (page cache over a fake device)\n'

@@ -106,6 +106,8 @@ shell grammar is, all in code you can read and change.
 - A shell with `cmd < in`, `> out`, `>> out` and `a | b | c`, builtins
   (`cd`, `pwd`, `bg`, `run`, `kill`, `jobs`, `help`), history and line editing.
   Ctrl+C interrupts the foreground job (exit 130).
+- A `grep` (`-i`, `-v`, `-n`, `-c`) that takes files or the read end of a pipe;
+  a fixed-string match, streamed so memory stays fixed however long a line is.
 - One ELF per program, statically linked, no `dlopen`.
 
 ### Tooling and quality
