@@ -1023,6 +1023,26 @@ static void sys_pipe(IDT::Registers* regs) {
     regs->rax = (uint64_t)VFS::pipe_fd((int*)regs->rdi);
 }
 
+static void sys_poll(IDT::Registers* regs) {
+    // (rdi = struct pollfd*, rsi = count, rdx = timeout ms, -1 = wait)
+    uint64_t nfds = regs->rsi;
+    if (nfds > (uint64_t)VFS::POLL_MAX_FDS) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    if (nfds > 0) {
+        // read fd/events, write revents: the whole array is both an input and
+        // an output buffer, so both permissions are required up front.
+        uint64_t bytes = nfds * sizeof(VFS::PollFd);
+        if (!user_in(regs->rdi, bytes) || !user_out(regs->rdi, bytes)) {
+            sys_efault(regs);
+            return;
+        }
+    }
+    regs->rax = (uint64_t)VFS::poll_fds((VFS::PollFd*)regs->rdi, nfds,
+                                       (int64_t)regs->rdx);
+}
+
 static void sys_brk(IDT::Registers* regs) {
     uint64_t want = regs->rdi;
     if (Sched::current_task_brk() == 0) {
@@ -1164,6 +1184,8 @@ static const SyscallFn syscall_table[] = {
     /* 63 SYNC            */ sys_sync,
     /* 64 FSYNC           */ sys_fsync,
     /* 65 FORK            */ sys_fork,
+    /* 66 EXEC (reserved) */ nullptr,
+    /* 67 POLL            */ sys_poll,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

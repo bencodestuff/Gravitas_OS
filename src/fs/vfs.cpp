@@ -638,6 +638,35 @@ static long pipe_write_fd(FileHandle* h, const void* buf, uint64_t count) {
     }
 }
 
+// Readiness, for poll: what this end would do, without doing it. The ring is
+// empty exactly when head == tail; one byte is left unused by the writer so
+// that full and empty differ, which is why room starts at PIPE_BUF - 1.
+static bool pipe_readable(const Pipe* p) {
+    return p->head != p->tail || p->writers == 0;
+}
+
+static uint64_t pipe_room(const Pipe* p) {
+    if (p->readers == 0) return 0;   // a write would fail, not fit
+    int used = (p->head - p->tail + PIPE_BUF) % PIPE_BUF;
+    return (uint64_t)(PIPE_BUF - 1 - used);
+}
+
+short pipe_poll(const FileHandle* h) {
+    const Pipe* p = h->pipe;
+    if (p == nullptr) return POLLNVAL;
+    short re = 0;
+    if (h->pipe_write) {
+        // A write to a pipe with no readers fails with EPIPE instead of
+        // blocking, which is an error condition, not "ready for output".
+        if (p->readers == 0) re |= POLLERR;
+        else if (pipe_room(p) > 0) re |= POLLOUT;
+    } else {
+        if (pipe_readable(p)) re |= POLLIN;   // data, or EOF
+        if (p->writers == 0) re |= POLLHUP;
+    }
+    return re;
+}
+
 long read_fd(int fd, void* buf, uint64_t count) {
     // Defence in depth: no backend may write through a null kernel buffer.
     // The syscall boundary already rejects one from ring 3; this catches a

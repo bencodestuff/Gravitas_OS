@@ -306,6 +306,47 @@ void forget_task(int task_id);
 // pointed fd 1.
 void fds_inherit(FileHandle** dst);
 
+// --- Readiness (poll) ---
+// One request and one answer per descriptor. 'events' names what the caller
+// cares about; 'revents' reports what is true now, and always includes ERR, HUP
+// or NVAL where they apply, whatever 'events' asked for (POSIX). The layout is
+// part of the ABI: struct grv_pollfd in grv/syscall.h must match it.
+struct PollFd {
+    int   fd;
+    short events;
+    short revents;
+};
+
+// The most one call may watch. A larger count is -EINVAL rather than a partial
+// answer: a caller that cannot fit its set in one call learns that instead of
+// silently losing the tail.
+constexpr int POLL_MAX_FDS = 16;
+
+// The bits this kernel can actually answer, a POSIX subset. The same values are
+// spelled GRV_POLL* in grv/syscall.h for userland; check_syscalls does not
+// compare these, so the two lists are kept in step by hand.
+enum PollEvents : short {
+    POLLIN   = 0x001,   // a read would not block (data, or EOF)
+    POLLOUT  = 0x004,   // a write would not block
+    POLLERR  = 0x008,   // error: writing a pipe whose reader has gone
+    POLLHUP  = 0x010,   // hangup: reading a pipe whose last writer closed
+    POLLNVAL = 0x020,   // the descriptor is not open in this task
+};
+
+// The pipe half of poll: which of POLLIN, POLLOUT, POLLERR and POLLHUP this
+// end has right now, or 0. Nothing is consumed and nothing blocks; the answer
+// comes from the ring and the end counters. Safe with interrupts off.
+short pipe_poll(const FileHandle* h);
+
+// Wait until one watched descriptor is ready, the deadline passes, or
+// something already is ready. timeout_ms is -1 to wait forever, 0 to test and
+// return, and otherwise a limit in milliseconds. Readiness is tested, never
+// consumed: a readable pipe still holds its bytes for the read that follows.
+// Returns the number of entries with a non-zero revents, or -errno (EINVAL for
+// a count past POLL_MAX_FDS, a negative timeout other than -1, or a descriptor
+// number outside the table). The caller validates its array's memory.
+long poll_fds(PollFd* fds, uint64_t nfds, int64_t timeout_ms);
+
 // Path rule: lookups (open/stat) accept a bare name — the CWD is tried
 // first, then /bin. Creation and removal (mkdir/unlink) never search: they
 // resolve against the CWD (or an absolute path) only.

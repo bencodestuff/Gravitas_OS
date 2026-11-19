@@ -74,8 +74,10 @@ shell grammar is, all in code you can read and change.
 - Zero-copy shared-memory file mappings (`MAP_FILE`/`MUNMAP`, read-only views of
   immutable tarfs members) and refcounted shared regions
   (`SHM_CREATE`/`GRANT`/`MAP`/`CLOSE`).
-- 63 syscalls through `int $0x80` (numbers 0 to 64; two retired entries return
+- 65 syscalls through `int $0x80` (numbers 0 to 66; two retired entries return
   `-ENOSYS`), dispatched from a number→handler table.
+- `POLL` reports which descriptors would not block, without consuming
+  anything, so a program can wait on a pipe and still return on a deadline.
 - A fault dumps the registers and a symbolised `RIP=0x... (main(int,
   char**)+0x2C)` from a build-time symbol table (`tools/mksyms.py`, about 6000
   functions). A user-mode fault kills the task and the system carries on; a

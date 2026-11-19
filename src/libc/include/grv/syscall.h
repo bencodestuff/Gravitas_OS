@@ -118,6 +118,11 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_SYNC           63
 #define GRV_SYSCALL_FSYNC          64
 #define GRV_SYSCALL_FORK           65
+/* 66 is EXEC's number. The call is not dispatched yet, so it answers
+   -ENOSYS like a retired slot; the number is named here so the three ABI
+   lists agree and the call cannot later be given a second number. */
+#define GRV_SYSCALL_EXEC           66
+#define GRV_SYSCALL_POLL           67
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -292,6 +297,39 @@ static inline int grv_dup2(int oldfd, int newfd) {
    the buffer is full. Returns 0, or -1 with errno. */
 static inline int grv_pipe(int fds[2]) {
     return (int)grv_err(syscall1(GRV_SYSCALL_PIPE, (long)fds));
+}
+
+/* --- readiness ---
+   Ask which descriptors would not block, without taking anything out of them.
+   Each entry names a descriptor and the events it cares about; revents comes
+   back with GRV_POLLIN, GRV_POLLOUT and, whatever was asked for, GRV_POLLERR
+   (writing a pipe whose reader has gone), GRV_POLLHUP (reading a pipe whose
+   last writer closed) or GRV_POLLNVAL (the descriptor is not open).
+
+   Returns the number of entries with something to report, 0 on timeout, or -1
+   with errno: EINVAL for more than GRV_POLL_MAX_FDS entries, a timeout below
+   -1, or a descriptor number outside the table.
+
+   A pipe is tested, never drained: a readable pipe still holds its bytes for
+   the read that follows. A regular file is always ready. The console reports
+   writable but never readable, because testing the keyboard would take a key,
+   so poll cannot be used to wait for console input. */
+struct grv_pollfd {
+    int   fd;
+    short events;
+    short revents;
+};
+#define GRV_POLLIN       0x001
+#define GRV_POLLOUT      0x004
+#define GRV_POLLERR      0x008
+#define GRV_POLLHUP      0x010
+#define GRV_POLLNVAL     0x020
+#define GRV_POLL_MAX_FDS 16
+
+static inline int grv_poll(struct grv_pollfd* fds, unsigned long nfds,
+                           long timeout_ms) {
+    return (int)grv_err(syscall3(GRV_SYSCALL_POLL, (long)fds, (long)nfds,
+                                 timeout_ms));
 }
 
 /* --- File positioning / metadata --- */

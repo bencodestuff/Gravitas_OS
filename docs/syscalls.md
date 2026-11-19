@@ -290,6 +290,8 @@ value with a different meaning.
 | 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; writes dirty pages back and flushes every mounted filesystem |
 | 64 | `FSYNC` | `fd` | 0/−1; writes dirty pages back and flushes the filesystem holding an open descriptor |
 | 65 | `FORK` | — | 0 in the child, the new task id in the parent, or a negative errno (`−ENOMEM`, `−EOPNOTSUPP`) |
+| 66 | `EXEC` | `path, argv, argc` | reserved: this kernel does not dispatch it yet and answers `−ENOSYS` |
+| 67 | `POLL` | `fds*, nfds, timeout_ms` | number of entries with a non-zero `revents` (0 on timeout), or −1 (`EINVAL` past 16 entries, a timeout below −1, or a descriptor number outside the table) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -330,6 +332,28 @@ that outlives its parent takes no record either, since nobody could collect
 it. Only a status that has to wait for a later `WAIT` spends one of the eight
 slots.
 
+### Readiness (poll)
+
+`POLL` asks which descriptors would not block, and waits up to `timeout_ms`
+(−1 waits forever, 0 tests and returns). It tests and never consumes: a pipe
+reported `POLLIN` still holds its bytes for the read that follows, and a
+descriptor can be polled as often as the caller likes.
+
+`revents` is written for every entry on every call, so an array can be cleared
+once and reused. `POLLERR`, `POLLHUP` and `POLLNVAL` are reported even when the
+caller did not ask for them, because the descriptor is unusable either way:
+`POLLERR` is a pipe whose last reader has gone (a write would fail with
+`EPIPE`), `POLLHUP` a pipe whose last writer has closed, and `POLLNVAL` an
+empty descriptor slot. A regular file is always ready. The console is writable
+but never readable: testing the keyboard would take the key, so `POLL` cannot
+be used to wait for console input.
+
+Waiting costs one tick per pass. The scheduler wakes a task either on a timer
+or on a pipe, never both, so the call naps 20 ms and re-tests instead of
+parking on a wake list. The deadline is absolute and fixed when the call
+starts, so a wake that finds nothing ready cannot extend it, and the test and
+the nap are one interrupt-off region, so a change cannot land between them.
+
 ### The interrupt key
 
 `0x03` (Ctrl+C) in a task's console input is not text: it terminates that
@@ -360,6 +384,16 @@ struct grv_msg {
     unsigned long a;      // payload word 1
     unsigned long b;      // payload word 2
 };
+```
+
+### poll entry (`POLL`)
+
+```
+struct grv_pollfd {
+    int   fd;        // 4 bytes
+    short events;    // 2
+    short revents;   // 2; written by the kernel
+};                   // 8 bytes, no padding
 ```
 
 ### Framebuffer info (`FBINFO`)
