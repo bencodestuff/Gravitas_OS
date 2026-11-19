@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <grv/syscall.h>
 
 static int fails = 0;
@@ -159,6 +160,91 @@ int main(int argc, char** argv) {
         grv_close(fp[1]);
     }
 
+    // --- a full pipe: room, not willingness --------------------------------
+    // POLLOUT means a write would not block. A pipe with one byte free is
+    // writable and a pipe with none is not, and the answer changes when the
+    // reader drains it. A readiness call that only looked at "the other end
+    // exists" would pass every earlier check and fail this one.
+    int full[2];
+    if (grv_pipe(full) != 0) {
+        check(0, "pipe() for the full-pipe test");
+    } else {
+        static char fill[4095];
+        memset(fill, 'x', sizeof fill);
+        check(grv_write_fd(full[1], fill, sizeof fill) == (long)sizeof fill,
+              "fill a pipe to its last usable byte");
+        one.fd = full[1]; one.events = GRV_POLLOUT; one.revents = 0;
+        r = grv_poll(&one, 1, 0);
+        check(r == 0 && one.revents == 0, "a full pipe is not writable");
+        one.fd = full[0]; one.events = GRV_POLLIN; one.revents = 0;
+        r = grv_poll(&one, 1, 0);
+        check(r == 1 && (one.revents & GRV_POLLIN), "a full pipe is readable");
+        check(grv_read_fd(full[0], fill, sizeof fill) == (long)sizeof fill,
+              "drain the full pipe");
+        one.fd = full[1]; one.events = GRV_POLLOUT; one.revents = 0;
+        r = grv_poll(&one, 1, 0);
+        check(r == 1 && (one.revents & GRV_POLLOUT),
+              "an emptied pipe is writable again");
+        grv_close(full[0]);
+        grv_close(full[1]);
+    }
+
+    // --- select() is the same readiness in bits ----------------------------
+    int sp[2];
+    if (grv_pipe(sp) != 0) {
+        check(0, "pipe() for select");
+    } else {
+        struct timeval now = { 0, 0 };
+        fd_set rd, wr;
+        int maxfd = sp[1] + 1;
+
+        FD_ZERO(&rd); FD_SET(sp[0], &rd);
+        r = select(maxfd, &rd, 0, 0, &now);
+        check(r == 0 && !FD_ISSET(sp[0], &rd),
+              "select: an empty pipe leaves no bit set");
+
+        check(grv_write_fd(sp[1], "S", 1) == 1, "select: write one byte");
+        FD_ZERO(&rd); FD_SET(sp[0], &rd);
+        r = select(maxfd, &rd, 0, 0, &now);
+        check(r == 1 && FD_ISSET(sp[0], &rd), "select: a byte sets the read bit");
+
+        FD_ZERO(&wr); FD_SET(sp[1], &wr);
+        r = select(maxfd, 0, &wr, 0, &now);
+        check(r == 1 && FD_ISSET(sp[1], &wr),
+              "select: a pipe with room sets the write bit");
+        check(grv_read_fd(sp[0], &c, 1) == 1 && c == 'S',
+              "select does not consume the byte");
+
+        fd_set timed;
+        FD_ZERO(&timed); FD_SET(sp[0], &timed);
+        struct timeval tenth = { 0, 100000 };
+        t0 = grv_ticks();
+        r = select(maxfd, &timed, 0, 0, &tenth);
+        dt = grv_ticks() - t0;
+        check(r == 0 && !FD_ISSET(sp[0], &timed), "select: an empty pipe times out");
+        check(dt >= 4 && dt <= 60, "select: the timeout waited about 100 ms");
+
+        FD_ZERO(&rd); FD_SET(15, &rd);   // inside the table, unused here
+        errno = 0;
+        r = select(16, &rd, 0, 0, &now);
+        check(r == -1 && errno == EBADF, "select: an unused descriptor is EBADF");
+        check(rd.__bits == 0, "select clears the sets when it reports EBADF");
+
+        FD_ZERO(&rd); FD_SET(sp[0], &rd);
+        struct timeval bad = { 0, -1 };
+        errno = 0;
+        r = select(maxfd, &rd, 0, 0, &bad);
+        check(r == -1 && errno == EINVAL,
+              "select: a negative microsecond part is EINVAL");
+
+        errno = 0;
+        r = select(FD_SETSIZE + 1, &rd, 0, 0, &now);
+        check(r == -1 && errno == EINVAL, "select: nfds past FD_SETSIZE is EINVAL");
+
+        grv_close(sp[0]);
+        grv_close(sp[1]);
+    }
+
     // --- descriptors that are not there ------------------------------------
     one.fd = 15; one.events = GRV_POLLIN; one.revents = 0;   // inside the table, unused
     r = grv_poll(&one, 1, 0);
@@ -172,6 +258,14 @@ int main(int argc, char** argv) {
     errno = 0;
     r = grv_poll(&one, GRV_POLL_MAX_FDS + 1, 0);
     check(r == -1 && errno == EINVAL, "one entry past the cap is EINVAL");
+
+    errno = 0;
+    r = grv_poll(&one, 1, -2);
+    check(r == -1 && errno == EINVAL, "a timeout below -1 is EINVAL");
+
+    errno = 0;
+    r = grv_poll(0, 1, 0);
+    check(r == -1 && errno == EFAULT, "a null array is EFAULT");
 
     // --- files and the console --------------------------------------------
     one.fd = 1; one.events = GRV_POLLIN; one.revents = 0;

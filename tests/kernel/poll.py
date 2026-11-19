@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Readiness: POLL on pipes, without consuming them.
 
-`polltest` asks the real kernel five times over: an empty pipe is not readable
-and polling leaves its bytes in place; the deadline holds when nothing happens;
-a write from another task ends the wait before the deadline; EOF and a broken
-end are reported even when the caller asked for something else; and a
-descriptor that is not there is named as such.
+`polltest` asks the real kernel for readiness and has to be right about all of
+it: an empty pipe is not readable and polling leaves its bytes in place; the
+deadline holds when nothing happens; a write from another task ends the wait
+before the deadline; EOF and a broken end are reported even when the caller
+asked for something else; a full pipe has no room while an emptied one does; a
+descriptor that is not there is named as such; and `select` is the same
+answers, in bits.
 
     python3 tests/kernel/poll.py
 """
