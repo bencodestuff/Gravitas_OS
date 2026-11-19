@@ -80,8 +80,8 @@ namespace VMM {
     // Create a fresh address space sharing the kernel's upper-half mappings.
     // Returns the physical address of the new PML4.
     uint64_t clone_kernel_space();
-    // Clone user mappings into a fresh kernel-shared address space. Writable
-    // owned leaves become read-only CoW mappings in both spaces.
+    // Clone user mappings into a fresh kernel-shared address space. Owned
+    // leaves are retained; writable leaves become read-only CoW mappings.
     uint64_t clone_user_space(uint64_t source_pml4);
     // Resolve a user write-protection fault at address. Returns false for
     // shared, non-user, non-CoW, or out-of-memory cases.

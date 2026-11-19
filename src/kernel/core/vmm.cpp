@@ -214,8 +214,10 @@ namespace VMM {
         // top-level entries shares the entire kernel subtree, so kernel
         // mappings made later are visible in every address space.
         // The user half (0..255) stays zero: each process builds its own.
-        for (int i = 256; i < 512; i++) {
-            new_pml4[i] = kernel_pml4[i];
+        if (kernel_pml4) {
+            for (int i = 256; i < 512; i++) {
+                new_pml4[i] = kernel_pml4[i];
+            }
         }
         return new_pml4_phys;
     }
@@ -237,16 +239,15 @@ namespace VMM {
             }
             if (!(pte & PTE_PRESENT)) continue;
             uint64_t child_flags = pte & 0xFFF;
-            if (!(pte & PTE_SHARED) && (pte & PTE_WRITABLE)) {
+            uint64_t child_entry = pte;
+            if (!(pte & PTE_SHARED)) {
                 if (!PMM::retain_page(pte & 0x000FFFFFFFFFF000ull)) {
                     destroy_user_space(child);
                     return 0;
                 }
-                child_flags = (child_flags & ~PTE_WRITABLE) | PTE_COW;
-            } else if (pte & PTE_COW) {
-                if (!PMM::retain_page(pte & 0x000FFFFFFFFFF000ull)) {
-                    destroy_user_space(child);
-                    return 0;
+                if ((pte & PTE_WRITABLE) || (pte & PTE_COW)) {
+                    child_flags = (child_flags & ~PTE_WRITABLE) | PTE_COW;
+                    child_entry = (pte & ~PTE_WRITABLE) | PTE_COW;
                 }
             }
             if (!map_page_in(child, pte & 0x000FFFFFFFFFF000ull, va, child_flags)) {
@@ -254,11 +255,16 @@ namespace VMM {
                 destroy_user_space(child);
                 return 0;
             }
-            if (!(pte & PTE_SHARED) && (pte & PTE_WRITABLE)) {
+            uint64_t* child_pt = get_next_level_in(child,
+                (va >> 39) & 0x1ff, (va >> 30) & 0x1ff,
+                (va >> 21) & 0x1ff, false, false);
+            child_pt[(va >> 12) & 0x1ff] = child_entry;
+            if (!(pte & PTE_SHARED) && ((pte & PTE_WRITABLE) || (pte & PTE_COW))) {
                 uint64_t* parent_pt = get_next_level_in(source_pml4,
                     (va >> 39) & 0x1ff, (va >> 30) & 0x1ff,
                     (va >> 21) & 0x1ff, false, false);
-                parent_pt[(va >> 12) & 0x1ff] = child_flags;
+                parent_pt[(va >> 12) & 0x1ff] =
+                    (pte & ~PTE_WRITABLE) | PTE_COW;
                 if (source_pml4 == current_pml4())
                     asm volatile("invlpg (%0)" :: "r"(va) : "memory");
             }

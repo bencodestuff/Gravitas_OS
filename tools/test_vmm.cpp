@@ -37,6 +37,7 @@ uint32_t refs[POOL_PAGES];
 std::vector<uint64_t> frees; // every deliberate free_page() call, in order
 int double_frees = 0;
 int unknown_frees = 0;
+int allocs_until_failure = -1;
 int checks = 0;
 int failures = 0;
 } // namespace
@@ -49,6 +50,8 @@ static int page_index(uint64_t phys) {
 
 namespace PMM {
 uint64_t alloc_page() {
+    if (allocs_until_failure == 0) return 0;
+    if (allocs_until_failure > 0) allocs_until_failure--;
     for (int i = 0; i < POOL_PAGES; i++) {
         if (!used[i]) {
             used[i] = true;
@@ -325,6 +328,94 @@ static void cow_fault_and_copy_to_user() {
     VMM::destroy_user_space(pml4);
 }
 
+static uint64_t make_clone_source(uint64_t va, uint64_t data, uint64_t flags) {
+    uint64_t pml4 = PMM::alloc_page();
+    uint64_t pdpt = PMM::alloc_page();
+    uint64_t pd = PMM::alloc_page();
+    uint64_t pt = PMM::alloc_page();
+    if (!pml4 || !pdpt || !pd || !pt) return 0;
+    table(pml4)[(va >> 39) & 511] = pdpt | 7;
+    table(pdpt)[(va >> 30) & 511] = pd | 7;
+    table(pd)[(va >> 21) & 511] = pt | 7;
+    table(pt)[(va >> 12) & 511] = data | flags;
+    return pml4;
+}
+
+static void clone_retains_and_preserves_owned_leaves(bool child_first) {
+    constexpr uint64_t writable_va = 0x400000;
+    constexpr uint64_t readonly_va = 0x401000;
+    uint64_t writable = PMM::alloc_page();
+    uint64_t readonly = PMM::alloc_page();
+    std::memset((void*)writable, 0x5a, 4096);
+    std::memset((void*)readonly, 0xa5, 4096);
+    uint64_t source = make_clone_source(
+        writable_va, writable, VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_WRITABLE);
+    // Same page-table branch, second leaf, read-only and owned by the source.
+    uint64_t* source_pt = table(table(table(table(source)[0] & PAGE_MASK)[0] & PAGE_MASK)[2] & PAGE_MASK);
+    source_pt[(readonly_va >> 12) & 511] =
+        readonly | VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_NO_CACHE |
+        (1ull << 63);
+    uint64_t child = VMM::clone_user_space(source);
+    check(child != 0, "clone of writable and read-only leaves succeeds");
+    uint64_t parent_pte = VMM::leaf_pte_in(source, writable_va);
+    uint64_t child_pte = VMM::leaf_pte_in(child, writable_va);
+    check((parent_pte & PAGE_MASK) == writable,
+          "parent CoW entry retains its physical frame");
+    check((child_pte & PAGE_MASK) == writable,
+          "child CoW entry maps the same physical frame");
+    check(!(parent_pte & VMM::PTE_WRITABLE) && (parent_pte & VMM::PTE_COW),
+          "parent writable mapping becomes CoW");
+    check(((uint8_t*)writable)[0] == 0x5a &&
+          ((uint8_t*)VMM::phys_to_kernel(child_pte & PAGE_MASK))[0] == 0x5a,
+          "clone preserves the source frame bytes");
+    uint64_t ro_child = VMM::leaf_pte_in(child, readonly_va);
+    check((ro_child & PAGE_MASK) == readonly &&
+          (ro_child & VMM::PTE_NO_CACHE) &&
+          (ro_child & (1ull << 63)) &&
+          !(ro_child & VMM::PTE_WRITABLE),
+          "read-only owned mapping keeps low and high PTE flags");
+    check(PMM::page_references(readonly) == 2,
+          "read-only owned frame is retained for the child");
+    if (child_first) {
+        VMM::destroy_user_space(child);
+        check(PMM::page_references(readonly) == 1 && PMM::page_references(writable) == 1,
+              "child teardown releases only its frame references");
+        VMM::destroy_user_space(source);
+    } else {
+        VMM::destroy_user_space(source);
+        check(PMM::page_references(readonly) == 1 && PMM::page_references(writable) == 1,
+              "parent teardown leaves child frame references alive");
+        VMM::destroy_user_space(child);
+    }
+    check(!used[page_index(writable)] && !used[page_index(readonly)],
+          "both teardown orders release owned frames exactly once");
+}
+
+static void failed_clone_rolls_back_retained_frames() {
+    constexpr uint64_t va0 = 0x400000;
+    constexpr uint64_t va1 = 0x800000;
+    uint64_t data = PMM::alloc_page();
+    uint64_t source = make_clone_source(
+        va0, data, VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_WRITABLE);
+    // A second leaf in a separate top-level branch forces an allocation after
+    // the first leaf has already been retained and mapped into the child.
+    uint64_t d1 = PMM::alloc_page();
+    uint64_t second_pt = PMM::alloc_page();
+    uint64_t* source_pd = table(table(table(source)[0] & PAGE_MASK)[0] & PAGE_MASK);
+    source_pd[(va1 >> 21) & 511] = second_pt | 7;
+    table(second_pt)[(va1 >> 12) & 511] =
+        d1 | VMM::PTE_PRESENT | VMM::PTE_USER | VMM::PTE_WRITABLE;
+    allocs_until_failure = 4;
+    uint64_t child = VMM::clone_user_space(source);
+    allocs_until_failure = -1;
+    check(child == 0, "clone fails when a later page-table allocation fails");
+    check(PMM::page_references(data) == 1 && PMM::page_references(d1) == 1,
+          "failed clone rolls back every retained leaf");
+    check((VMM::leaf_pte_in(source, va0) & PAGE_MASK) == data,
+          "failed clone leaves parent physical mapping intact");
+    VMM::destroy_user_space(source);
+}
+
 int main() {
     for (int i = 0; i < POOL_PAGES; i++) {
         void* p = nullptr;
@@ -341,6 +432,9 @@ int main() {
     a_reserved_range_covers_its_whole_length();
     a_failed_reservation_leaves_nothing_behind();
     cow_fault_and_copy_to_user();
+    clone_retains_and_preserves_owned_leaves(true);
+    clone_retains_and_preserves_owned_leaves(false);
+    failed_clone_rolls_back_retained_frames();
 
     if (failures) {
         std::printf("test_vmm: %d of %d checks failed\n", failures, checks);
