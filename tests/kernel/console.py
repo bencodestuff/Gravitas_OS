@@ -230,28 +230,49 @@ def command_lists(g):
     if g.count(r"syntax error") != errors:
         g.fail("an empty command line was treated as a syntax error")
 
-    fin = g.count(r"\[shell\] program finished")
     hello = g.count("Hello from the Gravitas tar filesystem!")
     mark = g.mark()
-    g.shell("cat 'hello;txt'")
-    g.wait_count(r"\[shell\] program finished", fin + 1)
-    if "syntax error" in g.since(mark):
-        g.fail("a quoted semicolon split the command")
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt > '/tmp/quoted;out'; cat '/tmp/quoted;out'")
+    g.wait_count(r"\[shell\] program finished", fin + 2)
+    g.wait_count("Hello from the Gravitas tar filesystem!", hello + 1)
+    output = g.since(mark)
+    if "cannot open" in output or "syntax error" in output:
+        g.fail(
+            "a quoted operator filename was not passed as a literal path:\n" + output
+        )
 
+    # Pipelines and redirections remain valid within semicolon-separated lists.
+    fin = g.count(r"\[shell\] program finished")
+    hello = g.count("Hello from the Gravitas tar filesystem!")
+    g.shell("cat hello.txt | cat > /tmp/list-pipe.txt; cat /tmp/list-pipe.txt")
+    g.wait_count(r"\[shell\] program finished", fin + 2)
+    g.wait_count("Hello from the Gravitas tar filesystem!", hello + 1)
+
+    # Unsupported connectors must be rejected before any item can run.
+    mark = g.mark()
     fin = g.count(r"\[shell\] program finished")
     g.shell("cat hello.txt && cat hello.txt")
-    g.wait_count(r"\[shell\] program finished", fin + 2)
-    g.wait_count("Hello from the Gravitas tar filesystem!", hello + 2)
-
-    # The right-hand command is conditional and must not be diagnosed as an
-    # unsupported background job when the left-hand command fails.
-    mark = g.mark()
-    g.shell("not-a-real-command && cat hello.txt &")
-    g.wait_for(r"cannot run 'not-a-real-command\.elf'")
+    g.wait_for(r"'&&' requires child exit statuses")
     time.sleep(0.2)
     output = g.since(mark)
-    if "requires job control" in output:
-        g.fail("a skipped trailing background item was executed")
+    if (
+        "Hello from the Gravitas tar filesystem!" in output
+        or g.count(r"\[shell\] program finished") != fin
+    ):
+        g.fail("a command-list item ran before rejecting '&&'")
+
+    mark = g.mark()
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt; cat hello.txt &")
+    g.wait_for(r"trailing '&' requires job control")
+    time.sleep(0.2)
+    output = g.since(mark)
+    if (
+        "Hello from the Gravitas tar filesystem!" in output
+        or g.count(r"\[shell\] program finished") != fin
+    ):
+        g.fail("a command-list item ran before rejecting '&'")
 
 
 if __name__ == "__main__":

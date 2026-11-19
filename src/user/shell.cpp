@@ -134,8 +134,8 @@ static void cmd_kill(const char* arg) {
 // (or a builtin) with whitespace-separated arguments and optional
 // redirections: '< file', '> file' (truncate), '>> file' (append). The
 // operators are always separate tokens, so 'cat<in>out' means the same as
-// 'cat < in > out'. There is no quoting: this shell is a spawner, and
-// everything on the line is a word.
+// 'cat < in > out'. Single- and double-quoted portions group a word and are
+// removed from its value. There is no expansion or escape processing.
 
 #define SH_MAX_CMDS 8
 #define SH_MAX_ARGS 8
@@ -173,9 +173,11 @@ static int sh_read_word(const char** pp, char* out) {
     char quote = 0;
     while (*p) {
         if (quote) {
-            if (*p == quote) quote = 0;
+            if (*p == quote) { quote = 0; p++; continue; }
         } else if (*p == '\'' || *p == '"') {
             quote = *p;
+            p++;
+            continue;
         } else if (*p == ' ' || *p == '\t' || *p == '<' || *p == '>' ||
                    *p == '|' || *p == ';' || *p == '&') {
             break;
@@ -550,13 +552,22 @@ static long execute(char* line) {
         return -1;
     }
 
-    long status = 0;
+    // Keep the parsed connector representation for future status-aware
+    // execution, but do not partially run a list with unsupported semantics.
     for (int i = 0; i < count; i++) {
-        if (items[i].connector == 2 && status != 0) continue;
+        if (items[i].connector == 2) {
+            printf("shell: '&&' requires child exit statuses, not implemented\n");
+            return -1;
+        }
         if (items[i].background) {
             printf("shell: trailing '&' requires job control, not implemented\n");
             return -1;
         }
+    }
+
+    long status = 0;
+    for (int i = 0; i < count; i++) {
+        if (items[i].connector == 2 && status != 0) continue;
         status = execute_pipeline(items[i].text);
     }
     return status;
