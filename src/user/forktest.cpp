@@ -16,7 +16,10 @@
 //      collected exactly once; a stranger's id cannot be waited for;
 //   7. a fork is refused while a shared-memory region is mapped, before any
 //      task is published, and works again once the mapping is gone;
-//   8. ordinary spawn still works afterwards.
+//   8. an output buffer the kernel stores into directly still works on both
+//      sides after the fork, including pages that are copy-on-write and were
+//      never written before the split, and each side sees only its own copy;
+//   9. ordinary spawn still works afterwards.
 
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +32,13 @@
 
 static volatile unsigned long shared_word = MAGIC_SHARED;
 static int failures = 0;
+
+// Output buffers the kernel writes through directly. A fork write-protects
+// every page it copies, so after one of these forks each of them is
+// copy-on-write in the parent as well as the child: exactly the case a plain
+// "is it writable" check used to refuse.
+static char static_out[64];        // written before the fork
+static char untouched_out[64];     // mapped but never written before the fork
 
 static void fail(const char* what) {
     printf("[forktest] FAIL %s\n", what);
@@ -83,6 +93,75 @@ int main(int argc, char** argv) {
     unsigned long stack_word = MAGIC_STACK;
     unsigned long* slot = &stack_word;
     shared_word = MAGIC_SHARED;
+
+    // --- kernel output buffers on copy-on-write pages ---
+    // Run first: nothing has written these pages since the program started, so
+    // the fork below leaves them copy-on-write on both sides. GETCWD writes
+    // into the caller's buffer with plain kernel stores and has to make the
+    // page private first; if it did not, both tasks would get -EFAULT (or the
+    // kernel would fault in ring 0) instead of their working directory.
+    static_out[0] = 'x';                       // touched, so definitely mapped
+    memset(static_out + 1, 0, sizeof static_out - 1);
+    // untouched_out is left exactly as the loader mapped it: zeroed .bss that
+    // no instruction has written.
+    char* heap_base = (char*)grv_brk(NULL);
+    char* heap_out = nullptr;
+    if ((long)heap_base <= 0) {
+        fail("brk before the heap output buffer");
+    } else {
+        // One fresh page: mapped writable and zeroed, never written. The break
+        // is one past the end, so growing it by a page maps the page that
+        // starts at the old value.
+        long grown = (long)grv_brk(heap_base + 4096);
+        if (grown != (long)(heap_base + 4096)) {
+            fail("brk for the heap output buffer");
+        } else {
+            heap_out = heap_base;
+        }
+    }
+
+    long out_child = grv_fork();
+    if (out_child == 0) {
+        // The child's first act: write into all three buffers. Its copies are
+        // its own, so it marks them and reports through the exit code.
+        if (grv_getcwd(static_out, sizeof static_out) < 0) grv_exit(81);
+        if (grv_getcwd(untouched_out, sizeof untouched_out) < 0) grv_exit(82);
+        if (heap_out != nullptr &&
+            grv_getcwd(heap_out, 4096) < 0) grv_exit(83);
+        static_out[0] = 'c';
+        untouched_out[0] = 'c';
+        if (heap_out != nullptr) heap_out[0] = 'c';
+        grv_exit(0);
+    }
+    if (out_child < 0) {
+        printf("[forktest] fork for the output buffers failed (%d)\n",
+               (int)out_child);
+        fail("fork for the output buffers");
+    } else {
+        long n1 = grv_getcwd(static_out, sizeof static_out);
+        long n2 = grv_getcwd(untouched_out, sizeof untouched_out);
+        if (n1 <= 0) fail("GETCWD into a static buffer after fork (parent)");
+        if (n2 <= 0) fail("GETCWD into an untouched buffer after fork (parent)");
+        if (n1 > 0 && (static_out[0] != '/' || static_out[n1] != '\0'))
+            fail("the parent's static buffer did not receive the cwd");
+        if (n2 > 0 && (untouched_out[0] != '/' || untouched_out[n2] != '\0'))
+            fail("the parent's untouched buffer did not receive the cwd");
+        if (heap_out != nullptr) {
+            long n3 = grv_getcwd(heap_out, 4096);
+            if (n3 <= 0) fail("GETCWD into a heap page after fork (parent)");
+            else if (heap_out[0] != '/' || heap_out[n3] != '\0')
+                fail("the parent's heap page did not receive the cwd");
+        }
+        long oc = grv_wait(out_child);
+        if (oc != 0) {
+            printf("[forktest] output-buffer child exited %d\n", (int)oc);
+            fail("a kernel write into a copy-on-write buffer (child)");
+        }
+        // The child marked its copies; the parent's must still hold the cwd.
+        if (static_out[0] != '/' || untouched_out[0] != '/' ||
+            (heap_out != nullptr && heap_out[0] != '/'))
+            fail("the child's buffer write reached the parent");
+    }
 
     // --- fork, private memory, blocked wait ---
     long child = grv_fork();

@@ -301,28 +301,6 @@ namespace VMM {
         return true;
     }
 
-    bool copy_to_user(uint64_t pml4_phys, uint64_t destination,
-                      const void* source, uint64_t length) {
-        if (destination >= USER_VA_LIMIT || length > USER_VA_LIMIT - destination)
-            return false;
-        const uint8_t* in = (const uint8_t*)source;
-        for (uint64_t done = 0; done < length;) {
-            uint64_t va = destination + done;
-            if (resolve_cow_fault(pml4_phys, va)) {}
-            uint64_t pte = leaf_pte_in(pml4_phys, va);
-            if (!(pte & PTE_PRESENT) || !(pte & PTE_USER) ||
-                !(pte & PTE_WRITABLE)) return false;
-            uint64_t offset = va & 0xFFF;
-            uint64_t chunk = 4096 - offset;
-            if (chunk > length - done) chunk = length - done;
-            uint8_t* out = (uint8_t*)phys_to_kernel(
-                (pte & 0x000FFFFFFFFFF000ull) + offset);
-            for (uint64_t i = 0; i < chunk; i++) out[i] = in[done + i];
-            done += chunk;
-        }
-        return true;
-    }
-
     // --- User VA allocator (walk-the-tables, no metadata) ---
     // Region: 256MB .. 1GB. ELF code loads at 0x400000 below it; the
     // kernel's upper half is above. USER_VA_BASE lives in vmm.h because brk

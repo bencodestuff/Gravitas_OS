@@ -287,7 +287,7 @@ static void a_failed_reservation_leaves_nothing_behind() {
     check(live_pages() == live_before, "failed reservation leaves no leak");
 }
 
-static void cow_fault_and_copy_to_user() {
+static void cow_fault_resolution() {
     uint64_t pml4 = PMM::alloc_page();
     uint64_t pdpt = PMM::alloc_page();
     uint64_t pd = PMM::alloc_page();
@@ -316,15 +316,30 @@ static void cow_fault_and_copy_to_user() {
               resolved & 0x000FFFFFFFFFF000ull))[0] == 0x11,
           "new mapping contains a private copy of the source");
     check(((uint8_t*)data)[0] == 0x11, "the shared source remains unchanged");
-    const char payload[] = "safe";
-    check(VMM::copy_to_user(pml4, va + 100, payload, sizeof(payload)),
-          "copy_to_user writes through the kernel mapping");
-    uint8_t* copied = (uint8_t*)VMM::phys_to_kernel(
-        resolved & 0x000FFFFFFFFFF000ull);
-    check(std::memcmp(copied + 100, payload, sizeof(payload)) == 0,
-          "copy_to_user copied the expected bytes");
-    check(!VMM::copy_to_user(pml4, VMM::USER_VA_LIMIT, payload, 1),
-          "copy_to_user rejects kernel-half addresses");
+
+    // With the other holder gone, one reference is left and resolving needs no
+    // copy: the write bit comes back in place. UserPtr relies on exactly this
+    // to make an output buffer writable before a kernel store, and it is the
+    // common case once either side of a fork has written or exited.
+    // A second page in the same table, so the mapping above stays as it is.
+    constexpr uint64_t va2 = va + 4096;
+    uint64_t solo = PMM::alloc_page();
+    check(solo != 0, "a frame for the solo CoW page");
+    l1[(va2 >> 12) & 511] = solo | VMM::PTE_PRESENT | VMM::PTE_USER |
+                               VMM::PTE_COW;
+    std::memset((void*)solo, 0x22, 4096);
+    int live_before_in_place = live_pages();
+    check(VMM::resolve_cow_fault(pml4, va2 + 5), "a solo CoW page resolves");
+    uint64_t solo_resolved = l1[(va2 >> 12) & 511];
+    check((solo_resolved & 0x000FFFFFFFFFF000ull) == solo,
+          "a single-reference CoW page is resolved in place");
+    check((solo_resolved & VMM::PTE_WRITABLE) &&
+          !(solo_resolved & VMM::PTE_COW),
+          "in-place resolution restores write access");
+    check(live_pages() == live_before_in_place,
+          "in-place resolution allocates nothing");
+
+    PMM::free_page(data);   // the reference the fictional other holder held
     VMM::destroy_user_space(pml4);
 }
 
@@ -431,7 +446,7 @@ int main() {
     teardown_uses_the_user_half_only();
     a_reserved_range_covers_its_whole_length();
     a_failed_reservation_leaves_nothing_behind();
-    cow_fault_and_copy_to_user();
+    cow_fault_resolution();
     clone_retains_and_preserves_owned_leaves(true);
     clone_retains_and_preserves_owned_leaves(false);
     failed_clone_rolls_back_retained_frames();

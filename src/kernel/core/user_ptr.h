@@ -21,11 +21,16 @@ namespace UserPtr {
     // upper half above it. One definition, in the VMM.
     constexpr uint64_t USER_TOP = VMM::USER_VA_LIMIT;
 
-    // [ptr, ptr + len) is entirely user memory. 'write' asks for a writable
-    // leaf (an output buffer); otherwise read access is enough. Null, an
-    // address at or above the split, and a range that wraps or crosses the
-    // split are all rejected. A zero length touches nothing, so it is
-    // accepted (read/write with a count of 0).
+    // [ptr, ptr + len) is entirely user memory. 'write' asks for a range the
+    // kernel may store through: every leaf must be mapped for user access and
+    // either writable or copy-on-write with a writable origin (a fork
+    // write-protects the pages it copies). A copy-on-write page in the range
+    // is made private before this returns, so the caller's direct stores
+    // cannot fault in ring 0; that can allocate, and an allocation failure is
+    // reported as a rejected range with nothing written. Null, an address at
+    // or above the split, and a range that wraps or crosses the split are all
+    // rejected. A zero length touches nothing, so it is accepted (read/write
+    // with a count of 0).
     bool valid(uint64_t ptr, uint64_t len, bool write);
 
     // A NUL-terminated string whose terminator lies within 'max' bytes: what

@@ -86,10 +86,6 @@ namespace VMM {
     // Resolve a user write-protection fault at address. Returns false for
     // shared, non-user, non-CoW, or out-of-memory cases.
     bool resolve_cow_fault(uint64_t pml4_phys, uint64_t address);
-    // Copy bytes to a user VA while resolving CoW pages. Rejects kernel VAs,
-    // unmapped pages and non-user leaves.
-    bool copy_to_user(uint64_t pml4_phys, uint64_t destination,
-                      const void* source, uint64_t length);
 
     // Find and reserve a free virtual range in 'pml4' (user region:
     // USER_VA_BASE .. USER_VA_END). Returns the base VA, or 0 on failure.
