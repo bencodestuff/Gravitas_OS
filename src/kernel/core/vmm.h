@@ -66,6 +66,7 @@ namespace VMM {
     // teardown clears the mapping but leaves the frames alone; whoever owns
     // them frees them.
     constexpr uint64_t PTE_SHARED = 1ull << 9;
+    constexpr uint64_t PTE_COW = 1ull << 10;
 
     // The physical address behind a kernel (HHDM) pointer — how the tar image's
     // files become mappable: the bytes are already in memory, so a read-only
@@ -79,6 +80,16 @@ namespace VMM {
     // Create a fresh address space sharing the kernel's upper-half mappings.
     // Returns the physical address of the new PML4.
     uint64_t clone_kernel_space();
+    // Clone user mappings into a fresh kernel-shared address space. Writable
+    // owned leaves become read-only CoW mappings in both spaces.
+    uint64_t clone_user_space(uint64_t source_pml4);
+    // Resolve a user write-protection fault at address. Returns false for
+    // shared, non-user, non-CoW, or out-of-memory cases.
+    bool resolve_cow_fault(uint64_t pml4_phys, uint64_t address);
+    // Copy bytes to a user VA while resolving CoW pages. Rejects kernel VAs,
+    // unmapped pages and non-user leaves.
+    bool copy_to_user(uint64_t pml4_phys, uint64_t destination,
+                      const void* source, uint64_t length);
 
     // Find and reserve a free virtual range in 'pml4' (user region:
     // USER_VA_BASE .. USER_VA_END). Returns the base VA, or 0 on failure.

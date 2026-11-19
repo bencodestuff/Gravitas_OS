@@ -11,6 +11,7 @@ namespace PMM {
     // Frame accounting (maintained by alloc/free, seeded by init).
     static uint64_t free_frames_count = 0;
     static uint64_t total_frames_count = 0;
+    static uint16_t* frame_refs = nullptr;
 
     static void memory_set(void* ptr, int value, uint64_t num) {
         uint8_t* u8ptr = (uint8_t*)ptr;
@@ -57,14 +58,15 @@ namespace PMM {
         // unaligned total still need a bit, and truncating the byte count made
         // bitmap_set/test touch a byte past the end for them.
         bitmap_size = (total_pages + 7) / 8;
-        
+        uint64_t refs_bytes = total_pages * sizeof(uint16_t);
+        uint64_t refs_offset = (bitmap_size + 7) & ~7ull;
         // Find space for the bitmap
         for (uint64_t i = 0; i < map->entry_count; i++) {
             struct limine_memmap_entry* entry = map->entries[i];
-            if (entry->type == LIMINE_MEMMAP_USABLE && entry->length >= bitmap_size) {
-                
+            if (entry->type == LIMINE_MEMMAP_USABLE &&
+                entry->length >= refs_offset + refs_bytes) {
                 bitmap = (uint8_t*)(entry->base + hhdm_offset);
-                
+                frame_refs = (uint16_t*)((uint8_t*)bitmap + refs_offset);
                 break;
             }
         }
@@ -80,6 +82,7 @@ namespace PMM {
 
         // Initialize (Mark all used) - This triggered the crash before!
         memory_set(bitmap, 0xFF, bitmap_size); 
+        memory_set(frame_refs, 0, refs_bytes);
 
         // Unlock usable regions
         for (uint64_t i = 0; i < map->entry_count; i++) {
@@ -95,11 +98,15 @@ namespace PMM {
         // Note: bitmap pointer is now Virtual, need the Physical address to calculate the index
         uint64_t bitmap_phys_addr = (uint64_t)bitmap - hhdm_offset;
         uint64_t bitmap_start_page = bitmap_phys_addr / PAGE_SIZE;
-        uint64_t bitmap_page_count = (bitmap_size + PAGE_SIZE - 1) / PAGE_SIZE;
+        uint64_t bitmap_page_count = (refs_offset + refs_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
         
         for (uint64_t i = 0; i < bitmap_page_count; i++) {
             bitmap_set(bitmap_start_page + i);
         }
+        uint64_t refs_phys = (uint64_t)frame_refs - hhdm_offset;
+        uint64_t refs_pages = (refs_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+        for (uint64_t i = 0; i < refs_pages; i++)
+            bitmap_set(refs_phys / PAGE_SIZE + i);
 
         // Lock first 1MB
         for (uint64_t i = 0; i < 256; i++) bitmap_set(i);
@@ -141,6 +148,7 @@ namespace PMM {
         for (uint64_t i = 1; i < total_pages; i++) { 
              if (!bitmap_test(i)) {
                  bitmap_set(i);
+                 frame_refs[i] = 1;
                  if (free_frames_count > 0) free_frames_count--;
                  return i * 4096; // Return 0x1000, 0x2000, etc.
              }
@@ -155,6 +163,19 @@ namespace PMM {
         return phys;
     }
 
+    bool retain_page(uint64_t address) {
+        uint64_t i = address / PAGE_SIZE;
+        if (i == 0 || i >= total_frames_count || !bitmap_test(i) ||
+            frame_refs[i] == 0 || frame_refs[i] == UINT16_MAX) return false;
+        frame_refs[i]++;
+        return true;
+    }
+
+    uint32_t page_references(uint64_t address) {
+        uint64_t i = address / PAGE_SIZE;
+        return (i && i < total_frames_count) ? frame_refs[i] : 0;
+    }
+
     void free_page(uint64_t address) {
         uint64_t i = address / PAGE_SIZE;
         // Frame 0 is reserved and never allocated, so a 0 here means the caller
@@ -166,6 +187,12 @@ namespace PMM {
         // must never index the bitmap: do not even read the bit.
         if (i >= total_frames_count) return;
         if (!bitmap_test(i)) return; // already free: don't over-count
+        if (frame_refs[i] == 0) return; // reserved frame, not PMM-owned
+        if (frame_refs[i] > 1) {
+            frame_refs[i]--;
+            return;
+        }
+        frame_refs[i] = 0;
         bitmap_unset(i);
         free_frames_count++;
     }

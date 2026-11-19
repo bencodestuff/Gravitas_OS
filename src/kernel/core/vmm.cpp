@@ -18,6 +18,7 @@ namespace VMM {
 
     static uint64_t* kernel_pml4 = nullptr;
     static uint64_t hhdm_offset = 0;
+    constexpr uint64_t USER_VA_END = 0x40000000;
 
     // --- Helpers ---
     static void memset(void* ptr, int value, uint64_t size) {
@@ -26,9 +27,13 @@ namespace VMM {
     }
 
     uint64_t current_pml4() {
+#ifdef VMM_HOST_TEST
+        return 0;
+#else
         uint64_t cr3;
         asm volatile("mov %%cr3, %0" : "=r"(cr3));
         return cr3;
+#endif
     }
 
     // THE FIXED FUNCTION — walks an explicit PML4 (physical address),
@@ -140,7 +145,8 @@ namespace VMM {
 
         // Flush TLB for this specific address immediately (harmless if the
         // address belongs to a space that isn't currently active)
-        asm volatile("invlpg (%0)" :: "r"(virtual_addr) : "memory");
+        if (pml4_phys == current_pml4())
+            asm volatile("invlpg (%0)" :: "r"(virtual_addr) : "memory");
         return true;
     }
 
@@ -214,11 +220,107 @@ namespace VMM {
         return new_pml4_phys;
     }
 
+    uint64_t clone_user_space(uint64_t source_pml4) {
+        uint64_t child = clone_kernel_space();
+        if (!child) return 0;
+        // User allocations and ELF mappings are below 1 GiB in this kernel.
+        // Copy guard reservations as well as leaves, so child VA allocation
+        // cannot overlap the parent's outstanding reservations.
+        for (uint64_t va = 0; va < USER_VA_END; va += 4096) {
+            uint64_t pte = leaf_pte_in(source_pml4, va);
+            if (pte & PTE_GUARD) {
+                uint64_t* pt = get_next_level_in(child, (va >> 39) & 0x1ff,
+                    (va >> 30) & 0x1ff, (va >> 21) & 0x1ff, true, true);
+                if (!pt) { destroy_user_space(child); return 0; }
+                pt[(va >> 12) & 0x1ff] = PTE_GUARD;
+                continue;
+            }
+            if (!(pte & PTE_PRESENT)) continue;
+            uint64_t child_flags = pte & 0xFFF;
+            if (!(pte & PTE_SHARED) && (pte & PTE_WRITABLE)) {
+                if (!PMM::retain_page(pte & 0x000FFFFFFFFFF000ull)) {
+                    destroy_user_space(child);
+                    return 0;
+                }
+                child_flags = (child_flags & ~PTE_WRITABLE) | PTE_COW;
+            } else if (pte & PTE_COW) {
+                if (!PMM::retain_page(pte & 0x000FFFFFFFFFF000ull)) {
+                    destroy_user_space(child);
+                    return 0;
+                }
+            }
+            if (!map_page_in(child, pte & 0x000FFFFFFFFFF000ull, va, child_flags)) {
+                if (!(pte & PTE_SHARED)) PMM::free_page(pte & 0x000FFFFFFFFFF000ull);
+                destroy_user_space(child);
+                return 0;
+            }
+            if (!(pte & PTE_SHARED) && (pte & PTE_WRITABLE)) {
+                uint64_t* parent_pt = get_next_level_in(source_pml4,
+                    (va >> 39) & 0x1ff, (va >> 30) & 0x1ff,
+                    (va >> 21) & 0x1ff, false, false);
+                parent_pt[(va >> 12) & 0x1ff] = child_flags;
+                if (source_pml4 == current_pml4())
+                    asm volatile("invlpg (%0)" :: "r"(va) : "memory");
+            }
+        }
+        return child;
+    }
+
+    bool resolve_cow_fault(uint64_t pml4_phys, uint64_t address) {
+        if (address >= USER_VA_LIMIT) return false;
+        uint64_t page = address & ~0xFFFull;
+        uint64_t pte = leaf_pte_in(pml4_phys, page);
+        if (!(pte & PTE_PRESENT) || !(pte & PTE_USER) ||
+            !(pte & PTE_COW) || (pte & PTE_SHARED)) return false;
+        uint64_t old_phys = pte & 0x000FFFFFFFFFF000ull;
+        uint64_t* pt = get_next_level_in(pml4_phys, (page >> 39) & 0x1ff,
+            (page >> 30) & 0x1ff, (page >> 21) & 0x1ff, false, false);
+        if (!pt) return false;
+        uint64_t idx = (page >> 12) & 0x1ff;
+        if (PMM::page_references(old_phys) == 1) {
+            pt[idx] = (pte | PTE_WRITABLE) & ~PTE_COW;
+            if (pml4_phys == current_pml4())
+                asm volatile("invlpg (%0)" :: "r"(page) : "memory");
+            return true;
+        }
+        uint64_t fresh = PMM::alloc_page();
+        if (!fresh) return false;
+        uint8_t* to = (uint8_t*)phys_to_kernel(fresh);
+        const uint8_t* from = (const uint8_t*)phys_to_kernel(old_phys);
+        for (uint64_t i = 0; i < 4096; i++) to[i] = from[i];
+        pt[idx] = fresh | ((pte | PTE_WRITABLE) & 0xFFF & ~PTE_COW);
+        PMM::free_page(old_phys);
+        if (pml4_phys == current_pml4())
+            asm volatile("invlpg (%0)" :: "r"(page) : "memory");
+        return true;
+    }
+
+    bool copy_to_user(uint64_t pml4_phys, uint64_t destination,
+                      const void* source, uint64_t length) {
+        if (destination >= USER_VA_LIMIT || length > USER_VA_LIMIT - destination)
+            return false;
+        const uint8_t* in = (const uint8_t*)source;
+        for (uint64_t done = 0; done < length;) {
+            uint64_t va = destination + done;
+            if (resolve_cow_fault(pml4_phys, va)) {}
+            uint64_t pte = leaf_pte_in(pml4_phys, va);
+            if (!(pte & PTE_PRESENT) || !(pte & PTE_USER) ||
+                !(pte & PTE_WRITABLE)) return false;
+            uint64_t offset = va & 0xFFF;
+            uint64_t chunk = 4096 - offset;
+            if (chunk > length - done) chunk = length - done;
+            uint8_t* out = (uint8_t*)phys_to_kernel(
+                (pte & 0x000FFFFFFFFFF000ull) + offset);
+            for (uint64_t i = 0; i < chunk; i++) out[i] = in[done + i];
+            done += chunk;
+        }
+        return true;
+    }
+
     // --- User VA allocator (walk-the-tables, no metadata) ---
     // Region: 256MB .. 1GB. ELF code loads at 0x400000 below it; the
     // kernel's upper half is above. USER_VA_BASE lives in vmm.h because brk
     // has to stop before the allocator's arena.
-    constexpr uint64_t USER_VA_END  = 0x40000000; // 1GB
 
     // Is the page range unmapped in this space? (creates nothing)
     static bool range_free(uint64_t pml4_phys, uint64_t vaddr, uint64_t pages) {

@@ -33,6 +33,7 @@ constexpr uint64_t PAGE_MASK = 0x000FFFFFFFFFF000ull;
 
 uint64_t pool[POOL_PAGES];
 bool used[POOL_PAGES];
+uint32_t refs[POOL_PAGES];
 std::vector<uint64_t> frees; // every deliberate free_page() call, in order
 int double_frees = 0;
 int unknown_frees = 0;
@@ -51,6 +52,7 @@ uint64_t alloc_page() {
     for (int i = 0; i < POOL_PAGES; i++) {
         if (!used[i]) {
             used[i] = true;
+            refs[i] = 1;
             std::memset((void*)pool[i], 0, 4096);
             return pool[i];
         }
@@ -59,6 +61,16 @@ uint64_t alloc_page() {
 }
 
 uint64_t alloc_page_zeroed() { return alloc_page(); }
+bool retain_page(uint64_t address) {
+    int i = page_index(address);
+    if (i < 0 || !used[i] || refs[i] == UINT32_MAX) return false;
+    refs[i]++;
+    return true;
+}
+uint32_t page_references(uint64_t address) {
+    int i = page_index(address);
+    return i < 0 ? 0 : refs[i];
+}
 
 void free_page(uint64_t address) {
     frees.push_back(address);
@@ -75,6 +87,8 @@ void free_page(uint64_t address) {
                     (unsigned long long)address);
         return;
     }
+    if (refs[i] > 1) { refs[i]--; return; }
+    refs[i] = 0;
     used[i] = false;
 }
 
@@ -270,6 +284,47 @@ static void a_failed_reservation_leaves_nothing_behind() {
     check(live_pages() == live_before, "failed reservation leaves no leak");
 }
 
+static void cow_fault_and_copy_to_user() {
+    uint64_t pml4 = PMM::alloc_page();
+    uint64_t pdpt = PMM::alloc_page();
+    uint64_t pd = PMM::alloc_page();
+    uint64_t pt = PMM::alloc_page();
+    uint64_t data = PMM::alloc_page();
+    constexpr uint64_t va = 0x400000;
+    auto* l4 = (uint64_t*)pml4;
+    auto* l3 = (uint64_t*)pdpt;
+    auto* l2 = (uint64_t*)pd;
+    auto* l1 = (uint64_t*)pt;
+    l4[(va >> 39) & 511] = pdpt | 7;
+    l3[(va >> 30) & 511] = pd | 7;
+    l2[(va >> 21) & 511] = pt | 7;
+    l1[(va >> 12) & 511] = data | VMM::PTE_PRESENT | VMM::PTE_USER |
+                              VMM::PTE_COW;
+    std::memset((void*)data, 0x11, 4096);
+    check(PMM::retain_page(data), "a CoW mapping retains its source frame");
+    check(VMM::resolve_cow_fault(pml4, va + 17),
+          "a CoW write fault resolves");
+    uint64_t resolved = l1[(va >> 12) & 511];
+    check((resolved & VMM::PTE_WRITABLE) && !(resolved & VMM::PTE_COW),
+          "resolved mapping is writable and no longer CoW");
+    check((resolved & 0x000FFFFFFFFFF000ull) != data,
+          "a multiply referenced frame is copied");
+    check(((uint8_t*)VMM::phys_to_kernel(
+              resolved & 0x000FFFFFFFFFF000ull))[0] == 0x11,
+          "new mapping contains a private copy of the source");
+    check(((uint8_t*)data)[0] == 0x11, "the shared source remains unchanged");
+    const char payload[] = "safe";
+    check(VMM::copy_to_user(pml4, va + 100, payload, sizeof(payload)),
+          "copy_to_user writes through the kernel mapping");
+    uint8_t* copied = (uint8_t*)VMM::phys_to_kernel(
+        resolved & 0x000FFFFFFFFFF000ull);
+    check(std::memcmp(copied + 100, payload, sizeof(payload)) == 0,
+          "copy_to_user copied the expected bytes");
+    check(!VMM::copy_to_user(pml4, VMM::USER_VA_LIMIT, payload, 1),
+          "copy_to_user rejects kernel-half addresses");
+    VMM::destroy_user_space(pml4);
+}
+
 int main() {
     for (int i = 0; i < POOL_PAGES; i++) {
         void* p = nullptr;
@@ -285,6 +340,7 @@ int main() {
     teardown_uses_the_user_half_only();
     a_reserved_range_covers_its_whole_length();
     a_failed_reservation_leaves_nothing_behind();
+    cow_fault_and_copy_to_user();
 
     if (failures) {
         std::printf("test_vmm: %d of %d checks failed\n", failures, checks);

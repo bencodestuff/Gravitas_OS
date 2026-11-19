@@ -5,6 +5,7 @@
 #include "kernel/gfx/console.h"
 #include "kernel/gfx/compositor.h"
 #include "kernel/io.h"
+#include "kernel/core/vmm.h"
 
 
 // --- Fault reporter + contract implementation ---
@@ -220,7 +221,13 @@ static void dump(const char* title, IDT::Registers* regs, uint64_t cr2) {
 }
 
 // --- The contract ---
-[[noreturn]] void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2) {
+void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2) {
+    // A present, user-mode write fault may be the first write to a CoW page.
+    // Resolve it before recording/reporting the fault; returning from the
+    // interrupt retries the faulting instruction with the private mapping.
+    if (regs->interrupt_number == 14 && (regs->error_code & 7) == 7 &&
+        VMM::resolve_cow_fault(VMM::current_pml4(), cr2))
+        return;
     // A fault *while reporting* a fault cannot be reported: the reporter would
     // recurse, and it recurses until the stack is gone, filling the log with
     // garbage instead of the one line that matters. (Seen: an early-boot page

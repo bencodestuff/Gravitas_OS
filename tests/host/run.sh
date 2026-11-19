@@ -73,7 +73,7 @@ printf -- '-- test_ext2_limits (the ext2 write path size rule)\n'
 # a boot the real PMM silently ignores an already-free frame, which is what hid
 # the double free this pins.
 printf -- '-- test_vmm (address-space teardown)\n'
-"${CXX:-c++}" -O2 -std=c++17 -Isrc \
+"${CXX:-c++}" -O2 -std=c++17 -DVMM_HOST_TEST -Isrc \
     tools/test_vmm.cpp src/kernel/core/vmm.cpp \
     -o "$ART/test_vmm" || fail "test_vmm: compile failed"
 "$ART/test_vmm" || fail "test_vmm: checks failed"

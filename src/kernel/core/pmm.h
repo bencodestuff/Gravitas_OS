@@ -16,6 +16,8 @@ namespace PMM {
     // frame handed to a user address space (heap pages, user stacks): the
     // frame may still hold another task's data.
     uint64_t alloc_page_zeroed();
+    bool retain_page(uint64_t address);
+    uint32_t page_references(uint64_t address);
 
     // Return a page (Free it)
     void free_page(uint64_t address);

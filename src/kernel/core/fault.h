@@ -24,7 +24,7 @@ namespace Fault {
     //   ring 3 -> the task is killed (Sched::exit_current, EXIT_FAULT)
     //   ring 0 -> full dump, then the CPU halts with interrupts off
     // 'regs' is the interrupted frame; cr2 is meaningful for #PF only.
-    [[noreturn]] void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2);
+    void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2);
 
     // Kernel-side __stack_chk_fail: report the offending caller and halt.
     [[noreturn]] void stack_chk_fail_kernel(uint64_t caller_rip);
