@@ -134,12 +134,14 @@ static void cmd_kill(const char* arg) {
 // (or a builtin) with whitespace-separated arguments and optional
 // redirections: '< file', '> file' (truncate), '>> file' (append). The
 // operators are always separate tokens, so 'cat<in>out' means the same as
-// 'cat < in > out'. There is no quoting: this shell is a spawner, and
-// everything on the line is a word.
+// 'cat < in > out'. Quote characters are ordinary characters: the shell cannot
+// quote, so a program such as `lua.elf -e print('x')` receives its quotes
+// intact. There is no expansion or escape processing.
 
 #define SH_MAX_CMDS 8
 #define SH_MAX_ARGS 8
 #define SH_WORD_MAX 64
+#define SH_MAX_LIST 8
 
 struct sh_cmd {
     char words[SH_MAX_ARGS][SH_WORD_MAX];
@@ -150,6 +152,12 @@ struct sh_cmd {
     char out_path[SH_WORD_MAX];
     char prog[SH_WORD_MAX];      // resolved program name
     int  arg_start;              // index of argv[1] in 'words'
+};
+
+struct sh_list_item {
+    char text[128];
+    int connector; // 0 first, 1 ';', 2 '&&'
+    int background;
 };
 
 static bool is_builtin(const char* w) {
@@ -163,7 +171,11 @@ static int sh_read_word(const char** pp, char* out) {
     const char* p = *pp;
     while (*p == ' ' || *p == '\t') p++;
     int n = 0;
-    while (*p && *p != ' ' && *p != '\t' && *p != '<' && *p != '>' && *p != '|') {
+    while (*p) {
+        if (*p == ' ' || *p == '\t' || *p == '<' || *p == '>' ||
+            *p == '|' || *p == ';' || *p == '&') {
+            break;
+        }
         if (n < SH_WORD_MAX - 1) out[n++] = *p;
         p++;
     }
@@ -200,6 +212,10 @@ static struct sh_cmd* parse_pipeline(char* line, int* out_n, const char** err) {
             c->nwords = 0; c->rin = 0; c->rout = 0;
             p++;
             continue;
+        }
+        if (*p == ';' || *p == '&') {
+            *err = "unexpected command-list operator";
+            return 0;
         }
         if (*p == '<') {
             p++;
@@ -311,10 +327,10 @@ static void run_builtin(struct sh_cmd* c) {
 
 // One program, spawned in the foreground: the shell blocks on it, so it owns
 // the console (input and Ctrl+C) exactly as before.
-static void run_single(struct sh_cmd* c) {
+static long run_single(struct sh_cmd* c) {
     if (resolve_command(c, &c->arg_start) < 0) {
         printf("run: missing program name\n");
-        return;
+        return -1;
     }
     const char* argv[9];
     int argc = 0;
@@ -322,27 +338,31 @@ static void run_single(struct sh_cmd* c) {
     for (int i = c->arg_start; i < c->nwords && argc < 8; i++) argv[argc++] = c->words[i];
 
     int save0, save1;
-    if (apply_redirs(c, &save0, &save1) < 0) return;
+    if (apply_redirs(c, &save0, &save1) < 0) return -1;
 
     long pid = grv_spawn(c->prog, argv, argc);
     restore_fds(save0, save1);
 
-    if (pid == -1) {
+    if (pid < 0) {
         printf("shell: cannot run '%s' (try 'help', 'ls')\n", c->prog);
-        return;
+        return -1;
     }
     printf("[shell] program finished\n");
+    // grv_spawn has already waited for the foreground child, but this path
+    // does not expose its exit status reliably to the shell. Treat a successful
+    // spawn as success until the foreground syscall contract carries status.
+    return 0;
 }
 
 // A pipeline: every stage is spawned in the background with its descriptors
 // wired to the pipe, then the shell waits for them all. One pipe is created as
 // we go and the parent-side ends are closed as soon as the child that owns them
 // exists — that closure is what lets a reader see EOF.
-static void run_pipeline(struct sh_cmd* cmds, int ncmds) {
+static long run_pipeline(struct sh_cmd* cmds, int ncmds) {
     for (int i = 0; i < ncmds; i++) {
         if (is_builtin(cmds[i].words[0])) {
             printf("shell: '%s' cannot be used in a pipeline\n", cmds[i].words[0]);
-            return;
+            return -1;
         }
         // A stage's input comes from the pipe before it and its output goes to
         // the pipe after it. A redirection that would fight the pipe is refused
@@ -350,15 +370,15 @@ static void run_pipeline(struct sh_cmd* cmds, int ncmds) {
         // end unwired, and a writer blocked on a pipe nobody reads).
         if (i > 0 && cmds[i].rin) {
             printf("shell: cannot read '<' into a piped command\n");
-            return;
+            return -1;
         }
         if (i < ncmds - 1 && cmds[i].rout) {
             printf("shell: cannot write '>' out of a piped command\n");
-            return;
+            return -1;
         }
         if (resolve_command(&cmds[i], &cmds[i].arg_start) < 0) {
             printf("run: missing program name\n");
-            return;
+            return -1;
         }
     }
 
@@ -438,29 +458,103 @@ static void run_pipeline(struct sh_cmd* cmds, int ncmds) {
 
     int started = 0;
     for (int i = 0; i < ncmds; i++) if (pids[i] > 0) started++;
-    for (int i = 0; i < ncmds; i++) if (pids[i] > 0) grv_wait(pids[i]);
+    long status = -1;
+    for (int i = 0; i < ncmds; i++) if (pids[i] > 0) {
+        long result = grv_wait(pids[i]);
+        if (i == ncmds - 1) status = result;
+    }
     if (started > 0) printf("[shell] program finished\n");
+    return status;
 }
 
-static void execute(char* line) {
+static long execute_pipeline(char* line) {
     const char* err = 0;
     int ncmds = 0;
     struct sh_cmd* cmds = parse_pipeline(line, &ncmds, &err);
-    if (cmds == 0) { printf("shell: %s\n", err ? err : "syntax error"); return; }
-    if (ncmds == 0) return;
+    if (cmds == 0) { printf("shell: %s\n", err ? err : "syntax error"); return -1; }
+    if (ncmds == 0) return 0;
     // Builtins change the shell's own state and cannot run in a child, so they
     // are only meaningful as a lone command.
     if (is_builtin(cmds[0].words[0])) {
         if (ncmds > 1) {
             printf("shell: '%s' cannot be used in a pipeline\n", cmds[0].words[0]);
-            return;
+            return -1;
         }
         run_builtin(&cmds[0]);
-        return;
+        return -1; // builtins do not yet expose an exit status
     }
 
-    if (ncmds == 1) run_single(&cmds[0]);
-    else run_pipeline(cmds, ncmds);
+    if (ncmds == 1) return run_single(&cmds[0]);
+    return run_pipeline(cmds, ncmds);
+}
+
+static long execute(char* line) {
+    // An empty input line is a no-op, not an empty command-list item.
+    int first = 0;
+    while (line[first] == ' ' || line[first] == '\t') first++;
+    if (line[first] == '\0') return 0;
+
+    struct sh_list_item items[SH_MAX_LIST];
+    int count = 0, start = 0, connector = 0;
+    int len = (int)strlen(line);
+    for (int i = 0; i <= len; i++) {
+        char ch = line[i];
+        if (ch != ';' && ch != '&' && ch != '\0') continue;
+
+        int end = i;
+        while (start < end && (line[start] == ' ' || line[start] == '\t')) start++;
+        while (end > start && (line[end - 1] == ' ' || line[end - 1] == '\t')) end--;
+        if (end == start || count >= SH_MAX_LIST) {
+            printf("shell: syntax error or too many command-list items\n");
+            return -1;
+        }
+        struct sh_list_item* item = &items[count++];
+        item->connector = connector;
+        item->background = ch == '&' && line[i + 1] != '&';
+        int n = end - start;
+        if (n >= (int)sizeof(item->text)) {
+            printf("shell: command-list item too long\n");
+            return -1;
+        }
+        memcpy(item->text, line + start, n);
+        item->text[n] = '\0';
+        if (ch == '\0') break;
+        if (ch == '&' && line[i + 1] == '&') {
+            connector = 2;
+            i++;
+        } else if (ch == '&') {
+            int next = i + 1;
+            while (line[next] == ' ' || line[next] == '\t') next++;
+            if (line[next] != '\0') {
+                printf("shell: syntax error near '&'\n");
+                return -1;
+            }
+            // A final ampersand is syntactically recognised, but execution is
+            // deliberately withheld until jobs have a lifecycle contract.
+            break;
+        } else connector = 1;
+        start = i + 1;
+    }
+
+    // Keep the parsed connector representation for future status-aware
+    // execution, but do not partially run a list with unsupported semantics.
+    for (int i = 0; i < count; i++) {
+        if (items[i].connector == 2) {
+            printf("shell: '&&' requires child exit statuses, not implemented\n");
+            return -1;
+        }
+        if (items[i].background) {
+            printf("shell: trailing '&' requires job control, not implemented\n");
+            return -1;
+        }
+    }
+
+    long status = 0;
+    for (int i = 0; i < count; i++) {
+        if (items[i].connector == 2 && status != 0) continue;
+        status = execute_pipeline(items[i].text);
+    }
+    return status;
 }
 
 // --- the line reader ---

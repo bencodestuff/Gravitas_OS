@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Console: boot identity, the shipped font, the /bin layout, the shell."""
+
 import os
 import re
 import sys
@@ -33,13 +34,17 @@ def boot_identity(g):
     # Interrupt routing is taken over before interrupts are enabled: the PIC
     # remapped (so IRQ0-7 are not vectors 8-15), and the IOAPIC silenced.
     g.wait_for(r"\[PIC\] Remapped; interrupts on\.")
-    g.wait_for(r"\[IOAPIC\] [0-9]+ entries, [0-9]+ unmasked by the firmware, "
-               r"now all masked")
+    g.wait_for(
+        r"\[IOAPIC\] [0-9]+ entries, [0-9]+ unmasked by the firmware, "
+        r"now all masked"
+    )
 
     # The ext2 image: a real on-disk filesystem, mounted read-write from a RAM
     # disk seeded with the Limine module.
-    g.wait_for(r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
-               r"[0-9]+ groups? \(read-write\)")
+    g.wait_for(
+        r"\[Ext2\] [0-9]+-byte blocks, [0-9]+ blocks, [0-9]+ inodes, "
+        r"[0-9]+ groups? \(read-write\)"
+    )
 
 
 @test
@@ -63,11 +68,11 @@ def taskbar_clock(g):
     g.screendump(shot)
 
     w, h, data = ppm(shot)
-    bar_bg = (0x17, 0x19, 0x1C)          # the WM's BAR_BG
+    bar_bg = (0x17, 0x19, 0x1C)  # the WM's BAR_BG
     hits = 0
-    for y in range(h - 24 + 2, h - 2):   # inside the 24 px bar, every row
+    for y in range(h - 24 + 2, h - 2):  # inside the 24 px bar, every row
         row = y * w
-        for x in range(w - 52, w - 6):   # the clock's slot at the right end
+        for x in range(w - 52, w - 6):  # the clock's slot at the right end
             j = (row + x) * 3
             if (data[j], data[j + 1], data[j + 2]) != bar_bg:
                 hits += 1
@@ -95,7 +100,7 @@ def backspace_erase(g):
     # 'helpq' + BS -> 'help': the erase path, proven by the help text.
     for ch in "helpq":
         g.key(ch)
-    g.raw("0e", "8e")     # backspace (sendkey bspc is dropped by QEMU)
+    g.raw("0e", "8e")  # backspace (sendkey bspc is dropped by QEMU)
     g.key("ret")
     g.wait_for("commands are programs")
 
@@ -124,8 +129,8 @@ def shell_history(g):
     g.shell("ls")
     g.wait_count(r"User task 'ls\.elf' created", n + 1)
 
-    g.key("up")           # recall it
-    g.key("ret")          # and run it again
+    g.key("up")  # recall it
+    g.key("ret")  # and run it again
     g.wait_count(r"User task 'ls\.elf' created", n + 2)
 
     # ^U empties the line, so only what is typed afterwards runs.
@@ -143,7 +148,7 @@ def shell_line_edit(g):
     # start, and what is typed next goes in *there*.
     g.type("t hello.txt")
     g.key("home")
-    g.type("ca")                      # -> "cat hello.txt"
+    g.type("ca")  # -> "cat hello.txt"
 
     # A redraw returns to the start of the line — it must not start a new one.
     # (The prompt is printed once with its newline; the text a redraw reprints
@@ -213,6 +218,49 @@ def pipeline(g):
     fin = g.count(r"\[shell\] program finished")
     g.shell("cat hello.txt | cat | cat")
     g.wait_count(r"\[shell\] program finished", fin + 1)
+
+
+@test
+def command_lists(g):
+    # A blank line is a no-op, and foreground commands keep the shell's
+    # completion marker and console hand-off contract.
+    errors = g.count(r"syntax error")
+    g.key("ret")
+    time.sleep(0.2)
+    if g.count(r"syntax error") != errors:
+        g.fail("an empty command line was treated as a syntax error")
+
+    # Pipelines and redirections remain valid within semicolon-separated lists.
+    fin = g.count(r"\[shell\] program finished")
+    hello = g.count("Hello from the Gravitas tar filesystem!")
+    g.shell("cat hello.txt | cat > /tmp/list-pipe.txt; cat /tmp/list-pipe.txt")
+    g.wait_count(r"\[shell\] program finished", fin + 2)
+    g.wait_count("Hello from the Gravitas tar filesystem!", hello + 1)
+
+    # Unsupported connectors must be rejected before any item can run.
+    mark = g.mark()
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt && cat hello.txt")
+    g.wait_for(r"'&&' requires child exit statuses")
+    time.sleep(0.2)
+    output = g.since(mark)
+    if (
+        "Hello from the Gravitas tar filesystem!" in output
+        or g.count(r"\[shell\] program finished") != fin
+    ):
+        g.fail("a command-list item ran before rejecting '&&'")
+
+    mark = g.mark()
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat hello.txt; cat hello.txt &")
+    g.wait_for(r"trailing '&' requires job control")
+    time.sleep(0.2)
+    output = g.since(mark)
+    if (
+        "Hello from the Gravitas tar filesystem!" in output
+        or g.count(r"\[shell\] program finished") != fin
+    ):
+        g.fail("a command-list item ran before rejecting '&'")
 
 
 if __name__ == "__main__":
