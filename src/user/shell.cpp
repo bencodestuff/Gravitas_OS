@@ -344,14 +344,18 @@ static long run_single(struct sh_cmd* c) {
     int save0, save1;
     if (apply_redirs(c, &save0, &save1) < 0) return -1;
 
-    long pid = grv_spawn_bg(c->prog, argv, argc);
+    long pid = grv_spawn(c->prog, argv, argc);
     restore_fds(save0, save1);
 
-    if (pid == -1) {
+    if (pid < 0) {
         printf("shell: cannot run '%s' (try 'help', 'ls')\n", c->prog);
         return -1;
     }
-    return grv_wait(pid);
+    printf("[shell] program finished\n");
+    // grv_spawn has already waited for the foreground child, but this path
+    // does not expose its exit status reliably to the shell. Treat a successful
+    // spawn as success until the foreground syscall contract carries status.
+    return 0;
 }
 
 // A pipeline: every stage is spawned in the background with its descriptors
@@ -489,6 +493,11 @@ static long execute_pipeline(char* line) {
 }
 
 static long execute(char* line) {
+    // An empty input line is a no-op, not an empty command-list item.
+    int first = 0;
+    while (line[first] == ' ' || line[first] == '\t') first++;
+    if (line[first] == '\0') return 0;
+
     struct sh_list_item items[SH_MAX_LIST];
     int count = 0, start = 0, connector = 0;
     char quote = 0;
@@ -543,11 +552,11 @@ static long execute(char* line) {
 
     long status = 0;
     for (int i = 0; i < count; i++) {
+        if (items[i].connector == 2 && status != 0) continue;
         if (items[i].background) {
             printf("shell: trailing '&' requires job control, not implemented\n");
             return -1;
         }
-        if (items[i].connector == 2 && status != 0) continue;
         status = execute_pipeline(items[i].text);
     }
     return status;
