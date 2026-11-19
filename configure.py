@@ -91,13 +91,6 @@ CFLAGS = [
     "-g",
 ]
 
-# Test-only kernel hooks. `configure.py --fork-test` compiles the private
-# child-return hook that the forktest guest uses to drive the scheduler's
-# trap-return path; it is not part of the published syscall ABI and ordinary
-# builds never contain it.
-if "--fork-test" in sys.argv:
-    CFLAGS.append("-DGRV_TEST_FORK")
-
 # Userland: libc headers ONLY (no kernel include paths) so the boundary
 # stays clean — kernel code can't include libc, userland can't see kernel.
 #
@@ -384,12 +377,8 @@ def main():
         # that is not in the graph yet. `generator = 1` tells ninja this edge
         # writes build.ninja, so it reloads quietly instead of treating the
         # change as a normal dependency.
-        # Remember how this graph was configured: a regeneration must keep
-        # test-only hooks, or editing configure.py would silently turn a fork
-        # test build back into an ordinary one.
-        configure_args = " --fork-test" if "--fork-test" in sys.argv else ""
         ninja.write(f"rule configure\n")
-        ninja.write(f"  command = python3 configure.py{configure_args}\n")
+        ninja.write(f"  command = python3 configure.py\n")
         ninja.write(f"  description = CONFIGURE (configure.py changed)\n")
         ninja.write(f"  generator = 1\n\n")
 

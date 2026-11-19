@@ -117,6 +117,7 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_FSTAT          62
 #define GRV_SYSCALL_SYNC           63
 #define GRV_SYSCALL_FSYNC          64
+#define GRV_SYSCALL_FORK           65
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -193,11 +194,26 @@ static inline long grv_spawn_bg(const char* name, const char* const* argv, int a
     return grv_err(syscall3(GRV_SYSCALL_SPAWN_BG, (long)name, (long)argv, (long)argc));
 }
 
-/* Wait for the task to exit; returns its exit code, or -1 if it never
-   existed or was already reaped (each pid can be waited on ONCE — like
-   Unix waitpid once the child is reaped). */
+/* Wait for ONE OF OUR OWN CHILDREN to exit; returns its exit code, or -1
+   when the id is unknown, is not our child (only the task that spawned or
+   forked it may wait), or its status was already collected. Each child can be
+   waited on ONCE, as with Unix waitpid. A child that exited before the wait
+   keeps its status, so the late wait still sees the code; a parent that never
+   waits loses it when the small status table wraps. */
 static inline long grv_wait(long pid) {
     return syscall1(GRV_SYSCALL_WAIT, pid);
+}
+
+/* Fork: the address space of the caller is copied copy-on-write and the child
+   returns from this very call. Returns 0 in the child, the new task id in the
+   parent, and a negative errno in the parent when refused (-ENOMEM when the
+   copy cannot be made, -EOPNOTSUPP while a shared-memory region is mapped:
+   those frames belong to the region and the clone would hold no reference to
+   them). The child shares open file descriptions with the parent, inherits
+   the working directory and console binding, and starts with an empty message
+   box. Only the parent can wait for it. */
+static inline long grv_fork(void) {
+    return syscall1(GRV_SYSCALL_FORK, 0);
 }
 
 /* Forcibly terminate another task; its exit code becomes 'code'.

@@ -3,6 +3,8 @@
 
 #include "fs/vfs.h" // fd tables are per-task (Unix style), vfs.h defines MAX_FDS
 
+namespace IDT { struct Registers; }
+
 namespace Sched {
     void init();
     void yield(); // Voluntarily give up CPU
@@ -41,6 +43,16 @@ namespace Sched {
     // receives its arguments. Returns task id.
     int create_user_task(uint64_t rip, const char* name, int argc,
                          const char* const* argv, uint64_t cr3);
+
+    // Fork the current task: clone the address space copy-on-write and build a
+    // child that returns from this very syscall on its own kernel stack, with
+    // rax = 0. The frame is the interrupted syscall frame. Returns the task id
+    // of the child in the parent, or a negated errno. Nothing is published
+    // before every allocation succeeds, so a failure leaves no task behind. A
+    // caller holding a shared-memory mapping is refused with -EOPNOTSUPP:
+    // those frames belong to a region whose holders are tracked per task, and
+    // a clone would outlive the reference that keeps them alive.
+    int fork_current(IDT::Registers* frame);
 
     // Program break accessors for the syscall layer (Task is private here)
     uint64_t current_task_brk();
@@ -144,17 +156,17 @@ namespace Sched {
 
     // Tear down the current task, wake whoever was waiting on it, and
     // switch to the next ready task. Never returns. 'code' is stored as
-    // the task's exit code (readable by the parent once waitpid exists;
-    // faults pass a distinctive GRV_EXIT_* value).
+    // the task's exit code, kept for the parent to collect by WAIT; faults
+    // pass a distinctive GRV_EXIT_* value.
     void exit_current(uint64_t code);
 
     // Exit code of the task the current task WAITED on (or 0)
     uint64_t current_exit_inbox();
 
-    // Consume a recorded recent exit (WAIT for an already-exited task).
-    // Returns false if no exit records this id. The record is consumed —
-    // each id can be waited on once.
-    bool consume_recent_exit(int id, uint64_t* out_code);
+    // Collect the recorded exit of one of this task's children. Returns false
+    // when the id is a different task's child, is unknown, or has already been
+    // collected: each child yields its status once.
+    bool consume_child_exit(int id, uint64_t* out_code);
 
     // Terminate ANOTHER task by id (v1: any task may terminate any other).
     // Refuses the kernel task and self-kill. 'code' becomes the victim's
@@ -167,9 +179,13 @@ namespace Sched {
     // nothing to interrupt (e.g. the task sits at a prompt).
     bool interrupt_foreground(int task_id);
 
-    // Does a task with this id exist? (WAIT uses it to decide between
-    // blocking on a live task and failing on an unknown one.)
+    // Does a task with this id exist? (MemMap uses it to refuse a grant that
+    // names no live task.)
     bool task_exists(int id);
+
+    // Is the task with this id a live child of the caller? A task may wait
+    // only on its own children, the ones it spawned or forked.
+    bool task_is_child(int id);
 
     // Exit codes with meaning beyond "the program returned N". ASCII
     // spells (FAULT / SMASH) so they read themselves in a hex dump.

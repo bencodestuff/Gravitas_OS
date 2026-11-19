@@ -268,8 +268,9 @@ subsystem landing with its own tests.
 
 Not done yet:
 
-- **`fork`/`exec`/`waitpid` and copy-on-write.** Spawn/exit/wait exist; the POSIX
-  process model does not.
+- **`exec` and job control.** `fork` and copy-on-write work, and `wait` is
+  parent-owned with real exit statuses; there is still no `exec`, so a forked
+  child runs a copy of the parent image rather than a new program.
 - **Threads and TLS.** Everything is single-threaded and `errno` is a global.
 - **`poll`/`select`.** The mailbox model covers Lua's single `recv` loop.
 - **SMP.** The system is idle- and I/O-bound; this is the largest rewrite

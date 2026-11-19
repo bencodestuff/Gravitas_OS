@@ -49,6 +49,11 @@ int map_file(const char* path, uint64_t* out_addr, uint64_t* out_size);
 // Drop the mapping that begins at the address attach()/map_file() returned.
 int unmap(uint64_t addr);
 
+// Does this task hold a mapping of a shared region (rather than a file)?
+// fork refuses such a task: a region tracks its holders by task id, so a
+// cloned address space would point at frames it has no reference for.
+bool holds_region_mapping(int task_id);
+
 // Release everything a dying task held: its mappings, and its handles.
 void task_gone(int task_id);
 

@@ -45,9 +45,6 @@ static constexpr uint64_t MAX_SPAWN_IMAGE_BYTES = 16ull << 20; // 16 MiB
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
-#ifdef GRV_TEST_FORK
-extern "C" int sched_fork_frame(IDT::Registers* frame);
-#endif
 
 // Hex printer for registers (no allocation, no format string needed)
 static void print_hex64(uint64_t value) {
@@ -884,20 +881,40 @@ static void sys_exit(IDT::Registers* regs) {
 
 static void sys_wait(IDT::Registers* regs) {
     long id = (long)regs->rdi;
-    uint64_t code = 0;
     if (id <= 0) {
         regs->rax = (uint64_t)-1;
-    } else if (Sched::consume_recent_exit((int)id, &code)) {
+        return;
+    }
+
+    // Interrupts stay off from the first look at the status table until the
+    // block is in place. A child that exited in that gap would find no
+    // waiter, keep its status in the record table, and never wake us, so the
+    // parent would sleep for ever. The exit path records first and wakes
+    // second, so under one IF=0 window the two orders cannot interleave.
+    // yield() is the only path out that turns interrupts back on.
+    asm volatile("cli");
+
+    uint64_t code = 0;
+    if (Sched::consume_child_exit((int)id, &code)) {
+        // Exited before the wait: the status was kept for us.
         regs->rax = code;
-    } else if (Sched::task_exists((int)id)) {
-        // Live task: block until it exits (exit fills our inbox).
-        asm volatile("cli");
+    } else if (Sched::task_is_child((int)id)) {
+        // Live child: block until it exits (exit fills our inbox).
         Sched::block_current((int)id);
         Sched::yield();
         regs->rax = Sched::current_exit_inbox();
     } else {
-        regs->rax = (uint64_t)-1;   // unknown task / exit ring overflow
+        // Unknown, already collected, or another task's child. A parent may
+        // wait only for the tasks it spawned or forked.
+        asm volatile("sti");
+        regs->rax = (uint64_t)-1;
     }
+}
+
+// Fork: the child returns from this same call with rax = 0, the parent with
+// the new task id, or a negative errno when the fork was refused.
+static void sys_fork(IDT::Registers* regs) {
+    regs->rax = (uint64_t)(long)Sched::fork_current(regs);
 }
 
 static void sys_kill(IDT::Registers* regs) {
@@ -1140,6 +1157,7 @@ static const SyscallFn syscall_table[] = {
     /* 62 FSTAT           */ sys_fstat,
     /* 63 SYNC            */ sys_sync,
     /* 64 FSYNC           */ sys_fsync,
+    /* 65 FORK            */ sys_fork,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =
@@ -1152,18 +1170,6 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
 
     if (num == 0x80) {
         uint64_t syscall_id = regs->rax;
-#ifdef GRV_TEST_FORK
-        // Private test hook, absent from ordinary kernel builds and from the
-        // published syscall table/ABI. It creates a child context from this
-        // exact syscall return frame so the guest can exercise the real
-        // scheduler and iretq restore path. Fork convention: the child sees
-        // rax = 0, the parent sees the child's task id.
-        constexpr uint64_t TEST_FORK_SYSCALL = 0xFFFF;
-        if (syscall_id == TEST_FORK_SYSCALL) {
-            regs->rax = (uint64_t)(long)sched_fork_frame(regs);
-            return;
-        }
-#endif
         if (syscall_id < SYSCALL_COUNT && syscall_table[syscall_id] != nullptr) {
             syscall_table[syscall_id](regs);
         } else {

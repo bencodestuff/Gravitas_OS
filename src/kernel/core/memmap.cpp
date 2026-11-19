@@ -272,6 +272,13 @@ int unmap(uint64_t addr) {
     return 0;
 }
 
+bool holds_region_mapping(int task_id) {
+    for (int i = 0; i < MAX_MAP; i++)
+        if (maps[i].used && maps[i].task == task_id && maps[i].region >= 0)
+            return true;
+    return false;
+}
+
 void task_gone(int task_id) {
     // No unmapping: the caller is tearing the whole address space down next, and
     // PTE_SHARED means that teardown leaves the frames alone. What matters here

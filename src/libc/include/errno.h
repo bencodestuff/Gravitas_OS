@@ -30,6 +30,7 @@ extern int errno;
 #define EPIPE   32  /* write to a pipe whose reader has gone */
 #define ENAMETOOLONG 36 /* a name or path too long to represent */
 #define ENOSYS  38  /* no such syscall (retired/unknown id) */
+#define EOPNOTSUPP 95 /* the operation is not supported yet */
 
 __END_DECLS
 

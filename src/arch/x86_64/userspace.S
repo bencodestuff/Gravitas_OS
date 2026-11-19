@@ -1,9 +1,7 @@
 .intel_syntax noprefix
 .global enter_user_mode
 .global user_entry_trampoline
-#ifdef GRV_TEST_FORK
 .global fork_restore_entry
-#endif
 
 // void enter_user_mode(uint64_t rip, uint64_t rsp);
 // RDI = RIP (Entry Point)
@@ -54,7 +52,6 @@ user_entry_trampoline:
 // return frame, so dispatch, EOI, scheduler yield bookkeeping and IF handling
 // must not run a second time. Keep this epilogue in lockstep with the register
 // pushes in idt_asm.S.
-#ifdef GRV_TEST_FORK
 fork_restore_entry:
     pop r15
     pop r14
@@ -73,4 +70,3 @@ fork_restore_entry:
     pop rax
     add rsp, 16                 // saved interrupt number and error code
     iretq
-#endif

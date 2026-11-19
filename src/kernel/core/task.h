@@ -62,6 +62,7 @@ namespace Sched {
                                 // if the task died from an exception
         uint64_t exit_code_inbox;   // exit code of the task this task WAITED
                                     // on (written by exit_current at kill time)
+        int parent_id;              // task that may wait for this one; 0 = kernel
         Task* zombie_next;          // link in the exited-task queue (see sched.cpp)
 
         // --- Console endpoint (M12) ---

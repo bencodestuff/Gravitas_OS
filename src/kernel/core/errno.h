@@ -28,4 +28,5 @@ namespace Errno {
     constexpr long EPIPE   = 32; // write to a pipe whose reader has gone
     constexpr long ENAMETOOLONG = 36; // a name or path too long to represent
     constexpr long ENOSYS  = 38; // no such syscall (retired hole / unknown id)
+    constexpr long EOPNOTSUPP = 95; // the operation is not supported yet
 }

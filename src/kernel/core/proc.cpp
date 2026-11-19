@@ -18,15 +18,14 @@
 #include "kernel/core/memmap.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
+#include "kernel/core/errno.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
 // (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
 extern "C" void user_entry_trampoline();
-#ifdef GRV_TEST_FORK
-// Restores a forked child's switch_context frame and the interrupt frame
-// behind it (see sched_fork_frame). Built only for the fork test build.
+// Restores the switch_context frame of a forked child and the interrupt frame
+// behind it (see fork_current).
 extern "C" void fork_restore_entry();
-#endif
 
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
                                void* old_fxsave, void* new_fxsave);
@@ -51,14 +50,15 @@ namespace Sched {
         dst[i] = '\0';
     }
 
-#ifdef GRV_TEST_FORK
+    // --- fork ---
+
     // Release a half-built forked child. Only used before the task is linked
-    // into the ready queue, so nothing else can be looking at it.
+    // into the ready queue, so nothing else can be looking at it. Pointers are
+    // cleared as they are allocated, so every failure path can call this.
     static void discard_forked_child(Task* child, uint64_t cr3) {
         if (child != nullptr) {
-            for (int i = 0; i < VFS::MAX_FDS; ++i) {
+            for (int i = 0; i < VFS::MAX_FDS; ++i)
                 if (child->fds[i] != nullptr) VFS::close_fd_for(child->fds, i);
-            }
             delete[] child->fxsave_raw;
             delete[] child->kstack_mem;
             delete child;
@@ -66,41 +66,48 @@ namespace Sched {
         if (cr3 != 0) VMM::destroy_user_space(cr3);
     }
 
-    // Build a task that returns from the caller's syscall.
+    // Build a task that returns from the syscall its parent is inside.
     //
-    // This is the piece a fork needs and spawn cannot provide: spawn forges a
-    // fresh entry point and user stack, while a forked child must come back
-    // out of the very trap it was copied from, at the same user instruction
-    // and with the same user stack, with rax = 0 to tell it apart from its
-    // parent. The child therefore owns a private copy-on-write address space
-    // and its own kernel stack, whose first words are the switch_context frame
-    // (callee-saved registers and the return address) followed by an exact
-    // copy of the parent's interrupt frame. fork_restore_entry pops that frame
-    // and iretqs, so the child never re-enters interrupt_dispatcher and the
-    // scheduler's post-yield bookkeeping does not run twice for one trap.
+    // spawn forges a fresh entry point and user stack; a forked child must
+    // come back out of the very trap it was copied from, at the same user
+    // instruction and on the same user stack, with rax = 0 to tell it apart
+    // from the parent. The child therefore owns a private copy-on-write
+    // address space and its own kernel stack, whose first words are the
+    // switch_context frame (callee-saved registers and the return address)
+    // followed by an exact copy of the parent's interrupt frame.
+    // fork_restore_entry pops that frame and iretqs, so the child never
+    // re-enters interrupt_dispatcher and the scheduler's post-yield
+    // bookkeeping does not run twice for one trap.
     //
-    // Invoked through the private syscall hook in idt.cpp, which only test
-    // builds compile in; it is not part of the published syscall ABI.
+    // Returns the new task id in the parent; the child sees 0. The task is
+    // linked into the ready queue as the very last step, after every
+    // allocation has succeeded, so a failure leaves nothing half-published.
     static_assert(sizeof(IDT::Registers) % sizeof(uint64_t) == 0,
-                  "the child's interrupt frame is copied in 8-byte words");
+                  "the child interrupt frame is copied in 8-byte words");
 
-    extern "C" int sched_fork_frame(IDT::Registers* parent_frame) {
+    int fork_current(IDT::Registers* parent_frame) {
         if (parent_frame == nullptr || current_task == nullptr ||
-            current_task->id == 0) return -1;   // ring-3 tasks only
+            current_task->id == 0) return -Errno::EINVAL;   // ring-3 tasks only
+
+        // A shared region owns its frames and tracks holders by task id. A
+        // cloned space would point at them with no mapping record and no
+        // reference, so the parent close or exit could release them while the
+        // child still reads them. Refuse before anything is built: the caller
+        // unmaps and tries again.
+        if (MemMap::holds_region_mapping(current_task->id))
+            return -Errno::EOPNOTSUPP;
 
         asm volatile("cli" ::: "memory");
         Task* parent = current_task;
 
         uint64_t child_cr3 = VMM::clone_user_space(parent->cr3);
-        if (child_cr3 == 0) return -1;
+        if (child_cr3 == 0) return -Errno::ENOMEM;
 
         Task* child = new Task;
         if (child == nullptr) {
             VMM::destroy_user_space(child_cr3);
-            return -1;
+            return -Errno::ENOMEM;
         }
-        // Nothing below may be freed on a failure path unless it is set, so
-        // clear the pointers discard_forked_child would hand back.
         child->kstack_mem = nullptr;
         child->fxsave_raw = nullptr;
         for (int i = 0; i < VFS::MAX_FDS; ++i) child->fds[i] = nullptr;
@@ -125,6 +132,7 @@ namespace Sched {
         child->fb_map_pages = parent->fb_map_pages;
         child->exit_code = 0;
         child->exit_code_inbox = 0;
+        child->parent_id = parent->id;
         child->zombie_next = nullptr;
         child->console_owner = parent->console_owner;
         child->con_in_head = child->con_in_tail = 0;
@@ -135,24 +143,24 @@ namespace Sched {
         for (int i = 0; i < (int)sizeof(child->cwd); ++i)
             child->cwd[i] = parent->cwd[i];
 
-        // Its own kernel stack: the child's trap frames must not sit on top of
-        // the parent's in-flight ones.
+        // Its own kernel stack: the child trap frames must not sit on top of
+        // the parent ones still in flight.
         child->kstack_mem = new uint64_t[4096];
         if (child->kstack_mem == nullptr) {
             discard_forked_child(child, child_cr3);
-            return -1;
+            return -Errno::ENOMEM;
         }
         child->kstack_mem[0] = KSTACK_CANARY;
         child->kstack_top = (uint64_t)(child->kstack_mem + 4096);
 
-        // FPU/SSE: snapshot the live state. The parent's saved area is only
-        // written when it is switched out, so it can be stale here; the kernel
-        // itself runs with SSE disabled, so the registers still hold the
-        // parent's userland state.
+        // FPU/SSE: snapshot the live state. The saved area of the parent is
+        // only written when it is switched out, so it can be stale here; the
+        // kernel itself runs with SSE disabled, so the registers still hold
+        // the userland state.
         child->fxsave_raw = new uint8_t[512 + 63];
         if (child->fxsave_raw == nullptr) {
             discard_forked_child(child, child_cr3);
-            return -1;
+            return -Errno::ENOMEM;
         }
         child->fxsave_area = (uint8_t*)(((uint64_t)child->fxsave_raw + 63) &
                                         ~(uint64_t)63);
@@ -162,8 +170,9 @@ namespace Sched {
         for (int i = 0; i < 512; ++i)
             child->fxsave_area[i] = live.bytes[i];
 
-        // fds_inherit() reads the current task's table, so it runs here, once
-        // every allocation that can fail has succeeded.
+        // Descriptors: shared open file descriptions, one reference each, so a
+        // pipe end or a file offset is shared with the parent. Nothing here
+        // can fail, so it runs after every allocation.
         VFS::fds_inherit(child->fds);
 
         // switch_context pops r15 first, so its frame is stored deepest-last:
@@ -172,7 +181,7 @@ namespace Sched {
         uint64_t* frame = child->kstack_mem + 4096 -
                           (sizeof(IDT::Registers) / sizeof(uint64_t));
         IDT::Registers saved = *parent_frame;
-        saved.rax = 0;                       // the child's fork result
+        saved.rax = 0;                       // the fork result seen by the child
         const uint64_t* words = (const uint64_t*)&saved;
         for (uint64_t i = 0; i < sizeof(saved) / sizeof(uint64_t); ++i)
             frame[i] = words[i];
@@ -182,21 +191,45 @@ namespace Sched {
         context[6] = (uint64_t)fork_restore_entry;    // switch_context return
         child->rsp = (uint64_t)context;
 
+        // Publication: the last step, with interrupts still off from the
+        // syscall entry, so the timer cannot switch to a half-built task.
         child->next = ready_queue->next;
         ready_queue->next = child;
         return child->id;
     }
-#endif
 
-    // --- WAIT for already-exited tasks ---
-    // WAIT is advisory (a parent may wait late or never), so every exit
-    // lands in a small ring that WAIT consumes. Bounded: once 8 newer
-    // exits push an id out, an unwatched late WAIT returns -1 (Unix
-    // waitpid has the same behavior once the child is reaped).
-    constexpr int RECENT_EXITS = 8;
-    struct RecentExit { int id; uint64_t code; };
-    static RecentExit recent_exits[RECENT_EXITS];
-    static uint64_t exit_head = 0;    bool task_exists(int id) {
+    // --- Child status (parent-owned WAIT) ---
+    // A child exit is kept until its parent collects it, even when the child
+    // is already gone. The table is small and fixed: a new record overwrites
+    // the oldest, so a parent that never waits loses the status instead of
+    // growing the kernel. Only the parent may collect a record; any other
+    // task gets the same -1 as an unknown id.
+    constexpr int CHILD_EXITS = 8;
+    struct ChildExit { int parent; int id; uint64_t code; };
+    static ChildExit child_exits[CHILD_EXITS];
+    static int child_exit_next = 0;    // overwrite cursor, oldest first
+
+    static void record_child_exit(int parent, int id, uint64_t code) {
+        child_exits[child_exit_next].parent = parent;
+        child_exits[child_exit_next].id = id;
+        child_exits[child_exit_next].code = code;
+        child_exit_next = (child_exit_next + 1) % CHILD_EXITS;
+    }
+
+    // Drop an id record without delivering it: the exit already went into the
+    // parent inbox, so WAIT on this id must not resolve a second time.
+    static void drop_child_exit(int id) {
+        for (int i = 0; i < CHILD_EXITS; i++)
+            if (child_exits[i].id == id) child_exits[i].id = -1;
+    }
+
+    // A dead parent can never collect, so its records are dropped with it.
+    static void drop_child_exits_of(int parent) {
+        for (int i = 0; i < CHILD_EXITS; i++)
+            if (child_exits[i].parent == parent) child_exits[i].id = -1;
+    }
+
+    bool task_exists(int id) {
         if (current_task == nullptr) return false;
         Task* t = ready_queue;
         do {
@@ -206,14 +239,25 @@ namespace Sched {
         return false;
     }
 
-    // WAIT step 1: consume a matching recent exit. Returns false (with
-    // out_code untouched) when no entry matches this id — the caller next
-    // checks task_exists() and finally fails with -1.
-    bool consume_recent_exit(int id, uint64_t* out_code) {
-        for (int i = 0; i < RECENT_EXITS; i++) {
-            if (recent_exits[i].id == id) {
-                if (out_code != nullptr) *out_code = recent_exits[i].code;
-                recent_exits[i].id = -1;
+    bool task_is_child(int id) {
+        if (current_task == nullptr || id <= 0) return false;
+        Task* t = ready_queue;
+        do {
+            if (t->id == id) return t->parent_id == current_task->id;
+            t = t->next;
+        } while (t != ready_queue);
+        return false;
+    }
+
+    // WAIT step 1: collect a recorded exit belonging to the caller. Returns
+    // false (out_code untouched) for another task child, an unknown id, or an
+    // id already collected.
+    bool consume_child_exit(int id, uint64_t* out_code) {
+        for (int i = 0; i < CHILD_EXITS; i++) {
+            if (child_exits[i].id == id &&
+                child_exits[i].parent == current_task->id) {
+                if (out_code != nullptr) *out_code = child_exits[i].code;
+                child_exits[i].id = -1;
                 return true;
             }
         }
@@ -263,17 +307,18 @@ namespace Sched {
         char namebuf[sizeof(Task::name)];
         copy_name(namebuf, victim->name, (int)sizeof(namebuf));
 
-        // Same bookkeeping as a normal exit: ring + waiter wakeups
-        recent_exits[exit_head % RECENT_EXITS].id = victim->id;
-        recent_exits[exit_head % RECENT_EXITS].code = victim->exit_code;
-        exit_head++;
+        // Same bookkeeping as a normal exit: the status for the parent, the
+        // wakeup for whoever is blocked on this id, and the drop of statuses
+        // this task itself never collected.
+        record_child_exit(victim->parent_id, victim->id, victim->exit_code);
+        drop_child_exits_of(victim->id);
         Task* t = ready_queue;
         do {
             if (t->waiting_on == victim->id) {
                 t->exit_code_inbox = victim->exit_code;
                 t->state = READY;
                 t->waiting_on = -1;
-                consume_recent_exit(victim->id, nullptr);
+                drop_child_exit(victim->id);
             }
             t = t->next;
         } while (t != ready_queue);
@@ -338,6 +383,9 @@ namespace Sched {
         new_task->timer_deadline = 0;
         new_task->timer_armed = false;
         new_task->exit_code = 0;
+        new_task->exit_code_inbox = 0;
+        new_task->parent_id = current_task->id;
+        new_task->zombie_next = nullptr;
         new_task->cr3 = cr3;
         copy_name(new_task->name, name, (int)sizeof(new_task->name));
 
@@ -592,22 +640,21 @@ namespace Sched {
         dead->exit_code = code;
         kprint3("[Sched] Task '", dead->name, "' exited.\n");
 
-        // 1. Record this exit for WAIT: append to the recent-exits ring
-        //    (waiters that call WAIT after the fact scan this).
-        recent_exits[exit_head % RECENT_EXITS].id = dead->id;
-        recent_exits[exit_head % RECENT_EXITS].code = dead->exit_code;
-        exit_head++;
+        // 1. Record this exit where only the parent can collect it. A waiter
+        //    already blocked on this id takes the code directly below.
+        record_child_exit(dead->parent_id, dead->id, dead->exit_code);
+        drop_child_exits_of(dead->id);
 
         // 2. Wake anyone blocked on this task (and give them the code).
-        //    A waking waiter consumes the ring entry — the deliverable is
-        //    the inbox now, and WAIT on this id must not resolve twice.
+        //    A waking waiter consumes the record: the deliverable is the inbox
+        //    now, and WAIT on this id must not resolve twice.
         Task* t = ready_queue;
         do {
             if (t->waiting_on == dead->id) {
                 t->exit_code_inbox = dead->exit_code;
                 t->state = READY;
                 t->waiting_on = -1;
-                consume_recent_exit(dead->id, nullptr);
+                drop_child_exit(dead->id);
             }
             t = t->next;
         } while (t != ready_queue);

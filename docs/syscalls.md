@@ -71,6 +71,7 @@ table.
 | `EROFS` | 30 | read-only filesystem |
 | `EPIPE` | 32 | write to a pipe whose reader has gone |
 | `ENOSYS` | 38 | no such syscall (a retired hole or an unknown number) |
+| `EOPNOTSUPP` | 95 | the operation is not supported yet (`FORK` while a shared region is mapped) |
 
 A successful call never clears `errno` (check the return value, as in C).
 Not every syscall distinguishes every reason yet: `OPEN`, `MKDIR`, `UNLINK` and
@@ -288,6 +289,7 @@ value with a different meaning.
 | 62 | `FSTAT` | `fd, out*` | 0/−1; the same `{size, is_dir, ino, mode, mtime}` as `STAT`, for an open descriptor |
 | 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; writes dirty pages back and flushes every mounted filesystem |
 | 64 | `FSYNC` | `fd` | 0/−1; writes dirty pages back and flushes the filesystem holding an open descriptor |
+| 65 | `FORK` | — | 0 in the child, the new task id in the parent, or a negative errno (`−ENOMEM`, `−EOPNOTSUPP`) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -298,6 +300,27 @@ number returns `-ENOSYS`, and adding a call is one handler plus one row.
 than 16 MiB is refused with `-E2BIG` before any bytes are read. A missing file
 reports the VFS error, an unreadable or malformed image `-ENOEXEC`, and a failed
 allocation `-ENOMEM`.
+
+### Fork and wait
+
+`FORK` copies the address space of the caller copy-on-write and builds a second task
+that returns from the same call: the child sees `rax = 0`, the parent sees the
+new task id. Both continue at the instruction after `int $0x80`, on the same
+user stack addresses but in separate address spaces; the first write to a
+shared page copies it. Open file descriptions are shared (one offset, one pipe
+end), the working directory and the console binding are inherited, and the
+child starts with an empty mailbox. Surface ownership and shared-memory handles
+are not inherited: a task holding a mapped shared region is refused with
+`-EOPNOTSUPP` before any task is created, because a region tracks its holders
+per task and a clone would point at frames it has no reference for.
+
+`WAIT` is parent-owned. A task may wait only for a child it spawned or forked;
+another task's child, an unknown id and a status already collected all return
+`-1`. A child that exits before the wait keeps its status in a small fixed
+table (see [`limits.md`](limits.md)), so the late wait still sees the exit
+code, and a second wait on the same id does not. A parent that never waits
+loses the status when the table wraps; the child task itself is cleaned up
+either way.
 
 ### The interrupt key
 
