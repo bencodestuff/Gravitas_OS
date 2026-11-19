@@ -290,7 +290,7 @@ value with a different meaning.
 | 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; writes dirty pages back and flushes every mounted filesystem |
 | 64 | `FSYNC` | `fd` | 0/−1; writes dirty pages back and flushes the filesystem holding an open descriptor |
 | 65 | `FORK` | — | 0 in the child, the new task id in the parent, or a negative errno (`−ENOMEM`, `−EOPNOTSUPP`) |
-| 66 | `EXEC` | `path, argv, argc` | reserved: this kernel does not dispatch it yet and answers `−ENOSYS` |
+| 66 | `EXEC` | `path, argv, argc` | does not return on success; on failure −1 with errno (`ENOENT`, `ENOEXEC`, `E2BIG`, `EIO`, `ENOMEM`, `EFAULT`, `EINVAL`) |
 | 67 | `POLL` | `fds*, nfds, timeout_ms` | number of entries with a non-zero `revents` (0 on timeout), or −1 (`EINVAL` past 16 entries, a timeout below −1, or a descriptor number outside the table) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
@@ -353,6 +353,32 @@ or on a pipe, never both, so the call naps 20 ms and re-tests instead of
 parking on a wake list. The deadline is absolute and fixed when the call
 starts, so a wake that finds nothing ready cannot extend it, and the test and
 the nap are one interrupt-off region, so a change cannot land between them.
+
+`select` in the C library is the same answers in bits: it turns the three
+`fd_set`s into one `poll` array and turns `revents` back, so readiness has one
+implementation. A descriptor that is not open is `EBADF`, `nfds` past the
+16-slot table is `EINVAL`, and a pipe at end-of-file appears in both the read
+set and the except set.
+
+### Exec
+
+`EXEC` replaces the calling process's image and keeps the process. The new
+image is loaded into a fresh address space while the old one is still live, so
+a missing file, a malformed image, an oversized one or a failed allocation is an
+ordinary negative return and the caller continues in its old image with its
+memory and descriptors untouched. On success the call does not return: the trap
+frame is repointed at the new entry point on a fresh stack, with clean
+registers and FPU state, and the old space is destroyed.
+
+What survives is the process: the same task id (so a parent blocked in `WAIT`,
+or waiting later, still collects the status), the same parent, working
+directory, console binding and open descriptors. A descriptor keeps its open
+file description, so an offset or a pipe end is continuous across the exec.
+What does not survive is anything owned by the image: its memory, its
+shared-memory mappings and handles, its surfaces and the display authority, and
+any armed one-shot timer. Mailbox messages are keyed by task id and are kept.
+`argv` is capped like `SPAWN` (8 strings, 63 bytes each) and the image like an
+image too: over 16 MiB is `-E2BIG` before a byte is read.
 
 ### The interrupt key
 

@@ -118,9 +118,6 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_SYNC           63
 #define GRV_SYSCALL_FSYNC          64
 #define GRV_SYSCALL_FORK           65
-/* 66 is EXEC's number. The call is not dispatched yet, so it answers
-   -ENOSYS like a retired slot; the number is named here so the three ABI
-   lists agree and the call cannot later be given a second number. */
 #define GRV_SYSCALL_EXEC           66
 #define GRV_SYSCALL_POLL           67
 
@@ -219,6 +216,21 @@ static inline long grv_wait(long pid) {
    box. Only the parent can wait for it. */
 static inline long grv_fork(void) {
     return syscall1(GRV_SYSCALL_FORK, 0);
+}
+
+/* Replace this process's image with the program at 'name' (a bare name
+   resolves through /bin), handing it argv. On success the call does not
+   return: the program starts at its own entry point with a fresh address
+   space, a fresh stack and clean registers. The process itself survives: the
+   same task id, parent, working directory, console binding and open
+   descriptors (so a parent waiting on this id still collects the status), and
+   a file offset or pipe end is the one the old image had. Shared-memory
+   mappings and handles, surfaces and display authority belong to the image
+   and are released. On failure nothing changes: the old image, its memory and
+   its descriptors are intact, and the return is -1 with errno (ENOENT, ENOEXEC,
+   E2BIG for an image over 16 MiB, EIO, ENOMEM, EFAULT, EINVAL). */
+static inline long grv_exec(const char* name, const char* const* argv, int argc) {
+    return grv_err(syscall3(GRV_SYSCALL_EXEC, (long)name, (long)argv, argc));
 }
 
 /* Forcibly terminate another task; its exit code becomes 'code'.
