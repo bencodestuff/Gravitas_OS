@@ -45,6 +45,9 @@ static constexpr uint64_t MAX_SPAWN_IMAGE_BYTES = 16ull << 20; // 16 MiB
 
 extern "C" void kprint(const char* str);
 extern "C" void kprint_uint(uint64_t value); 
+#ifdef GRV_TEST_FORK
+extern "C" int sched_fork_frame(IDT::Registers* frame);
+#endif
 
 // Hex printer for registers (no allocation, no format string needed)
 static void print_hex64(uint64_t value) {
@@ -1149,6 +1152,18 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
 
     if (num == 0x80) {
         uint64_t syscall_id = regs->rax;
+#ifdef GRV_TEST_FORK
+        // Private test hook, absent from ordinary kernel builds and from the
+        // published syscall table/ABI. It creates a child context from this
+        // exact syscall return frame so the guest can exercise the real
+        // scheduler and iretq restore path. Fork convention: the child sees
+        // rax = 0, the parent sees the child's task id.
+        constexpr uint64_t TEST_FORK_SYSCALL = 0xFFFF;
+        if (syscall_id == TEST_FORK_SYSCALL) {
+            regs->rax = (uint64_t)(long)sched_fork_frame(regs);
+            return;
+        }
+#endif
         if (syscall_id < SYSCALL_COUNT && syscall_table[syscall_id] != nullptr) {
             syscall_table[syscall_id](regs);
         } else {
@@ -1167,7 +1182,11 @@ extern "C" void interrupt_dispatcher(IDT::Registers* regs) {
         if (num == 14) {
             asm volatile("mov %%cr2, %0" : "=r"(cr2));
         }
-        Fault::handle_cpu_exception(regs, cr2); // noreturn
+        // Returns only when a copy-on-write write fault was resolved; the
+        // stub then retries the faulting instruction. Without this return the
+        // dispatcher would fall through to the unexpected-interrupt halt.
+        Fault::handle_cpu_exception(regs, cr2);
+        return;
     }
 
     // --- IRQ 0: Timer (Interrupt 32) ---

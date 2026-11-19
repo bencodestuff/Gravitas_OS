@@ -17,10 +17,16 @@
 #include "kernel/core/ipc.h"
 #include "kernel/core/memmap.h"
 #include "arch/x86_64/gdt.h"
+#include "arch/x86_64/idt.h"
 
 // Assembly trampoline: runs a forged user task's first switch_context frame
 // (R12 = user RIP, R13 = user RSP) and iretq's into ring 3.
 extern "C" void user_entry_trampoline();
+#ifdef GRV_TEST_FORK
+// Restores a forked child's switch_context frame and the interrupt frame
+// behind it (see sched_fork_frame). Built only for the fork test build.
+extern "C" void fork_restore_entry();
+#endif
 
 extern "C" void switch_context(uint64_t* old_sp, uint64_t next_sp,
                                void* old_fxsave, void* new_fxsave);
@@ -44,6 +50,143 @@ namespace Sched {
         while (src[i] && i < cap - 1) { dst[i] = src[i]; i++; }
         dst[i] = '\0';
     }
+
+#ifdef GRV_TEST_FORK
+    // Release a half-built forked child. Only used before the task is linked
+    // into the ready queue, so nothing else can be looking at it.
+    static void discard_forked_child(Task* child, uint64_t cr3) {
+        if (child != nullptr) {
+            for (int i = 0; i < VFS::MAX_FDS; ++i) {
+                if (child->fds[i] != nullptr) VFS::close_fd_for(child->fds, i);
+            }
+            delete[] child->fxsave_raw;
+            delete[] child->kstack_mem;
+            delete child;
+        }
+        if (cr3 != 0) VMM::destroy_user_space(cr3);
+    }
+
+    // Build a task that returns from the caller's syscall.
+    //
+    // This is the piece a fork needs and spawn cannot provide: spawn forges a
+    // fresh entry point and user stack, while a forked child must come back
+    // out of the very trap it was copied from, at the same user instruction
+    // and with the same user stack, with rax = 0 to tell it apart from its
+    // parent. The child therefore owns a private copy-on-write address space
+    // and its own kernel stack, whose first words are the switch_context frame
+    // (callee-saved registers and the return address) followed by an exact
+    // copy of the parent's interrupt frame. fork_restore_entry pops that frame
+    // and iretqs, so the child never re-enters interrupt_dispatcher and the
+    // scheduler's post-yield bookkeeping does not run twice for one trap.
+    //
+    // Invoked through the private syscall hook in idt.cpp, which only test
+    // builds compile in; it is not part of the published syscall ABI.
+    static_assert(sizeof(IDT::Registers) % sizeof(uint64_t) == 0,
+                  "the child's interrupt frame is copied in 8-byte words");
+
+    extern "C" int sched_fork_frame(IDT::Registers* parent_frame) {
+        if (parent_frame == nullptr || current_task == nullptr ||
+            current_task->id == 0) return -1;   // ring-3 tasks only
+
+        asm volatile("cli" ::: "memory");
+        Task* parent = current_task;
+
+        uint64_t child_cr3 = VMM::clone_user_space(parent->cr3);
+        if (child_cr3 == 0) return -1;
+
+        Task* child = new Task;
+        if (child == nullptr) {
+            VMM::destroy_user_space(child_cr3);
+            return -1;
+        }
+        // Nothing below may be freed on a failure path unless it is set, so
+        // clear the pointers discard_forked_child would hand back.
+        child->kstack_mem = nullptr;
+        child->fxsave_raw = nullptr;
+        for (int i = 0; i < VFS::MAX_FDS; ++i) child->fds[i] = nullptr;
+
+        // Everything spawn normally derives from an argv is inherited from the
+        // parent instead. Unset fields here would be read by the scheduler.
+        child->id = ++task_counter;
+        child->state = READY;
+        child->wake_timestamp = 0;
+        child->next = nullptr;
+        copy_name(child->name, parent->name, (int)sizeof(child->name));
+        child->waiting_on = -1;
+        child->getc_waiting = false;
+        child->event_input = parent->event_input;
+        child->user_rip = parent_frame->rip;   // same continuation as the parent
+        child->user_rsp = parent_frame->rsp;   // same user stack
+        child->user_stack_guard = parent->user_stack_guard;
+        child->cr3 = child_cr3;
+        child->brk = parent->brk;
+        child->brk_limit = parent->brk_limit;
+        child->fb_map_base = parent->fb_map_base;
+        child->fb_map_pages = parent->fb_map_pages;
+        child->exit_code = 0;
+        child->exit_code_inbox = 0;
+        child->zombie_next = nullptr;
+        child->console_owner = parent->console_owner;
+        child->con_in_head = child->con_in_tail = 0;
+        child->con_out_head = child->con_out_tail = 0;
+        child->con_notified = false;
+        child->timer_deadline = 0;
+        child->timer_armed = false;
+        for (int i = 0; i < (int)sizeof(child->cwd); ++i)
+            child->cwd[i] = parent->cwd[i];
+
+        // Its own kernel stack: the child's trap frames must not sit on top of
+        // the parent's in-flight ones.
+        child->kstack_mem = new uint64_t[4096];
+        if (child->kstack_mem == nullptr) {
+            discard_forked_child(child, child_cr3);
+            return -1;
+        }
+        child->kstack_mem[0] = KSTACK_CANARY;
+        child->kstack_top = (uint64_t)(child->kstack_mem + 4096);
+
+        // FPU/SSE: snapshot the live state. The parent's saved area is only
+        // written when it is switched out, so it can be stale here; the kernel
+        // itself runs with SSE disabled, so the registers still hold the
+        // parent's userland state.
+        child->fxsave_raw = new uint8_t[512 + 63];
+        if (child->fxsave_raw == nullptr) {
+            discard_forked_child(child, child_cr3);
+            return -1;
+        }
+        child->fxsave_area = (uint8_t*)(((uint64_t)child->fxsave_raw + 63) &
+                                        ~(uint64_t)63);
+        struct FxArea { uint8_t bytes[512]; } __attribute__((aligned(64)));
+        FxArea live;
+        asm volatile("fxsave %0" : "=m"(live) : : "memory");
+        for (int i = 0; i < 512; ++i)
+            child->fxsave_area[i] = live.bytes[i];
+
+        // fds_inherit() reads the current task's table, so it runs here, once
+        // every allocation that can fail has succeeded.
+        VFS::fds_inherit(child->fds);
+
+        // switch_context pops r15 first, so its frame is stored deepest-last:
+        // six callee-saved words, then the return address that enters
+        // fork_restore_entry, then the interrupt frame it restores.
+        uint64_t* frame = child->kstack_mem + 4096 -
+                          (sizeof(IDT::Registers) / sizeof(uint64_t));
+        IDT::Registers saved = *parent_frame;
+        saved.rax = 0;                       // the child's fork result
+        const uint64_t* words = (const uint64_t*)&saved;
+        for (uint64_t i = 0; i < sizeof(saved) / sizeof(uint64_t); ++i)
+            frame[i] = words[i];
+
+        uint64_t* context = frame - 7;
+        for (int i = 0; i < 6; ++i) context[i] = 0;   // callee-saved registers
+        context[6] = (uint64_t)fork_restore_entry;    // switch_context return
+        child->rsp = (uint64_t)context;
+
+        child->next = ready_queue->next;
+        ready_queue->next = child;
+        return child->id;
+    }
+#endif
 
     // --- WAIT for already-exited tasks ---
     // WAIT is advisory (a parent may wait late or never), so every exit

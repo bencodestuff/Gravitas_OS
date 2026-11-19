@@ -20,8 +20,11 @@ namespace Fault {
     // at the very top of kmain, before any protected function runs.
     void init();
 
-    // Handle a CPU exception (vectors 0..31). Never returns:
-    //   ring 3 -> the task is killed (Sched::exit_current, EXIT_FAULT)
+    // Handle a CPU exception (vectors 0..31).
+    //   ring 3 -> either a copy-on-write write fault is resolved and this
+    //             returns to the stub (retry the instruction), or the task is
+    //             killed (Sched::exit_current, EXIT_FAULT) and it never
+    //             returns
     //   ring 0 -> full dump, then the CPU halts with interrupts off
     // 'regs' is the interrupted frame; cr2 is meaningful for #PF only.
     void handle_cpu_exception(IDT::Registers* regs, uint64_t cr2);
