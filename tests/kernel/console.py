@@ -230,18 +230,6 @@ def command_lists(g):
     if g.count(r"syntax error") != errors:
         g.fail("an empty command line was treated as a syntax error")
 
-    hello = g.count("Hello from the Gravitas tar filesystem!")
-    mark = g.mark()
-    fin = g.count(r"\[shell\] program finished")
-    g.shell("cat hello.txt > '/tmp/quoted;out'; cat '/tmp/quoted;out'")
-    g.wait_count(r"\[shell\] program finished", fin + 2)
-    g.wait_count("Hello from the Gravitas tar filesystem!", hello + 1)
-    output = g.since(mark)
-    if "cannot open" in output or "syntax error" in output:
-        g.fail(
-            "a quoted operator filename was not passed as a literal path:\n" + output
-        )
-
     # Pipelines and redirections remain valid within semicolon-separated lists.
     fin = g.count(r"\[shell\] program finished")
     hello = g.count("Hello from the Gravitas tar filesystem!")

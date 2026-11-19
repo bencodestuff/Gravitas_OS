@@ -134,8 +134,9 @@ static void cmd_kill(const char* arg) {
 // (or a builtin) with whitespace-separated arguments and optional
 // redirections: '< file', '> file' (truncate), '>> file' (append). The
 // operators are always separate tokens, so 'cat<in>out' means the same as
-// 'cat < in > out'. Single- and double-quoted portions group a word and are
-// removed from its value. There is no expansion or escape processing.
+// 'cat < in > out'. Quote characters are ordinary characters: the shell cannot
+// quote, so a program such as `lua.elf -e print('x')` receives its quotes
+// intact. There is no expansion or escape processing.
 
 #define SH_MAX_CMDS 8
 #define SH_MAX_ARGS 8
@@ -170,16 +171,9 @@ static int sh_read_word(const char** pp, char* out) {
     const char* p = *pp;
     while (*p == ' ' || *p == '\t') p++;
     int n = 0;
-    char quote = 0;
     while (*p) {
-        if (quote) {
-            if (*p == quote) { quote = 0; p++; continue; }
-        } else if (*p == '\'' || *p == '"') {
-            quote = *p;
-            p++;
-            continue;
-        } else if (*p == ' ' || *p == '\t' || *p == '<' || *p == '>' ||
-                   *p == '|' || *p == ';' || *p == '&') {
+        if (*p == ' ' || *p == '\t' || *p == '<' || *p == '>' ||
+            *p == '|' || *p == ';' || *p == '&') {
             break;
         }
         if (n < SH_WORD_MAX - 1) out[n++] = *p;
@@ -502,15 +496,9 @@ static long execute(char* line) {
 
     struct sh_list_item items[SH_MAX_LIST];
     int count = 0, start = 0, connector = 0;
-    char quote = 0;
     int len = (int)strlen(line);
     for (int i = 0; i <= len; i++) {
         char ch = line[i];
-        if (quote) {
-            if (ch == quote) quote = 0;
-            continue;
-        }
-        if (ch == '\'' || ch == '"') { quote = ch; continue; }
         if (ch != ';' && ch != '&' && ch != '\0') continue;
 
         int end = i;
@@ -546,10 +534,6 @@ static long execute(char* line) {
             break;
         } else connector = 1;
         start = i + 1;
-    }
-    if (quote) {
-        printf("shell: unmatched quote\n");
-        return -1;
     }
 
     // Keep the parsed connector representation for future status-aware
