@@ -54,6 +54,17 @@ namespace Sched {
     // a clone would outlive the reference that keeps them alive.
     int fork_current(IDT::Registers* frame);
 
+    // Replace the calling task's image with the ELF in 'image' (which this
+    // takes ownership of and always frees). On success it repoints 'frame' at
+    // the new entry and stack and returns 0; the syscall stub then iretqs into
+    // the new image, so the caller never resumes. On failure it returns a
+    // negated errno and leaves the task, its space and its descriptors exactly
+    // as they were. Task id, parent, working directory, console binding and
+    // open descriptors are kept; image-owned resources (shared-memory
+    // mappings and handles, surfaces, display authority) are released.
+    int exec_current(IDT::Registers* frame, const char* path, int argc,
+                     const char* const* argv, uint8_t* image, uint64_t size);
+
     // Program break accessors for the syscall layer (Task is private here)
     uint64_t current_task_brk();
     void current_task_set_brk(uint64_t value);

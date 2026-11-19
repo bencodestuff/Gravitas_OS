@@ -290,6 +290,7 @@ value with a different meaning.
 | 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; writes dirty pages back and flushes every mounted filesystem |
 | 64 | `FSYNC` | `fd` | 0/−1; writes dirty pages back and flushes the filesystem holding an open descriptor |
 | 65 | `FORK` | — | 0 in the child, the new task id in the parent, or a negative errno (`−ENOMEM`, `−EOPNOTSUPP`) |
+| 66 | `EXEC` | `path, argv, argc` | does not return on success; on failure −1 with errno (`ENOENT`, `ENOEXEC`, `E2BIG`, `EIO`, `ENOMEM`, `EFAULT`, `EINVAL`) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -329,6 +330,26 @@ is already blocked in `WAIT` or `SPAWN` uses no record in the table; a child
 that outlives its parent takes no record either, since nobody could collect
 it. Only a status that has to wait for a later `WAIT` spends one of the eight
 slots.
+
+### Exec
+
+`EXEC` replaces the calling process's image and keeps the process. The new
+image is loaded into a fresh address space while the old one is still live, so
+a missing file, a malformed image, an oversized one or a failed allocation is an
+ordinary negative return and the caller continues in its old image with its
+memory and descriptors untouched. On success the call does not return: the trap
+frame is repointed at the new entry point on a fresh stack, with clean
+registers and FPU state, and the old space is destroyed.
+
+What survives is the process: the same task id (so a parent blocked in `WAIT`,
+or waiting later, still collects the status), the same parent, working
+directory, console binding and open descriptors. A descriptor keeps its open
+file description, so an offset or a pipe end is continuous across the exec.
+What does not survive is anything owned by the image: its memory, its
+shared-memory mappings and handles, its surfaces and the display authority, and
+any armed one-shot timer. Mailbox messages are keyed by task id and are kept.
+`argv` is capped like `SPAWN` (8 strings, 63 bytes each) and the image like an
+image too: over 16 MiB is `-E2BIG` before a byte is read.
 
 ### The interrupt key
 

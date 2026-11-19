@@ -13,6 +13,7 @@
 #include "kernel/core/env.h"
 #include "kernel/core/timer.h"
 #include "kernel/gfx/compositor.h"
+#include "fs/elf.h"
 #include "fs/vfs.h"
 #include "kernel/core/ipc.h"
 #include "kernel/core/memmap.h"
@@ -48,6 +49,107 @@ namespace Sched {
         int i = 0;
         while (src[i] && i < cap - 1) { dst[i] = src[i]; i++; }
         dst[i] = '\0';
+    }
+
+    // --- user stack ---
+    // Both spawn and exec hand a program the same start: a fresh stack with
+    // the System V argument layout on it. The two halves live here so a new
+    // image cannot drift from a new process.
+
+    // Map a user stack into 'space': one guard page left unmapped, then
+    // USER_STACK_PAGES zeroed frames. Returns the base VA (the guard), or 0
+    // when anything fails; a failure leaves nothing reserved or mapped.
+    static uint64_t map_user_stack(uint64_t space) {
+        uint64_t base = VMM::alloc_user_range(space, USER_STACK_PAGES + 1);
+        if (base == 0) return 0;
+        for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {
+            // Zeroed: the frame may still hold another task's data, and the
+            // stack below the initial RSP is readable by the new program.
+            uint64_t frame = PMM::alloc_page_zeroed();
+            if (frame == 0) {
+                VMM::unmap_and_free_user_range(space, base + 4096, p);
+                VMM::unmap_user_range(space, base, 1);   // guard marker
+                return 0;
+            }
+            // A failed mapping must not be followed by a write through the
+            // physical alias: physical 0 is reserved memory. Undo the pages
+            // that made it and the marker, then fail.
+            if (!VMM::map_page_in(space, frame, base + (p + 1) * 4096, 0x07)) {
+                PMM::free_page(frame);
+                VMM::unmap_and_free_user_range(space, base + 4096, p);
+                VMM::unmap_user_range(space, base, 1);
+                return 0;
+            }
+        }
+        return base;
+    }
+
+    // Undo map_user_stack in the same space: the guard marker and every frame.
+    static void free_user_stack(uint64_t space, uint64_t base) {
+        VMM::unmap_and_free_user_range(space, base + 4096, USER_STACK_PAGES);
+        VMM::unmap_user_range(space, base, 1);
+    }
+
+    // Lay the initial stack out in an already-mapped stack:
+    // [rsp]      = argc
+    // [rsp+8..]  = argv[0..argc-1], then NULL
+    // then       = envp[0..envc-1], then NULL
+    // higher     = the argv and env string bytes themselves
+    //
+    // crt0 finds the environment as argv + argc + 1, which is why the two
+    // arrays are laid out together rather than pointed at separately.
+    // Returns the initial RSP and, for the spawn trampoline, the pointer
+    // array. The caller must be on the space the stack lives in.
+    static uint64_t build_user_stack(uint64_t stack_base, int argc,
+                                     const char* const* argv,
+                                     uint64_t* out_array_start) {
+        static uint64_t str_addrs[8];
+        static uint64_t env_addrs[Env::MAX_HANDOFF];
+        int envc = Env::count();
+        if (envc > Env::MAX_HANDOFF) envc = Env::MAX_HANDOFF;
+
+        uint64_t total_len = 0;
+        for (int i = 0; i < argc; i++) {
+            const char* s = argv[i];
+            while (*s) { total_len++; s++; }
+            total_len++; // NUL
+        }
+        for (int i = 0; i < envc; i++) {
+            const char* s = Env::at(i);
+            while (*s) { total_len++; s++; }
+            total_len++;
+        }
+        uint64_t stack_top_va = stack_base + (USER_STACK_PAGES + 1) * 4096;
+        uint64_t strings_start = (stack_top_va - total_len) & ~(uint64_t)15;
+        // Align the pointer array down so the initial RSP is 16n+8: the SysV
+        // convention a called function expects after its return address is
+        // pushed. SSE spills need that alignment.
+        uint64_t nptrs = (uint64_t)(argc + 1) + (uint64_t)(envc + 1);
+        uint64_t array_start = (strings_start - nptrs * 8) & ~(uint64_t)15;
+        uint64_t new_rsp = array_start - 8;
+
+        char* dst = (char*)strings_start;
+        for (int i = 0; i < argc; i++) {
+            str_addrs[i] = (uint64_t)dst;
+            const char* s = argv[i];
+            while (*s) *dst++ = *s++;
+            *dst++ = '\0';
+        }
+        for (int i = 0; i < envc; i++) {
+            env_addrs[i] = (uint64_t)dst;
+            const char* s = Env::at(i);
+            while (*s) *dst++ = *s++;
+            *dst++ = '\0';
+        }
+        uint64_t* ap = (uint64_t*)array_start;
+        for (int i = 0; i < argc; i++) ap[i] = str_addrs[i];
+        ap[argc] = 0;                                       // argv[argc] = NULL
+        for (int i = 0; i < envc; i++) ap[argc + 1 + i] = env_addrs[i];
+        ap[argc + 1 + envc] = 0;                            // envp[envc] = NULL
+        *(uint64_t*)new_rsp = (uint64_t)argc;
+
+        if (out_array_start != nullptr) *out_array_start = array_start;
+        return new_rsp;
     }
 
     // --- fork ---
@@ -455,105 +557,21 @@ namespace Sched {
             VMM::switch_pml4(new_task->cr3);
             switched = true;
         }
-        uint64_t stack_base = VMM::alloc_user_range(new_task->cr3, USER_STACK_PAGES + 1);
+        uint64_t stack_base = map_user_stack(new_task->cr3);
         if (stack_base == 0) {
-            kprint("[Sched] Out of user VA for stack!\n");
+            kprint("[Sched] Out of user VA or memory for the stack!\n");
             if (switched) VMM::switch_pml4(old_cr3);
-            // alloc_user_range reserved nothing when it returned 0, so there
-            // is no VA range to hand back. stage_spawn destroys the address
-            // space; the Task and kernel stack are ours to release here.
+            // map_user_stack handed back every marker and frame it took, so
+            // no VA reservation is left for the caller. stage_spawn destroys
+            // the address space; the Task and kernel stack are ours to
+            // release here.
             discard_unlinked_task(new_task);
             return -1;
         }
         new_task->user_stack_guard = stack_base; // the unmapped guard page
-        // Back every page of the stack: alloc_user_range only reserves the
-        // VA range, so the frames must be mapped here. 8 pages (32K) is a
-        // comfortable floor; bigger programs put multi-KB frames on it.
-        // A failed allocation must not be mapped: physical 0 is reserved
-        // memory, and mapping it would let the later space teardown free it.
-        // Undo this attempt (mappings and frames), then fail; the Task and
-        // kernel stack are ours to release, the address space is the caller's.
-        uint64_t mapped = 0;   // pages successfully mapped after the guard
-        bool oom = false;
-        for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {
-            // Zeroed: the frame may still hold another task's data, and the
-            // stack below the initial RSP is readable by the new program.
-            uint64_t frame = PMM::alloc_page_zeroed();
-            if (frame == 0) { oom = true; break; }
-            if (!VMM::map_page(frame, stack_base + (p + 1) * 4096, 0x07)) { // P|W|U
-                PMM::free_page(frame);
-                oom = true;
-                break;
-            }
-            mapped++;
-        }
-        if (oom) {
-            kprint("[Sched] Out of physical memory for user stack!\n");
-            // Unmap the guard and every frame that made it, then release the
-            // frames themselves.
-            VMM::unmap_and_free_user_range(new_task->cr3, stack_base + 4096, mapped);
-            VMM::unmap_user_range(new_task->cr3, stack_base, 1); // guard marker
-            if (switched) VMM::switch_pml4(old_cr3);
-            // The guard marker and the frames above it are gone, so no VA
-            // reservation is left for the caller. Only the Task and its
-            // kernel stack still need releasing.
-            discard_unlinked_task(new_task);
-            return -1;
-        }
+        uint64_t array_start = 0;
+        uint64_t new_rsp = build_user_stack(stack_base, argc, argv, &array_start);
         if (switched) VMM::switch_pml4(old_cr3);
-
-        // --- Build the initial user stack (System V layout) ---
-        // [rsp]      = argc
-        // [rsp+8..]  = argv[0..argc-1], then NULL
-        // then       = envp[0..envc-1], then NULL
-        // higher     = the argv and env string bytes themselves
-        //
-        // crt0 finds the environment as argv + argc + 1, which is why the two
-        // arrays are laid out together rather than pointed at separately.
-        static uint64_t str_addrs[8];
-        static uint64_t env_addrs[Env::MAX_HANDOFF];
-        int envc = Env::count();
-        if (envc > Env::MAX_HANDOFF) envc = Env::MAX_HANDOFF;
-
-        uint64_t total_len = 0;
-        for (int i = 0; i < argc; i++) {
-            const char* s = argv[i];
-            while (*s) { total_len++; s++; }
-            total_len++; // NUL
-        }
-        for (int i = 0; i < envc; i++) {
-            const char* s = Env::at(i);
-            while (*s) { total_len++; s++; }
-            total_len++;
-        }
-        uint64_t stack_top_va = stack_base + (USER_STACK_PAGES + 1) * 4096;
-        uint64_t strings_start = (stack_top_va - total_len) & ~(uint64_t)15;
-        // Align the pointer array down so the initial RSP is 16n+8: the SysV
-        // convention a called function expects after its return address is
-        // pushed. SSE spills need that alignment.
-        uint64_t nptrs = (uint64_t)(argc + 1) + (uint64_t)(envc + 1);
-        uint64_t array_start = (strings_start - nptrs * 8) & ~(uint64_t)15;
-        uint64_t new_rsp = array_start - 8;
-
-        char* dst = (char*)strings_start;
-        for (int i = 0; i < argc; i++) {
-            str_addrs[i] = (uint64_t)dst;
-            const char* s = argv[i];
-            while (*s) *dst++ = *s++;
-            *dst++ = '\0';
-        }
-        for (int i = 0; i < envc; i++) {
-            env_addrs[i] = (uint64_t)dst;
-            const char* s = Env::at(i);
-            while (*s) *dst++ = *s++;
-            *dst++ = '\0';
-        }
-        uint64_t* ap = (uint64_t*)array_start;
-        for (int i = 0; i < argc; i++) ap[i] = str_addrs[i];
-        ap[argc] = 0;                                       // argv[argc] = NULL
-        for (int i = 0; i < envc; i++) ap[argc + 1 + i] = env_addrs[i];
-        ap[argc + 1 + envc] = 0;                            // envp[envc] = NULL
-        *(uint64_t*)new_rsp = (uint64_t)argc;
 
         new_task->user_rip = rip;
         new_task->user_rsp = new_rsp;
@@ -580,8 +598,7 @@ namespace Sched {
         new_task->fxsave_raw = new uint8_t[512 + 63];
         if (new_task->fxsave_raw == nullptr) {
             kprint("[Sched] Out of memory for the FPU area!\n");
-            VMM::unmap_and_free_user_range(new_task->cr3, stack_base + 4096, mapped);
-            VMM::unmap_user_range(new_task->cr3, stack_base, 1); // guard marker
+            free_user_stack(new_task->cr3, stack_base);
             discard_unlinked_task(new_task);
             return -1;
         }
@@ -612,6 +629,107 @@ namespace Sched {
 
         kprint3("[Sched] User task '", name, "' created.\n");
         return new_task->id;
+    }
+
+    // --- exec ---
+    // Replace the calling process image, keeping the process itself: the task
+    // id, parent, working directory, console binding and open descriptors
+    // survive, so a parent waiting on this id still collects its status.
+    //
+    // The image is loaded into a fresh address space while the old one is
+    // still live, so a failure (bad image, no memory) leaves the caller
+    // exactly as it was. The commit is the last step and cannot fail: the
+    // interrupt frame is repointed at the new entry, then image-owned
+    // resources go and the old space is destroyed. The task runs on its
+    // kernel stack, which the shared upper half keeps mapped in every space,
+    // so the old space can be torn down from inside it.
+    int exec_current(IDT::Registers* frame, const char* path, int argc,
+                     const char* const* argv, uint8_t* image, uint64_t size) {
+        if (frame == nullptr || image == nullptr || current_task == nullptr ||
+            current_task->id == 0) {
+            delete[] image;
+            return -Errno::EINVAL;      // ring-3 tasks only
+        }
+        Task* t = current_task;
+
+        // Every fallible step happens before the task is touched.
+        asm volatile("cli" ::: "memory");
+        uint64_t old_cr3 = t->cr3;
+        uint64_t fresh = VMM::clone_kernel_space();
+        if (fresh == 0) {
+            delete[] image;
+            return -Errno::ENOMEM;
+        }
+
+        VMM::switch_pml4(fresh);
+        uint64_t entry = ELF::load_elf(image, size);
+        delete[] image;
+        if (entry == 0) {
+            VMM::switch_pml4(old_cr3);
+            VMM::destroy_user_space(fresh);
+            return -Errno::ENOEXEC;
+        }
+
+        uint64_t stack_base = map_user_stack(fresh);
+        if (stack_base == 0) {
+            VMM::switch_pml4(old_cr3);
+            VMM::destroy_user_space(fresh);
+            return -Errno::ENOMEM;
+        }
+        // Same stack layout as spawn; the pointer array is what crt0 receives
+        // in RSI (see the trampoline: argc in RDI, argv in RSI).
+        uint64_t array_start = 0;
+        uint64_t new_rsp = build_user_stack(stack_base, argc, argv, &array_start);
+
+        // --- commit: nothing below can fail ---
+        // The syscall stub iretqs this frame, so the process resumes at the
+        // new entry on the new stack; the call to exec does not return.
+        // crt0 takes (argc, argv) in RDI/RSI, exactly as the spawn trampoline
+        // leaves them, and walks the arrays the stack layout put behind them.
+        frame->rip = entry;
+        frame->rsp = new_rsp;
+        frame->rflags = 0x202;      // IF on, DF and TF clear
+        frame->rax = 0;
+        frame->rdi = (uint64_t)argc;
+        frame->rsi = array_start;
+        frame->rbx = frame->rcx = frame->rdx = 0;
+        frame->rbp = 0;
+        frame->r8 = frame->r9 = frame->r10 = frame->r11 = 0;
+        frame->r12 = frame->r13 = frame->r14 = frame->r15 = 0;
+
+        t->cr3 = fresh;
+        t->user_rip = entry;
+        t->user_rsp = new_rsp;
+        t->user_stack_guard = stack_base;
+        t->brk = 0;
+        t->brk_limit = 0;
+        t->fb_map_base = 0;
+        t->fb_map_pages = 0;
+        t->getc_waiting = false;
+        // Input arrives as bytes until a program asks for event mode; the new
+        // image must not inherit a mode its old image chose.
+        t->event_input = false;
+        t->timer_armed = false;
+        t->timer_deadline = 0;
+        copy_name(t->name, path, (int)sizeof(t->name));
+
+        // Fresh FPU state: rounding modes and pending exceptions belong to
+        // the image, not the process. The saved area is what the next switch
+        // restores, so both it and the live registers are reset.
+        for (int i = 0; i < 512; ++i) t->fxsave_area[i] = fpu_template[i];
+        static const uint32_t MXCSR_DEFAULT __attribute__((aligned(16))) = 0x1F80;
+        asm volatile("fninit" ::: "memory");
+        asm volatile("ldmxcsr %0" :: "m"(MXCSR_DEFAULT));
+
+        // Image-owned resources: these mappings live in the old space, which
+        // is about to go. Dropping the records is what stops a region or a
+        // grant slot being pinned for ever.
+        MemMap::task_gone(t->id);
+        Compositor::surfaces_for_task_gone(t->id);
+        Compositor::authority_gone(t->id);
+
+        VMM::destroy_user_space(old_cr3);
+        return 0;
     }
 
 
