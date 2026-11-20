@@ -42,11 +42,13 @@ static void cmd_help() {
     printf("  pwd         - print working directory (builtin)\n");
     printf("  run <prog>  - spawn a program by exact name\n");
     printf("  kill <pid>  - terminate a background task\n");
+    printf("  fg <pid>    - bring a background task back to the foreground\n");
     printf("  help        - this list\n");
     printf("  Redirection: cmd < in, cmd > out, cmd >> out\n");
     printf("  Pipelines:   a | b | c\n");
     printf("  Lists:       a; b   a && b (only if a succeeds)\n");
-    printf("  Background:  a &   (jobs lists it, kill <pid> stops it)\n");
+    printf("  Background:  a &   (jobs lists it, fg <pid> brings it back,\n"
+           "                       kill <pid> stops it)\n");
     printf("  There is no quoting: ';' and '&' always separate commands.\n");
 }
 
@@ -72,21 +74,48 @@ static void cmd_pwd() {
 }
 
 /* --- Background job table --- */
-static long g_bg_pid[8];      /* 0 = empty slot */
-static char g_bg_name[8][32]; /* program name of the job */
+static long g_bg_pid[8];             /* 0 = empty slot */
+static char g_bg_name[8][32];        /* program name of the job */
+static unsigned char g_bg_stages[8]; /* 1 = a single program, more = a pipeline */
 
-/* Record a task the shell started in the background, so jobs and kill can
-   refer to it by pid. The table is small and never reused. */
-static void note_job(long pid, const char* name) {
+/* Is 'pid' still a live task? Task ids are handed out in increasing order and
+   are never reused, so a pid that has left this table can only ever name the
+   task it named before; the snapshot is the only liveness the kernel offers a
+   userland shell. */
+static bool task_running(long pid) {
+    static struct grv_taskinfo list[64];
+    int n = grv_task_list(list, 64);
+    if (n < 0) return true; // cannot tell: treat a slot as live, never shed it
+    for (int i = 0; i < n; i++) if (list[i].id == pid) return true;
+    return false;
+}
+
+/* Record a task the shell started in the background, so jobs, fg and kill can
+   refer to it by pid. 'stages' is more than one for a piped item, whose earlier
+   stages have no pid in this table. Returns false when the table holds eight
+   live jobs: the caller still has the pid (so kill works), but the job cannot
+   be listed or foregrounded. */
+static bool note_job(long pid, const char* name, int stages) {
+    int slot = -1;
     for (int i = 0; i < 8; i++) {
-        if (g_bg_pid[i] == 0) {
-            g_bg_pid[i] = pid;
-            const char* s = name; int c = 0;
-            while (s[c] && c < 31) { g_bg_name[i][c] = s[c]; c++; }
-            g_bg_name[i][c] = '\0';
-            return;
+        if (g_bg_pid[i] == 0) { slot = i; break; }
+    }
+    if (slot < 0) {
+        // Shed jobs that have already ended instead of refusing the new one.
+        // Their status is no longer collectable once the slot is gone, which
+        // is what a shell that has given up on a job does anyway.
+        for (int i = 0; i < 8; i++) {
+            if (!task_running(g_bg_pid[i])) { slot = i; break; }
         }
     }
+    if (slot < 0) return false;
+
+    g_bg_pid[slot] = pid;
+    g_bg_stages[slot] = (unsigned char)stages;
+    const char* s = name; int c = 0;
+    while (s[c] && c < 31) { g_bg_name[slot][c] = s[c]; c++; }
+    g_bg_name[slot][c] = '\0';
+    return true;
 }
 
 /* bg <prog> [args...] — spawn in the background, remember the pid.
@@ -107,9 +136,13 @@ static void cmd_bg(char** words, int nwords) {
     long pid = grv_spawn_bg(prog, argv, argc);
     if (pid == -1) { printf("bg: cannot start '%s'\n", prog); return; }
 
-    // Remember it in a free slot (jobs/kill refer to tasks by this pid)
-    note_job(pid, prog);
-    printf("bg: started '%s' as task %d\n", prog, (int)pid);
+    // Remember it in a free slot (jobs/fg/kill refer to tasks by this pid)
+    if (!note_job(pid, prog, 1))
+        printf("bg: started '%s' as task %d\n"
+               "bg: the job table is full, so jobs and fg cannot see it\n",
+               prog, (int)pid);
+    else
+        printf("bg: started '%s' as task %d\n", prog, (int)pid);
 }
 
 /* jobs — list the pids we spawned in the background. */
@@ -136,8 +169,63 @@ static void cmd_kill(const char* arg) {
     if (r != 0) { printf("kill: no such task (or refused)\n"); return; }
     printf("kill: terminated %d\n", (int)pid);
     for (int i = 0; i < 8; i++) {
-        if (g_bg_pid[i] == pid) { g_bg_pid[i] = 0; break; }
+        if (g_bg_pid[i] == pid) { g_bg_pid[i] = 0; g_bg_stages[i] = 0; break; }
     }
+}
+
+/* fg <pid> — bring a tracked background job back to the foreground.
+
+   There is no console to take over: a spawned child inherits the shell's
+   console binding, and while the shell is blocked in WAIT the console's owner
+   routes typed bytes to the task the shell is waiting on, and treats Ctrl+C as
+   an interrupt of that same task. So foregrounding is the WAIT itself, and
+   nothing has to be restored when it returns. CONSOLE_ATTACH would be the
+   wrong tool: it only accepts a task with no owner, and it would point the
+   job's output at the shell rather than at the terminal hosting the shell. */
+static long cmd_fg(const char* arg) {
+    if (arg == 0 || *arg == '\0') { printf("fg: usage: fg <pid>\n"); return 1; }
+    long pid = 0;
+    const char* p = arg;
+    while (*p >= '0' && *p <= '9') { pid = pid * 10 + (*p - '0'); p++; }
+    if (p == arg || *p != '\0' || pid <= 0) {
+        printf("fg: usage: fg <pid>\n");
+        return 1;
+    }
+
+    int slot = -1;
+    for (int i = 0; i < 8; i++) if (g_bg_pid[i] == pid) { slot = i; break; }
+    if (slot < 0) { printf("fg: no such job: %d\n", (int)pid); return 1; }
+
+    // Only the last stage of a piped item has a pid here; the stages before it
+    // are not tracked, so foregrounding it would silently leave its input
+    // behind and Ctrl+C could reach only one of the tasks. Refuse it.
+    if (g_bg_stages[slot] > 1) {
+        printf("fg: task %d is one stage of a pipeline; kill it instead\n",
+               (int)pid);
+        return 1;
+    }
+
+    char name[32];
+    for (int i = 0; i < 32; i++) name[i] = g_bg_name[slot][i];
+    // The job stops being a background job here, whatever the wait returns: a
+    // job that ended while nobody was looking must not linger in 'jobs'.
+    g_bg_pid[slot] = 0;
+    g_bg_name[slot][0] = '\0';
+    g_bg_stages[slot] = 0;
+
+    printf("fg: task %d %s\n", (int)pid, name);
+
+    // WAIT blocks until the job exits or Ctrl+C kills it (128 + SIGINT), and
+    // the status lands either way. A wait that cannot collect means the task
+    // has already gone and its status was dropped, which is not a hang.
+    long status = grv_wait(pid);
+    if (status < 0) {
+        printf("fg: task %d has already ended\n", (int)pid);
+        return 1;
+    }
+    printf("fg: task %d finished (status %d)\n", (int)pid, (int)status);
+    printf("[shell] program finished\n");
+    return status;
 }
 
 // --- Command line parsing ------------------------------------------------
@@ -173,7 +261,8 @@ struct sh_list_item {
 
 static bool is_builtin(const char* w) {
     return str_eq(w, "help") || str_eq(w, "pwd") || str_eq(w, "cd") ||
-           str_eq(w, "bg")   || str_eq(w, "jobs") || str_eq(w, "kill");
+           str_eq(w, "bg")   || str_eq(w, "jobs") || str_eq(w, "kill") ||
+           str_eq(w, "fg");
 }
 
 // Read one word (up to whitespace or an operator) into 'out'. Returns its
@@ -334,6 +423,7 @@ static long run_builtin(struct sh_cmd* c) {
         cmd_bg(wv, c->nwords);
     }
     else if (str_eq(w, "kill"))  cmd_kill(c->nwords > 1 ? c->words[1] : "");
+    else if (str_eq(w, "fg"))    status = cmd_fg(c->nwords > 1 ? c->words[1] : "");
 
     restore_fds(save0, save1);
     return status;
@@ -484,15 +574,17 @@ static long run_pipeline(struct sh_cmd* cmds, int ncmds, bool background) {
 
     // A background item is not waited for: the shell goes straight back to the
     // prompt, which is the whole point of '&'. The last stage's pid goes into
-    // the same table 'jobs' and 'kill' already use. Its exit status is not
-    // collected, because WAIT would block on a job that is still running and
-    // there is no non-blocking wait yet.
+    // the same table 'jobs', 'fg' and 'kill' already use; 'fg' refuses a piped
+    // item because only that last pid is known. Its exit status is not
+    // collected, because WAIT would block on a job that is still running.
     if (background) {
         if (started == 0) return -1;
         long last = -1;
         for (int i = 0; i < ncmds; i++) if (pids[i] > 0) last = pids[i];
-        note_job(last, cmds[ncmds - 1].prog);
+        bool noted = note_job(last, cmds[ncmds - 1].prog, ncmds);
         printf("shell: [%d] %s &\n", (int)last, cmds[ncmds - 1].prog);
+        if (!noted)
+            printf("shell: the job table is full, so jobs and fg cannot see it\n");
         return 0;
     }
 

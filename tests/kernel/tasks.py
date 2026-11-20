@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Process, IPC, console-endpoint, libc and filesystem contracts."""
+
 import os
 import re
 import sys
@@ -17,7 +18,7 @@ def background_spawn(g):
     g.shell("jobs")
     n = g.count("commands are programs")
     g.shell("help")
-    g.wait_count("commands are programs", n + 1)   # the prompt stayed alive
+    g.wait_count("commands are programs", n + 1)  # the prompt stayed alive
     if not re.search(r"^\s+\d+\s+sleeper\.elf\s*$", g.after("bg: started"), re.M):
         g.fail("jobs did not list the background task while it ran")
     g.wait_for(r"\[sleeper\] done")
@@ -36,6 +37,59 @@ def ctrl_c_interrupt(g):
     # on the victim itself, so it exited through the zombie path.
     g.wait_for(r"Task 'hang\.elf' (terminated \(killed\)|exited)")
     g.wait_count(r"\[shell\] program finished", finished + 1)
+
+
+@test
+def foreground_job(g):
+    # A job started with '&' can be brought back. 'fg' blocks the shell on it,
+    # which is exactly the state a foreground program puts the shell in, so the
+    # console routes typing to the job and Ctrl+C interrupts it. The job then
+    # leaves the table: a second 'jobs' must not list it.
+    def background(line):
+        """Start a background hang.elf and return the pid the shell printed."""
+        started = g.count(r"shell: \[\d+\] hang\.elf &")
+        runs = g.count(r"(?m)^hang: running$")
+        g.shell(line)
+        g.wait_count(r"shell: \[\d+\] hang\.elf &", started + 1)
+        pid = g.last_int(r"shell: \[(\d+)\] hang\.elf &")
+        g.wait_count(r"(?m)^hang: running$", runs + 1)
+        return pid
+
+    finished = g.count(r"\[shell\] program finished")
+    pid = background("hang.elf &")
+
+    g.shell("fg %d" % pid)
+    # 'fg' announces the job before it blocks, so the interrupt below cannot
+    # arrive while the shell is still parsing the line.
+    g.wait_for(r"fg: task %d hang\.elf$" % pid)
+    killed = g.count(r"Task 'hang\.elf' (terminated \(killed\)|exited)")
+    g.ctrl("c")
+    g.wait_count(r"Task 'hang\.elf' (terminated \(killed\)|exited)", killed + 1)
+    g.wait_count(r"\[shell\] program finished", finished + 1)
+    g.wait_for(r"fg: task %d finished \(status (130|137)\)$" % pid)
+
+    mark = g.mark()
+    g.shell("jobs")
+    g.wait_after("jobs", "no background tasks")
+    if re.search(r"(?m)^\s*%d\s+hang\.elf$" % pid, g.since(mark)):
+        g.fail("a foregrounded job stayed in the job table")
+
+    # The shell is usable again, not merely unblocked.
+    helped = g.count("commands are programs")
+    g.shell("help")
+    g.wait_count("commands are programs", helped + 1)
+
+    # Only the last stage of a piped item has a pid here, so 'fg' refuses it
+    # rather than bringing forward one task of several.
+    piped = background("cat hello.txt | hang.elf &")
+    g.shell("fg %d" % piped)
+    g.wait_for(r"fg: task %d is one stage of a pipeline$" % piped)
+    g.shell("kill %d" % piped)
+    g.wait_for(r"kill: terminated %d$" % piped)
+
+    # A pid the shell never started is not a job it can foreground.
+    g.shell("fg 999999")
+    g.wait_for(r"fg: no such job: 999999$")
 
 
 @test
@@ -157,7 +211,7 @@ def file_commands(g):
     # The listing after the copy: the file cp made, the one touch made, and the
     # directory mkdir -p made.
     run("ls /tmp/fc")
-    g.wait_for(r"^deep/$")          # the slash exists only in a listing
+    g.wait_for(r"^deep/$")  # the slash exists only in a listing
     if not g.count(r"^b\.txt$"):
         g.fail("cp produced nothing to list")
 
@@ -213,8 +267,7 @@ def file_commands(g):
     if not re.search(r"^/\s+overlay\s+\d+K\s+\d+K\s*$", out, re.M):
         g.fail("df / did not report the overlay:\n%s" % out.strip())
     if not re.search(r"^Inodes: \d+/512 used$", out, re.M):
-        g.fail("df / did not pass the upper layer's inode counts on:\n%s"
-               % out.strip())
+        g.fail("df / did not pass the upper layer's inode counts on:\n%s" % out.strip())
 
     # A path that does not exist is an error, not the filesystem it would have
     # lived on.
