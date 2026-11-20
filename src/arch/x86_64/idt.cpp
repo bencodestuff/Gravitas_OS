@@ -206,7 +206,8 @@ static int read_image(const char* name, char** out_data, uint64_t* out_size) {
 // or -1. Shared by SPAWN (4, foreground) and SPAWN_BG (21, immediate).
 // The user name and argv pointers must have been validated already; spawn_impl
 // does that at the syscall boundary before calling here.
-static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
+static int stage_spawn(IDT::Registers* regs, const char* staged_name,
+                       uint64_t fd_keep_mask) {
     static char argv_stage[8][64];
     const char* argv_copy[8];
     int argc = stage_argv(regs, argv_stage, argv_copy);
@@ -241,7 +242,8 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
 
     // create_user_task switches to the child space itself and stages the
     // kernel-side argv strings onto the child's initial user stack.
-    int child = Sched::create_user_task(entry, staged_name, argc, argv_copy, child_cr3);
+    int child = Sched::create_user_task(entry, staged_name, argc, argv_copy, child_cr3,
+                                        fd_keep_mask);
     VMM::switch_pml4(old_cr3);
     if (child < 0) {
         // Ownership on failure: create_user_task has already released the
@@ -827,7 +829,8 @@ static void sys_time(IDT::Registers* regs) {
 
 // SPAWN (4) and SPAWN_BG (21) share this: stage the name, load the ELF, make
 // the task. 'background' decides whether we then block on the child.
-static void spawn_impl(IDT::Registers* regs, bool background) {
+static void spawn_impl(IDT::Registers* regs, bool background,
+                       uint64_t fd_keep_mask) {
     // The name and every argv string are read below and then staged into
     // kernel memory. Validate them here, at the boundary: stage_spawn is
     // entered with the caller's pointers still live.
@@ -864,7 +867,7 @@ static void spawn_impl(IDT::Registers* regs, bool background) {
     }
     spawn_namebuf[ni] = '\0';
 
-    int child = stage_spawn(regs, spawn_namebuf);   // returns with IRQs off
+    int child = stage_spawn(regs, spawn_namebuf, fd_keep_mask);   // returns with IRQs off
     if (child < 0) {
         // stage_spawn's failures are negated errnos; pass them through so the
         // caller can tell an oversized image (E2BIG) from a bad one (ENOEXEC)
@@ -890,8 +893,28 @@ static void spawn_impl(IDT::Registers* regs, bool background) {
     regs->rax = (uint64_t)child;
 }
 
-static void sys_spawn(IDT::Registers* regs)    { spawn_impl(regs, false); }
-static void sys_spawn_bg(IDT::Registers* regs) { spawn_impl(regs, true); }
+static void sys_spawn(IDT::Registers* regs) {
+    spawn_impl(regs, false, VFS::FD_KEEP_ALL);
+}
+static void sys_spawn_bg(IDT::Registers* regs) {
+    spawn_impl(regs, true, VFS::FD_KEEP_ALL);
+}
+
+// SPAWN_BG_KEEP: background spawn whose child gets only the descriptors named
+// in the mask (r10), not the caller's whole table. A shell uses it for a
+// pipeline stage: the shell has to keep the read end of the stage's output
+// pipe to hand to the next stage, and a stage that inherited that descriptor
+// would count as a reader for ever, so EPIPE would never arrive and a writer
+// would block on a full pipe instead of failing. Bits at or above MAX_FDS are
+// refused rather than ignored, so a caller cannot silently inherit nothing.
+static void sys_spawn_bg_keep(IDT::Registers* regs) {
+    uint64_t mask = regs->r10;
+    if ((mask >> VFS::MAX_FDS) != 0) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    spawn_impl(regs, true, mask);
+}
 
 static void sys_exit(IDT::Registers* regs) {
     asm volatile("cli");
@@ -1259,6 +1282,7 @@ static const SyscallFn syscall_table[] = {
     /* 65 FORK            */ sys_fork,
     /* 66 EXEC            */ sys_exec,
     /* 67 POLL            */ sys_poll,
+    /* 68 SPAWN_BG_KEEP   */ sys_spawn_bg_keep,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

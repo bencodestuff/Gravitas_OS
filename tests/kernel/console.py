@@ -221,9 +221,31 @@ def pipeline(g):
 
 
 @test
+def pipeline_stage_ends(g):
+    # A stage must not inherit the shell's copy of the read end of its own
+    # output pipe. The shell keeps that descriptor to hand to the next stage;
+    # if the stage received a copy it would count as a reader for ever, so with
+    # the real reader already gone the write would be accepted (and a longer
+    # one would block until the harness timed out) instead of failing EPIPE.
+    #
+    # pipeprobe pauses, then writes a few bytes. The reader is ls, which never
+    # reads stdin and exits at once; its listing goes to a file so the console
+    # output is only the probe's one line on stderr.
+    mark = g.mark()
+    g.shell("pipeprobe | ls > /tmp/probe-ls.txt")
+    g.wait_for(r"pipeprobe: (refused|accepted)")
+    output = g.since(mark)
+    if "pipeprobe: accepted" in output:
+        g.fail("a pipeline stage kept the read end of its own output pipe alive")
+    if "pipeprobe: refused, errno 32" not in output:
+        g.fail("pipeprobe did not report EPIPE: %r" % output[-200:])
+
+
+@test
 def command_lists(g):
     # A blank line is a no-op, and foreground commands keep the shell's
     # completion marker and console hand-off contract.
+    HELLO = "Hello from the Gravitas tar filesystem!"
     errors = g.count(r"syntax error")
     g.key("ret")
     time.sleep(0.2)
@@ -231,36 +253,99 @@ def command_lists(g):
         g.fail("an empty command line was treated as a syntax error")
 
     # Pipelines and redirections remain valid within semicolon-separated lists.
+    mark = g.mark()
     fin = g.count(r"\[shell\] program finished")
-    hello = g.count("Hello from the Gravitas tar filesystem!")
-    g.shell("cat hello.txt | cat > /tmp/list-pipe.txt; cat /tmp/list-pipe.txt")
+    g.shell("cat /hello.txt | cat > /tmp/list-pipe.txt; cat /tmp/list-pipe.txt")
     g.wait_count(r"\[shell\] program finished", fin + 2)
+    time.sleep(0.2)
+    if g.since(mark).count(HELLO) != 1:
+        g.fail("a semicolon list did not print exactly one copy: %r"
+               % g.since(mark)[-200:])
+
+    # '&&' gates on the exit status of the program before it, not on whether it
+    # started. ls exits 1 for a path that does not exist.
+    mark = g.mark()
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("ls /no-such-path && cat /hello.txt")
+    g.wait_count(r"\[shell\] program finished", fin + 1)
+    time.sleep(0.2)
+    if HELLO in g.since(mark):
+        g.fail("'&&' ran the second item after a failing program")
+
+    # The same connector lets a successful item through.
+    mark = g.mark()
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cat /hello.txt && cat /hello.txt")
+    g.wait_count(r"\[shell\] program finished", fin + 2)
+    time.sleep(0.2)
+    if g.since(mark).count(HELLO) != 2:
+        g.fail("'&&' did not run both successful items: %r"
+               % g.since(mark)[-200:])
+
+    # A builtin reports a status too: a 'cd' into a missing directory must stop
+    # the list, and a real one must let it through.
+    mark = g.mark()
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("cd /no-such-dir && cat /hello.txt")
+    g.wait_for("cd: no such directory: /no-such-dir")
+    time.sleep(0.3)
+    if HELLO in g.since(mark):
+        g.fail("'&&' ran the item after a failing builtin")
+    if g.count(r"\[shell\] program finished") != fin:
+        g.fail("'&&' started a program after a failing builtin")
+
+    g.shell("cd /tmp && cd /")
+    g.wait_for(r"/ root@gravitas#")
+
+@test
+def background_item(g):
+    # A trailing '&' starts the item and hands back the prompt at once. hang.elf
+    # never finishes, so the shell getting as far as the next command is the
+    # proof that it did not wait: the foreground path would never return.
+    fin = g.count(r"\[shell\] program finished")
+    g.shell("hang.elf &")
+    g.wait_for(r"shell: \[\d+\] hang\.elf &")
+    pid = g.last_int(r"shell: \[(\d+)\] hang\.elf &")
+
+    # A background item is not a foreground completion, so no marker.
+    if g.count(r"\[shell\] program finished") != fin:
+        g.fail("a background item printed the foreground marker")
+
+    mark = g.mark()
+    g.shell("jobs")
+    g.wait_after("jobs", "hang.elf")
+    if g.count(r"(?m)^\s*%d\s+hang\.elf$" % pid) < 1:
+        g.fail(
+            "'jobs' did not list the background task %d: %r"
+            % (pid, g.since(mark)[-200:])
+        )
+
+    g.shell("kill %d" % pid)
+    g.wait_for(r"kill: terminated %d" % pid)
+
+    # The list carries on after a background item: ';' terms, one line.
+    hello = g.count("Hello from the Gravitas tar filesystem!")
+    g.shell("hang.elf & cat hello.txt")
+    g.wait_for(r"shell: \[\d+\] hang\.elf &")
     g.wait_count("Hello from the Gravitas tar filesystem!", hello + 1)
+    g.shell("kill %d" % g.last_int(r"shell: \[(\d+)\] hang\.elf &"))
 
-    # Unsupported connectors must be rejected before any item can run.
-    mark = g.mark()
-    fin = g.count(r"\[shell\] program finished")
-    g.shell("cat hello.txt && cat hello.txt")
-    g.wait_for(r"'&&' requires child exit statuses")
-    time.sleep(0.2)
-    output = g.since(mark)
-    if (
-        "Hello from the Gravitas tar filesystem!" in output
-        or g.count(r"\[shell\] program finished") != fin
-    ):
-        g.fail("a command-list item ran before rejecting '&&'")
 
-    mark = g.mark()
+@test
+def pipeline_jobs_together(g):
+    # A piped item in the background returns the prompt at once: the shell gets
+    # as far as 'jobs' while the last stage is still reading its pipe.
     fin = g.count(r"\[shell\] program finished")
-    g.shell("cat hello.txt; cat hello.txt &")
-    g.wait_for(r"trailing '&' requires job control")
-    time.sleep(0.2)
-    output = g.since(mark)
-    if (
-        "Hello from the Gravitas tar filesystem!" in output
-        or g.count(r"\[shell\] program finished") != fin
-    ):
-        g.fail("a command-list item ran before rejecting '&'")
+    g.shell("cat /hello.txt | hang.elf &")
+    g.wait_for(r"shell: \[\d+\] hang\.elf &")
+    pid = g.last_int(r"shell: \[(\d+)\] hang\.elf &")
+    g.wait_for("hang: running")
+    if g.count(r"\[shell\] program finished") != fin:
+        g.fail("a background pipeline printed the foreground marker")
+    g.shell("jobs")
+    g.wait_after("jobs", "hang.elf")
+    g.shell("kill %d" % pid)
+    g.wait_for(r"kill: terminated %d" % pid)
 
 
 if __name__ == "__main__":

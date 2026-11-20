@@ -40,9 +40,12 @@ namespace Sched {
     // be mapped into it — do that with CR3 pointed at the new space).
     // 'argc'/'argv' (kernel-side strings) are copied onto the child's
     // initial user stack in System V layout, so _start(argc, argv)
-    // receives its arguments. Returns task id.
+    // receives its arguments. 'fd_keep_mask' selects the descriptors the
+    // child inherits (VFS::FD_KEEP_ALL for the Unix rule, or a spare set).
+    // Returns task id.
     int create_user_task(uint64_t rip, const char* name, int argc,
-                         const char* const* argv, uint64_t cr3);
+                         const char* const* argv, uint64_t cr3,
+                         uint64_t fd_keep_mask);
 
     // Fork the current task: clone the address space copy-on-write and build a
     // child that returns from this very syscall on its own kernel stack, with

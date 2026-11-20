@@ -18,6 +18,9 @@
 namespace VFS {
 
 constexpr int MAX_FDS     = 16;
+// Every slot, for a caller that wants the Unix inheritance rule (fds_inherit).
+constexpr uint64_t FD_KEEP_ALL =
+    MAX_FDS >= 64 ? ~0ull : ((1ull << MAX_FDS) - 1ull);
 constexpr int MAX_MOUNTS  = 8;
 // Open file descriptions kernel-wide, counting both regular-file handles and
 // pipe ends. A task can reach its own fd cap first, but this pool is shared by
@@ -305,6 +308,15 @@ void forget_task(int task_id);
 // is what makes redirection survive a spawn: the child writes where the parent
 // pointed fd 1.
 void fds_inherit(FileHandle** dst);
+
+// The same copy, but only for the descriptors whose bit is set in 'keep_mask':
+// every other slot arrives empty. A shell needs this for a pipeline stage. The
+// shell holds the read end of the stage's output pipe to hand to the next
+// stage, and a child that inherits that descriptor counts as a reader for
+// ever: the writer's EPIPE never comes, so `writer | reader-that-exits` hangs
+// on a full pipe instead of failing. 'keep_mask' is a plain bitmask, so a
+// caller can only name slots below MAX_FDS.
+void fds_inherit_selected(FileHandle** dst, uint64_t keep_mask);
 
 // --- Readiness (poll) ---
 // One request and one answer per descriptor. 'events' names what the caller

@@ -292,6 +292,7 @@ value with a different meaning.
 | 65 | `FORK` | — | 0 in the child, the new task id in the parent, or a negative errno (`−ENOMEM`, `−EOPNOTSUPP`) |
 | 66 | `EXEC` | `path, argv, argc` | does not return on success; on failure −1 with errno (`ENOENT`, `ENOEXEC`, `E2BIG`, `EIO`, `ENOMEM`, `EFAULT`, `EINVAL`) |
 | 67 | `POLL` | `fds*, nfds, timeout_ms` | number of entries with a non-zero `revents` (0 on timeout), or −1 (`EINVAL` past 16 entries, a timeout below −1, or a descriptor number outside the table) |
+| 68 | `SPAWN_BG_KEEP` | `name, argv, argc, keep` | like `SPAWN_BG`, but the child inherits only the descriptors whose bit is set in `keep` (0/−1; a bit at or above the descriptor cap is `−EINVAL`) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -302,6 +303,15 @@ number returns `-ENOSYS`, and adding a call is one handler plus one row.
 than 16 MiB is refused with `-E2BIG` before any bytes are read. A missing file
 reports the VFS error, an unreadable or malformed image `-ENOEXEC`, and a failed
 allocation `-ENOMEM`.
+
+A spawned child copies the caller's descriptor table, as Unix does, so a
+redirection or a pipe end arranged on `0`/`1`/`2` reaches the program. That rule
+is wrong for a shell building a pipeline: the shell must keep the read end of a
+stage's output pipe to hand to the next stage, and a stage that received a copy
+of that descriptor would count as a reader for ever. `SPAWN_BG_KEEP` closes the
+gap: the child gets the slots named in a 16-bit keep mask (`0x7` is the standard
+three) and nothing else, so a dead reader's end really closes and the writer
+gets `EPIPE` instead of blocking on a full pipe.
 
 ### Fork and wait
 

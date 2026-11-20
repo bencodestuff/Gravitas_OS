@@ -120,6 +120,7 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_FORK           65
 #define GRV_SYSCALL_EXEC           66
 #define GRV_SYSCALL_POLL           67
+#define GRV_SYSCALL_SPAWN_BG_KEEP  68
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -231,6 +232,24 @@ static inline long grv_fork(void) {
    E2BIG for an image over 16 MiB, EIO, ENOMEM, EFAULT, EINVAL). */
 static inline long grv_exec(const char* name, const char* const* argv, int argc) {
     return grv_err(syscall3(GRV_SYSCALL_EXEC, (long)name, (long)argv, argc));
+}
+
+/* Bit i of a keep mask names descriptor i. A pipeline stage wants the three
+   standard descriptors and nothing else. */
+#define GRV_FD_KEEP_STD 0x7u
+
+/* Spawn in the background with a chosen descriptor table: the child gets only
+   the slots whose bit is set in 'keep' (everything else is closed). A plain
+   SPAWN_BG copies the caller's whole table; that is wrong for a shell stage,
+   because the shell holds the read end of the stage's output pipe to hand to
+   the next stage, and a stage that inherited it would count as a reader for
+   ever. The writer would then never see EPIPE, so `writer | reader-that-exits`
+   would hang once the pipe filled. Bits at or above the descriptor cap are
+   refused with -1/EINVAL. */
+static inline long grv_spawn_bg_keep(const char* name, const char* const* argv, int argc,
+                                     unsigned long keep) {
+    return grv_err(syscall4(GRV_SYSCALL_SPAWN_BG_KEEP, (long)name, (long)argv, (long)argc,
+                            (long)keep));
 }
 
 /* Forcibly terminate another task; its exit code becomes 'code'.
