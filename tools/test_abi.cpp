@@ -53,6 +53,16 @@ int main() {
     same("NAME_MAX vs name[]", VFS::NAME_MAX,
          sizeof(((struct grv_dirent*)0)->name));
 
+    // POLL fills revents in the caller's array, so the two layouts are the
+    // same record seen from either side.
+    same("sizeof(grv_pollfd)", 8, sizeof(struct grv_pollfd));
+    same("grv_pollfd.fd", offsetof(VFS::PollFd, fd),
+         offsetof(struct grv_pollfd, fd));
+    same("grv_pollfd.events", offsetof(VFS::PollFd, events),
+         offsetof(struct grv_pollfd, events));
+    same("grv_pollfd.revents", offsetof(VFS::PollFd, revents),
+         offsetof(struct grv_pollfd, revents));
+
     // grv_stat: the dispatcher writes it as five plain 64-bit fields in this
     // order. StatPkt in src/arch/x86_64/idt.cpp asserts the same numbers from
     // the kernel's side, so the two halves are pinned to one set of values.

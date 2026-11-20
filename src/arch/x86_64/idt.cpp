@@ -145,16 +145,12 @@ namespace IDT {
     }
 }
 
-// Stages a spawn: kernel-side copies of argv, VFS read of the ELF image,
-// child address-space clone + load + task creation. Returns the child id,
-// or -1. Shared by SPAWN (4, foreground) and SPAWN_BG (21, immediate).
-// The user name and argv pointers must have been validated already; spawn_impl
-// does that at the syscall boundary before calling here.
-static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
-    // Stage argv into kernel memory: the kernel is about to switch CR3,
-    // so user pointers may not survive the swap.
-    static char argv_stage[8][64];
-    const char* argv_copy[8];
+// Copy up to 8 argv strings (63 bytes each) into kernel memory: the kernel
+// switches CR3 during an image load, so the caller's pointers cannot survive
+// it. 'stage' is the storage and 'out' the pointers handed to the loader.
+// The pointers must already have been validated at the syscall boundary.
+static int stage_argv(const IDT::Registers* regs, char stage[8][64],
+                      const char* out[8]) {
     uint64_t user_argc = regs->rdx;
     if (user_argc > 8) user_argc = 8;
     const char** user_argv = (const char**)regs->rsi;
@@ -164,17 +160,21 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
         if (us == nullptr) break;
         int ci = 0;
         while (ci < 63 && us[ci] != '\0') {
-            argv_stage[i][ci] = us[ci];
+            stage[i][ci] = us[ci];
             ci++;
         }
-        argv_stage[i][ci] = '\0';
-        argv_copy[i] = argv_stage[i];
+        stage[i][ci] = '\0';
+        out[i] = stage[i];
         argc = i + 1;
     }
+    return argc;
+}
 
-    // Read the program's ELF image through the VFS (bare names resolve
-    // through /bin). Heap buffer, freed after the load.
-    int fd = VFS::open_fd(staged_name, VFS::O_RDONLY);
+// Read an executable's bytes through the VFS (bare names resolve through
+// /bin) into a heap buffer the caller deletes[]. Returns 0, or a negated
+// errno. Called with interrupts on, before any address space is switched.
+static int read_image(const char* name, char** out_data, uint64_t* out_size) {
+    int fd = VFS::open_fd(name, VFS::O_RDONLY);
     if (fd < 0) return fd;   // already a negated errno
 
     uint64_t fsize = VFS::fd_size(fd);
@@ -196,6 +196,25 @@ static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
         delete[] data;
         return err;
     }
+    *out_data = data;
+    *out_size = fsize;
+    return 0;
+}
+
+// Stages a spawn: kernel-side copies of argv, VFS read of the ELF image,
+// child address-space clone + load + task creation. Returns the child id,
+// or -1. Shared by SPAWN (4, foreground) and SPAWN_BG (21, immediate).
+// The user name and argv pointers must have been validated already; spawn_impl
+// does that at the syscall boundary before calling here.
+static int stage_spawn(IDT::Registers* regs, const char* staged_name) {
+    static char argv_stage[8][64];
+    const char* argv_copy[8];
+    int argc = stage_argv(regs, argv_stage, argv_copy);
+
+    char* data = nullptr;
+    uint64_t fsize = 0;
+    int err = read_image(staged_name, &data, &fsize);
+    if (err < 0) return err;
 
     // Build the child in its OWN address space. This switches CR3 by hand,
     // so interrupts are turned off and LEFT off: a timer preemption would
@@ -923,6 +942,60 @@ static void sys_fork(IDT::Registers* regs) {
     regs->rax = (uint64_t)(long)Sched::fork_current(regs);
 }
 
+// EXEC (66): replace this process's image, keeping the process. Every user
+// string is validated and staged here, and the image is read before the
+// address space is touched; a failure is an ordinary negative return and the
+// caller carries on in its old image.
+static void sys_exec(IDT::Registers* regs) {
+    if (!UserPtr::valid_prefix(regs->rdi, 63)) {
+        sys_efault(regs);
+        return;
+    }
+    uint64_t user_argc = regs->rdx;
+    if (user_argc > 8) user_argc = 8;
+    if (user_argc > 0) {
+        if (!user_in(regs->rsi, user_argc * sizeof(const char*))) {
+            sys_efault(regs);
+            return;
+        }
+        const char* const* user_argv = (const char* const*)regs->rsi;
+        for (uint64_t i = 0; i < user_argc; i++) {
+            if (user_argv[i] == nullptr) break;
+            if (!UserPtr::valid_prefix((uint64_t)user_argv[i], 63)) {
+                sys_efault(regs);
+                return;
+            }
+        }
+    }
+
+    char pathbuf[64];
+    const char* user_path = (const char*)regs->rdi;
+    int ni = 0;
+    while (ni < 63 && user_path[ni] != '\0') {
+        pathbuf[ni] = user_path[ni];
+        ni++;
+    }
+    pathbuf[ni] = '\0';
+
+    static char argv_stage[8][64];
+    const char* argv_copy[8];
+    int argc = stage_argv(regs, argv_stage, argv_copy);
+
+    char* data = nullptr;
+    uint64_t size = 0;
+    int err = read_image(pathbuf, &data, &size);
+    if (err < 0) {
+        regs->rax = (uint64_t)(long)err;
+        return;
+    }
+
+    // On success the frame has been repointed at the new image and the stub
+    // iretqs into it; on failure nothing has changed.
+    long r = Sched::exec_current(regs, pathbuf, argc, argv_copy,
+                                 (uint8_t*)data, size);
+    if (r < 0) regs->rax = (uint64_t)r;
+}
+
 static void sys_kill(IDT::Registers* regs) {
     regs->rax = (uint64_t)Sched::kill_task((int)regs->rdi, regs->rsi);
 }
@@ -1021,6 +1094,26 @@ static void sys_pipe(IDT::Registers* regs) {
     // Two ints are written into the caller's array.
     if (!user_out(regs->rdi, 2 * sizeof(int))) { sys_efault(regs); return; }
     regs->rax = (uint64_t)VFS::pipe_fd((int*)regs->rdi);
+}
+
+static void sys_poll(IDT::Registers* regs) {
+    // (rdi = struct pollfd*, rsi = count, rdx = timeout ms, -1 = wait)
+    uint64_t nfds = regs->rsi;
+    if (nfds > (uint64_t)VFS::POLL_MAX_FDS) {
+        regs->rax = (uint64_t)-Errno::EINVAL;
+        return;
+    }
+    if (nfds > 0) {
+        // read fd/events, write revents: the whole array is both an input and
+        // an output buffer, so both permissions are required up front.
+        uint64_t bytes = nfds * sizeof(VFS::PollFd);
+        if (!user_in(regs->rdi, bytes) || !user_out(regs->rdi, bytes)) {
+            sys_efault(regs);
+            return;
+        }
+    }
+    regs->rax = (uint64_t)VFS::poll_fds((VFS::PollFd*)regs->rdi, nfds,
+                                       (int64_t)regs->rdx);
 }
 
 static void sys_brk(IDT::Registers* regs) {
@@ -1164,6 +1257,8 @@ static const SyscallFn syscall_table[] = {
     /* 63 SYNC            */ sys_sync,
     /* 64 FSYNC           */ sys_fsync,
     /* 65 FORK            */ sys_fork,
+    /* 66 EXEC            */ sys_exec,
+    /* 67 POLL            */ sys_poll,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

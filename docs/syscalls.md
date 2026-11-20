@@ -290,6 +290,8 @@ value with a different meaning.
 | 63 | `SYNC` | — | 0, or −1 when a filesystem flush failed; writes dirty pages back and flushes every mounted filesystem |
 | 64 | `FSYNC` | `fd` | 0/−1; writes dirty pages back and flushes the filesystem holding an open descriptor |
 | 65 | `FORK` | — | 0 in the child, the new task id in the parent, or a negative errno (`−ENOMEM`, `−EOPNOTSUPP`) |
+| 66 | `EXEC` | `path, argv, argc` | does not return on success; on failure −1 with errno (`ENOENT`, `ENOEXEC`, `E2BIG`, `EIO`, `ENOMEM`, `EFAULT`, `EINVAL`) |
+| 67 | `POLL` | `fds*, nfds, timeout_ms` | number of entries with a non-zero `revents` (0 on timeout), or −1 (`EINVAL` past 16 entries, a timeout below −1, or a descriptor number outside the table) |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -330,6 +332,54 @@ that outlives its parent takes no record either, since nobody could collect
 it. Only a status that has to wait for a later `WAIT` spends one of the eight
 slots.
 
+### Readiness (poll)
+
+`POLL` asks which descriptors would not block, and waits up to `timeout_ms`
+(−1 waits forever, 0 tests and returns). It tests and never consumes: a pipe
+reported `POLLIN` still holds its bytes for the read that follows, and a
+descriptor can be polled as often as the caller likes.
+
+`revents` is written for every entry on every call, so an array can be cleared
+once and reused. `POLLERR`, `POLLHUP` and `POLLNVAL` are reported even when the
+caller did not ask for them, because the descriptor is unusable either way:
+`POLLERR` is a pipe whose last reader has gone (a write would fail with
+`EPIPE`), `POLLHUP` a pipe whose last writer has closed, and `POLLNVAL` an
+empty descriptor slot. A regular file is always ready. The console is writable
+but never readable: testing the keyboard would take the key, so `POLL` cannot
+be used to wait for console input.
+
+Waiting costs one tick per pass. The scheduler wakes a task either on a timer
+or on a pipe, never both, so the call naps 20 ms and re-tests instead of
+parking on a wake list. The deadline is absolute and fixed when the call
+starts, so a wake that finds nothing ready cannot extend it, and the test and
+the nap are one interrupt-off region, so a change cannot land between them.
+
+`select` in the C library is the same answers in bits: it turns the three
+`fd_set`s into one `poll` array and turns `revents` back, so readiness has one
+implementation. A descriptor that is not open is `EBADF`, `nfds` past the
+16-slot table is `EINVAL`, and a pipe at end-of-file appears in both the read
+set and the except set.
+
+### Exec
+
+`EXEC` replaces the calling process's image and keeps the process. The new
+image is loaded into a fresh address space while the old one is still live, so
+a missing file, a malformed image, an oversized one or a failed allocation is an
+ordinary negative return and the caller continues in its old image with its
+memory and descriptors untouched. On success the call does not return: the trap
+frame is repointed at the new entry point on a fresh stack, with clean
+registers and FPU state, and the old space is destroyed.
+
+What survives is the process: the same task id (so a parent blocked in `WAIT`,
+or waiting later, still collects the status), the same parent, working
+directory, console binding and open descriptors. A descriptor keeps its open
+file description, so an offset or a pipe end is continuous across the exec.
+What does not survive is anything owned by the image: its memory, its
+shared-memory mappings and handles, its surfaces and the display authority, and
+any armed one-shot timer. Mailbox messages are keyed by task id and are kept.
+`argv` is capped like `SPAWN` (8 strings, 63 bytes each) and the image like an
+image too: over 16 MiB is `-E2BIG` before a byte is read.
+
 ### The interrupt key
 
 `0x03` (Ctrl+C) in a task's console input is not text: it terminates that
@@ -360,6 +410,16 @@ struct grv_msg {
     unsigned long a;      // payload word 1
     unsigned long b;      // payload word 2
 };
+```
+
+### poll entry (`POLL`)
+
+```
+struct grv_pollfd {
+    int   fd;        // 4 bytes
+    short events;    // 2
+    short revents;   // 2; written by the kernel
+};                   // 8 bytes, no padding
 ```
 
 ### Framebuffer info (`FBINFO`)
