@@ -118,6 +118,7 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_SYNC           63
 #define GRV_SYSCALL_FSYNC          64
 #define GRV_SYSCALL_FORK           65
+#define GRV_SYSCALL_SPAWN_BG_KEEP  66
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -194,6 +195,24 @@ static inline long grv_spawn_bg(const char* name, const char* const* argv, int a
     return grv_err(syscall3(GRV_SYSCALL_SPAWN_BG, (long)name, (long)argv, (long)argc));
 }
 
+/* Bit i of a keep mask names descriptor i. A pipeline stage wants the three
+   standard descriptors and nothing else. */
+#define GRV_FD_KEEP_STD 0x7u
+
+/* Spawn in the background with a chosen descriptor table: the child gets only
+   the slots whose bit is set in 'keep' (everything else is closed). A plain
+   SPAWN_BG copies the caller's whole table; that is wrong for a shell stage,
+   because the shell holds the read end of the stage's output pipe to hand to
+   the next stage, and a stage that inherited it would count as a reader for
+   ever. The writer would then never see EPIPE, so `writer | reader-that-exits`
+   would hang once the pipe filled. Bits at or above the descriptor cap are
+   refused with -1/EINVAL. */
+static inline long grv_spawn_bg_keep(const char* name, const char* const* argv, int argc,
+                                     unsigned long keep) {
+    return grv_err(syscall4(GRV_SYSCALL_SPAWN_BG_KEEP, (long)name, (long)argv, (long)argc,
+                            (long)keep));
+}
+
 /* Wait for ONE OF OUR OWN CHILDREN to exit; returns its exit code, or -1
    when the id is unknown, is not our child (only the task that spawned or
    forked it may wait), or its status was already collected. Each child can be
@@ -258,7 +277,8 @@ static inline void* grv_brk(void* addr) {
 
 /* --- File descriptors ---
    Failures return -1 and set errno (ENOENT, EISDIR, EMFILE, EBADF, EACCES,
-   EROFS, EINVAL, EIO — see <errno.h>). */
+   EROFS, EINVAL, EIO, EPIPE — see <errno.h>). EPIPE is what a write to a
+   pipe gets once its last reader has closed. */
 
 static inline int grv_open(const char* path, int flags) {
     return (int)grv_err(syscall2(GRV_SYSCALL_OPEN, (long)path, (long)flags));

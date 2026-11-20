@@ -45,17 +45,22 @@ static void cmd_help() {
     printf("  help        - this list\n");
     printf("  Redirection: cmd < in, cmd > out, cmd >> out\n");
     printf("  Pipelines:   a | b | c\n");
+    printf("  Lists:       a; b   a && b (only if a succeeds)\n");
+    printf("  Background:  a &   (jobs lists it, kill <pid> stops it)\n");
+    printf("  There is no quoting: ';' and '&' always separate commands.\n");
 }
 
 // --- Shell builtins that mutate the shell's OWN state ---
 // cd must be a builtin (it changes this process's CWD — a child program
 // could never do it), and pwd reads it. Everything else is a program.
 
-static void cmd_cd(const char* dir) {
-    if (dir == 0 || *dir == '\0') { printf("cd: missing directory\n"); return; }
+static int cmd_cd(const char* dir) {
+    if (dir == 0 || *dir == '\0') { printf("cd: missing directory\n"); return 1; }
     if (grv_chdir(dir) != 0) {
         printf("cd: no such directory: %s\n", dir);
+        return 1;
     }
+    return 0;
 }
 
 static void cmd_pwd() {
@@ -69,6 +74,20 @@ static void cmd_pwd() {
 /* --- Background job table --- */
 static long g_bg_pid[8];      /* 0 = empty slot */
 static char g_bg_name[8][32]; /* program name of the job */
+
+/* Record a task the shell started in the background, so jobs and kill can
+   refer to it by pid. The table is small and never reused. */
+static void note_job(long pid, const char* name) {
+    for (int i = 0; i < 8; i++) {
+        if (g_bg_pid[i] == 0) {
+            g_bg_pid[i] = pid;
+            const char* s = name; int c = 0;
+            while (s[c] && c < 31) { g_bg_name[i][c] = s[c]; c++; }
+            g_bg_name[i][c] = '\0';
+            return;
+        }
+    }
+}
 
 /* bg <prog> [args...] — spawn in the background, remember the pid.
    'words' is the parsed command, so words[0] == "bg". */
@@ -89,15 +108,7 @@ static void cmd_bg(char** words, int nwords) {
     if (pid == -1) { printf("bg: cannot start '%s'\n", prog); return; }
 
     // Remember it in a free slot (jobs/kill refer to tasks by this pid)
-    for (int i = 0; i < 8; i++) {
-        if (g_bg_pid[i] == 0) {
-            g_bg_pid[i] = pid;
-            const char* s = prog; int c = 0;
-            while (s[c] && c < 31) { g_bg_name[i][c] = s[c]; c++; }
-            g_bg_name[i][c] = '\0';
-            break;
-        }
-    }
+    note_job(pid, prog);
     printf("bg: started '%s' as task %d\n", prog, (int)pid);
 }
 
@@ -306,15 +317,17 @@ static void restore_fds(int save0, int save1) {
 
 // A builtin runs in the shell itself (cd/bg/kill/jobs change the shell's own
 // state, so they cannot be a child), with its redirections applied around it.
-static void run_builtin(struct sh_cmd* c) {
+// It returns an exit status like a program does, so '&&' can gate on it.
+static long run_builtin(struct sh_cmd* c) {
     int save0, save1;
-    if (apply_redirs(c, &save0, &save1) < 0) return;
+    if (apply_redirs(c, &save0, &save1) < 0) return 1;
 
+    long status = 0;
     const char* w = c->words[0];
     if (str_eq(w, "help"))       cmd_help();
     else if (str_eq(w, "pwd"))   cmd_pwd();
     else if (str_eq(w, "jobs"))  cmd_jobs();
-    else if (str_eq(w, "cd"))    cmd_cd(c->nwords > 1 ? c->words[1] : "");
+    else if (str_eq(w, "cd"))    status = cmd_cd(c->nwords > 1 ? c->words[1] : "");
     else if (str_eq(w, "bg")) {
         char* wv[SH_MAX_ARGS];
         for (int i = 0; i < c->nwords; i++) wv[i] = c->words[i];
@@ -323,6 +336,7 @@ static void run_builtin(struct sh_cmd* c) {
     else if (str_eq(w, "kill"))  cmd_kill(c->nwords > 1 ? c->words[1] : "");
 
     restore_fds(save0, save1);
+    return status;
 }
 
 // One program, spawned in the foreground: the shell blocks on it, so it owns
@@ -348,17 +362,26 @@ static long run_single(struct sh_cmd* c) {
         return -1;
     }
     printf("[shell] program finished\n");
-    // grv_spawn has already waited for the foreground child, but this path
-    // does not expose its exit status reliably to the shell. Treat a successful
-    // spawn as success until the foreground syscall contract carries status.
-    return 0;
+    // grv_spawn blocks until the child exits and leaves its status in the
+    // shell's inbox; WAIT collects it, so '&&' can gate on a real status rather
+    // than on whether the program managed to start.
+    long status = grv_wait(pid);
+    return status < 0 ? -1 : status;
 }
 
 // A pipeline: every stage is spawned in the background with its descriptors
 // wired to the pipe, then the shell waits for them all. One pipe is created as
 // we go and the parent-side ends are closed as soon as the child that owns them
 // exists — that closure is what lets a reader see EOF.
-static long run_pipeline(struct sh_cmd* cmds, int ncmds) {
+//
+// The stage is spawned with SPAWN_BG_KEEP rather than a plain copy of the
+// shell's table. The shell has to keep the read end of the stage's output pipe
+// (it becomes the next stage's stdin), and a stage that inherited a copy of
+// that descriptor would count as a reader for ever: a writer whose reader has
+// gone would never get EPIPE and would block on a full pipe. Closing the shell's
+// own copies afterwards is still needed, but it cannot retract a descriptor the
+// child already holds, which is why the kernel has to do it at spawn.
+static long run_pipeline(struct sh_cmd* cmds, int ncmds, bool background) {
     for (int i = 0; i < ncmds; i++) {
         if (is_builtin(cmds[i].words[0])) {
             printf("shell: '%s' cannot be used in a pipeline\n", cmds[i].words[0]);
@@ -441,7 +464,7 @@ static long run_pipeline(struct sh_cmd* cmds, int ncmds) {
             int argc = 0;
             argv[argc++] = c->prog;
             for (int a = c->arg_start; a < c->nwords && argc < 8; a++) argv[argc++] = c->words[a];
-            long pid = grv_spawn_bg(c->prog, argv, argc);
+            long pid = grv_spawn_bg_keep(c->prog, argv, argc, GRV_FD_KEEP_STD);
             if (pid < 0) printf("shell: cannot run '%s'\n", c->prog);
             else pids[i] = pid;
         }
@@ -458,6 +481,21 @@ static long run_pipeline(struct sh_cmd* cmds, int ncmds) {
 
     int started = 0;
     for (int i = 0; i < ncmds; i++) if (pids[i] > 0) started++;
+
+    // A background item is not waited for: the shell goes straight back to the
+    // prompt, which is the whole point of '&'. The last stage's pid goes into
+    // the same table 'jobs' and 'kill' already use. Its exit status is not
+    // collected, because WAIT would block on a job that is still running and
+    // there is no non-blocking wait yet.
+    if (background) {
+        if (started == 0) return -1;
+        long last = -1;
+        for (int i = 0; i < ncmds; i++) if (pids[i] > 0) last = pids[i];
+        note_job(last, cmds[ncmds - 1].prog);
+        printf("shell: [%d] %s &\n", (int)last, cmds[ncmds - 1].prog);
+        return 0;
+    }
+
     long status = -1;
     for (int i = 0; i < ncmds; i++) if (pids[i] > 0) {
         long result = grv_wait(pids[i]);
@@ -467,25 +505,29 @@ static long run_pipeline(struct sh_cmd* cmds, int ncmds) {
     return status;
 }
 
-static long execute_pipeline(char* line) {
+static long execute_pipeline(char* line, bool background) {
     const char* err = 0;
     int ncmds = 0;
     struct sh_cmd* cmds = parse_pipeline(line, &ncmds, &err);
     if (cmds == 0) { printf("shell: %s\n", err ? err : "syntax error"); return -1; }
     if (ncmds == 0) return 0;
     // Builtins change the shell's own state and cannot run in a child, so they
-    // are only meaningful as a lone command.
+    // are only meaningful as a lone foreground command: 'cd' in the background
+    // would change nothing anyone can see, and it cannot be spawned.
     if (is_builtin(cmds[0].words[0])) {
         if (ncmds > 1) {
             printf("shell: '%s' cannot be used in a pipeline\n", cmds[0].words[0]);
             return -1;
         }
-        run_builtin(&cmds[0]);
-        return -1; // builtins do not yet expose an exit status
+        if (background) {
+            printf("shell: '%s' cannot run in the background\n", cmds[0].words[0]);
+            return -1;
+        }
+        return run_builtin(&cmds[0]);
     }
 
-    if (ncmds == 1) return run_single(&cmds[0]);
-    return run_pipeline(cmds, ncmds);
+    if (ncmds == 1 && !background) return run_single(&cmds[0]);
+    return run_pipeline(cmds, ncmds, background);
 }
 
 static long execute(char* line) {
@@ -522,37 +564,29 @@ static long execute(char* line) {
         if (ch == '&' && line[i + 1] == '&') {
             connector = 2;
             i++;
+            start = i + 1;
         } else if (ch == '&') {
+            // The item just recorded runs in the background; anything after it
+            // starts on ';' terms, so 'sleep.elf & ls' runs ls at once.
+            connector = 1;
             int next = i + 1;
             while (line[next] == ' ' || line[next] == '\t') next++;
-            if (line[next] != '\0') {
-                printf("shell: syntax error near '&'\n");
-                return -1;
-            }
-            // A final ampersand is syntactically recognised, but execution is
-            // deliberately withheld until jobs have a lifecycle contract.
-            break;
-        } else connector = 1;
-        start = i + 1;
-    }
-
-    // Keep the parsed connector representation for future status-aware
-    // execution, but do not partially run a list with unsupported semantics.
-    for (int i = 0; i < count; i++) {
-        if (items[i].connector == 2) {
-            printf("shell: '&&' requires child exit statuses, not implemented\n");
-            return -1;
-        }
-        if (items[i].background) {
-            printf("shell: trailing '&' requires job control, not implemented\n");
-            return -1;
+            if (line[next] == '\0') break;   // a trailing '&' ends the list
+            start = next;
+            i = next - 1;                   // the loop's ++i lands on 'next'
+        } else {
+            connector = 1;
+            start = i + 1;
         }
     }
 
+    // ';' runs the next item whatever happened, '&&' runs it only when the
+    // previous item succeeded, and '&' starts the item in the background and
+    // hands back the prompt. A skipped item leaves the last real status alone.
     long status = 0;
     for (int i = 0; i < count; i++) {
         if (items[i].connector == 2 && status != 0) continue;
-        status = execute_pipeline(items[i].text);
+        status = execute_pipeline(items[i].text, items[i].background);
     }
     return status;
 }

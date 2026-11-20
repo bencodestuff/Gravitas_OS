@@ -404,7 +404,8 @@ namespace Sched {
     }
 
     int create_user_task(uint64_t rip, const char* name, int argc,
-                         const char* const* argv, uint64_t cr3) {
+                         const char* const* argv, uint64_t cr3,
+                         uint64_t fd_keep_mask) {
         Task* new_task = new Task;
         if (new_task == nullptr) {
             kprint("[Sched] Out of memory for a task!\n");
@@ -590,8 +591,10 @@ namespace Sched {
         // The child inherits the parent's descriptors (Unix semantics): its
         // stdout is where the parent pointed fd 1, which is what makes a shell
         // redirection or a pipe end survive the spawn. Console entries share the
-        // one console endpoint.
-        VFS::fds_inherit(new_task->fds);
+        // one console endpoint. A caller that names a set gets only those
+        // slots, so a pipeline stage cannot hold the shell's copy of a pipe
+        // end and keep a dead reader alive.
+        VFS::fds_inherit_selected(new_task->fds, fd_keep_mask);
 
         // Forge the switch_context stack. NOTE: switch_context pops in
         // REVERSE push order (r15 first, rbx last), so the slots must be

@@ -805,8 +805,16 @@ int pipe_fd(int out[2]) {
 }
 
 void fds_inherit(FileHandle** dst) {
+    fds_inherit_selected(dst, FD_KEEP_ALL);
+}
+
+void fds_inherit_selected(FileHandle** dst, uint64_t keep_mask) {
     FileHandle** src = fds_of_current();
     for (int i = 0; i < MAX_FDS; i++) {
+        if (((keep_mask >> i) & 1u) == 0) {
+            dst[i] = nullptr;
+            continue;
+        }
         dst[i] = src[i];
         if (dst[i] != nullptr && !is_console(dst[i])) dst[i]->refs++;
     }
