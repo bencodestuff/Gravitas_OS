@@ -293,6 +293,7 @@ value with a different meaning.
 | 66 | `EXEC` | `path, argv, argc` | does not return on success; on failure −1 with errno (`ENOENT`, `ENOEXEC`, `E2BIG`, `EIO`, `ENOMEM`, `EFAULT`, `EINVAL`) |
 | 67 | `POLL` | `fds*, nfds, timeout_ms` | number of entries with a non-zero `revents` (0 on timeout), or −1 (`EINVAL` past 16 entries, a timeout below −1, or a descriptor number outside the table) |
 | 68 | `SPAWN_BG_KEEP` | `name, argv, argc, keep` | like `SPAWN_BG`, but the child inherits only the descriptors whose bit is set in `keep` (0/−1; a bit at or above the descriptor cap is `−EINVAL`) |
+| 69 | `CONSOLE_FOREGROUND` | `pid` | 0/−1; names the caller's child as the console's foreground job for the wait that follows (`0` clears it), so Ctrl+C interrupts it before `WAIT` blocks |
 
 Numbers 2 and 3 are retired (the flat-tarfs list/read-by-name, superseded
 by the VFS). The kernel dispatches through a number→handler table
@@ -397,6 +398,15 @@ task's **foreground job** — the task it is blocked on (a foreground `SPAWN` or
 `WAIT`), which resumes it with exit code 130. `CONSOLE_WRITE` applies this rule
 to the bytes it injects, so a terminal that forwards Ctrl+C to its hosted shell
 makes it work end to end; the kernel console applies it to the focused task.
+
+A job can also be named before the wait begins. `CONSOLE_FOREGROUND pid` arms
+the caller's own child as the console's foreground job, and `0` clears it. This
+is for a shell that foregrounds an existing background task: it prints a banner
+(the reader sees it before the wait is in place) and then blocks, and a key
+pressed in that gap would otherwise find no job and be dropped. The child's
+exit clears the arming, and only a child of the caller can be armed, so the
+interrupt cannot reach a task this console never started. While a job is armed
+it is also the reader for console input, exactly as a waited-on job is.
 
 ### The clipboard
 

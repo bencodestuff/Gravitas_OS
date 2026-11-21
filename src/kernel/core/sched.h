@@ -191,10 +191,18 @@ namespace Sched {
     int kill_task(int id, uint64_t code);
 
     // Ctrl+C: interrupt the foreground job of 'task_id' — the task it is
-    // blocked on (a foreground SPAWN or WAIT). Killing that child resumes the
+    // blocked on (a foreground SPAWN or WAIT), or the job it armed with
+    // set_foreground_job just before that wait. Killing that child resumes the
     // blocked task. Returns true if a job was interrupted, false if there was
     // nothing to interrupt (e.g. the task sits at a prompt).
     bool interrupt_foreground(int task_id);
+
+    // Arm or clear the console's foreground job for the CURRENT task: 'pid' is
+    // a child it is about to wait on, so Ctrl+C in the gap between announcing
+    // the job and entering WAIT still interrupts it. 0 disarms. Only the
+    // caller's own child may be armed; a job's exit clears the arming.
+    // Returns false for a bad or foreign pid.
+    bool set_foreground_job(long pid);
 
     // Does a task with this id exist? (MemMap uses it to refuse a grant that
     // names no live task.)

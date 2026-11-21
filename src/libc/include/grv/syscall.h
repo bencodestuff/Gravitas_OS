@@ -121,6 +121,7 @@ static inline long syscall4(long n, long a, long b, long c, long d) {
 #define GRV_SYSCALL_EXEC           66
 #define GRV_SYSCALL_POLL           67
 #define GRV_SYSCALL_SPAWN_BG_KEEP  68
+#define GRV_SYSCALL_CONSOLE_FOREGROUND 69
 
 /* Event 'type' values the kernel posts to the display authority's mailbox
    (from = -1). Mirrors Compositor::EVT_* in the kernel. Distinct from the
@@ -250,6 +251,15 @@ static inline long grv_spawn_bg_keep(const char* name, const char* const* argv, 
                                      unsigned long keep) {
     return grv_err(syscall4(GRV_SYSCALL_SPAWN_BG_KEEP, (long)name, (long)argv, (long)argc,
                             (long)keep));
+}
+
+/* Console foreground job: name the child this console is about to wait on, so
+   Ctrl+C interrupts it even if the key arrives before WAIT blocks. A shell
+   printing a foreground-job banner needs this: the banner is visible a moment
+   before the wait is in place. pid 0 clears it; only the caller's own child is
+   accepted. Returns 0, or -1. */
+static inline int grv_console_foreground(long pid) {
+    return (int)syscall1(GRV_SYSCALL_CONSOLE_FOREGROUND, pid);
 }
 
 /* Forcibly terminate another task; its exit code becomes 'code'.

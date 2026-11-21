@@ -42,6 +42,8 @@ namespace Sched {
 
         // --- Process lifecycle ---
         int waiting_on;         // task id this task is blocked on (-1 = none)
+        int fg_job;             // child foregrounded for this console but not
+                                // yet waited on (CONSOLE_FOREGROUND), -1 = none
         bool getc_waiting;      // blocked in the GETC syscall (see input focus)
         bool event_input;       // wants input as messages, not the GETC ring
         uint64_t user_rip;      // for the userland trampoline

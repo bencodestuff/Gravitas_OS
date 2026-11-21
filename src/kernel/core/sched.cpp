@@ -36,6 +36,10 @@ namespace Sched {
     Task* zombie_head = nullptr; // exited tasks awaiting cleanup by the next switch
     Task* zombie_tail = nullptr;
 
+    // The job a task's console is running (blocked-on child, or one armed for
+    // a wait that has not started yet). Defined with the console helpers below.
+    static int foreground_child(Task* t);
+
     void init() {
         // ... previous setup ...
         current_task = new Task;
@@ -79,6 +83,7 @@ namespace Sched {
         current_task->parent_id = 0;
         current_task->zombie_next = nullptr;
         current_task->waiting_on = -1;
+        current_task->fg_job = -1;
         current_task->getc_waiting = false;
         current_task->event_input = false;
         current_task->console_owner = -1;
@@ -234,7 +239,8 @@ namespace Sched {
             Task* f = ready_queue;
             do {
                 if (f->id == focus_task) {
-                    if (f->waiting_on >= 0) reader = f->waiting_on;
+                    int fg = foreground_child(f);
+                    if (fg >= 0) reader = fg;
                     break;
                 }
                 f = f->next;
@@ -314,16 +320,27 @@ namespace Sched {
         return nullptr;
     }
 
-    // Ctrl+C. A task blocked on a child (a foreground SPAWN or WAIT) carries
-    // that child in waiting_on; killing the child wakes the blocked task, which
-    // is exactly "interrupt the foreground job". The exit code is the shell
-    // convention 128 + SIGINT(2).
+    // The job this task's console is currently running: the child it is
+    // blocked on (a foreground SPAWN or WAIT), or — between foregrounding a
+    // job and entering WAIT — the child it explicitly armed with
+    // CONSOLE_FOREGROUND. -1 when the task is at a prompt.
+    static int foreground_child(Task* t) {
+        if (t == nullptr) return -1;
+        if (t->waiting_on >= 0) return t->waiting_on;
+        return t->fg_job > 0 ? t->fg_job : -1;
+    }
+
+    // Ctrl+C. The console's foreground job is the child this task is waiting
+    // on, or the one it armed a moment earlier; killing it wakes the blocked
+    // task, which is exactly "interrupt the foreground job". The exit code is
+    // the shell convention 128 + SIGINT(2).
     bool interrupt_foreground(int task_id) {
         if (task_id < 0) return false;
         Task* t = find_task(task_id);
-        if (t == nullptr || t->waiting_on < 0) return false;
+        if (t == nullptr) return false;
 
-        int child = t->waiting_on;
+        int child = foreground_child(t);
+        if (child < 0) return false;
 
         // The victim is usually the running task: the parent is blocked, so the
         // scheduler is on the child. kill_task refuses to kill current_task, and
@@ -335,6 +352,23 @@ namespace Sched {
             return true;
         }
         return kill_task(child, 130) == 0;
+    }
+
+    // Arm the console's foreground job: the child to interrupt if Ctrl+C
+    // arrives before the caller reaches the WAIT that would have named it.
+    // The shell announces a foregrounded job and then blocks on it, and the
+    // kernel cannot see the job in that gap: the key would be dropped instead
+    // of interrupting it. A job's exit clears the arming, so a pid that has
+    // gone can never name a later task. Only a child of the caller may be
+    // armed: Ctrl+C must not kill a task this console never started. pid 0
+    // disarms (the wait is over).
+    bool set_foreground_job(long pid) {
+        if (current_task == nullptr || pid < 0 || pid > 0x7fffffffL) return false;
+        uint64_t flags = irq_save();
+        bool valid = pid == 0 || task_is_child((int)pid);
+        if (valid) current_task->fg_job = pid > 0 ? (int)pid : -1;
+        irq_restore(flags);
+        return valid;
     }
 
     int console_owner_of_current() {
@@ -462,32 +496,37 @@ namespace Sched {
 
     int console_write(int task_id, const char* buf, int n) {
         if (buf == nullptr || n <= 0) return 0;
+        uint64_t f = irq_save();
         Task* t = find_task(task_id);
-        if (t == nullptr || t->console_owner != current_task->id) return -1;
-
-        // The foreground job is the reader: a hosted shell delegates to the
-        // child it is blocked on (running `lua`), so its input goes to the
-        // child's ring rather than the shell's.
-        Task* dst = t;
-        if (t->waiting_on >= 0) {
-            Task* c = find_task(t->waiting_on);
-            if (c != nullptr) dst = c;
+        if (t == nullptr || t->console_owner != current_task->id) {
+            irq_restore(f);
+            return -1;
         }
 
         int written = 0;
-        uint64_t f = irq_save();
         for (int i = 0; i < n; i++) {
             // Ctrl+C in a hosted console's input is the interrupt key: it kills
             // the hosted task's foreground job instead of being queued as input
             // (so a terminal that forwards keys makes Ctrl+C work end to end).
             if (buf[i] == 0x03) { interrupt_foreground(task_id); continue; }
+            // Ctrl+C can synchronously destroy a destination, including the
+            // hosted task itself. Reacquire it after every interrupt and route
+            // subsequent bytes according to the current foreground state.
+            t = find_task(task_id);
+            if (t == nullptr || t->console_owner != current_task->id) break;
+            Task* dst = t;
+            int fg = foreground_child(t);
+            if (fg >= 0) {
+                Task* child = find_task(fg);
+                if (child != nullptr) dst = child;
+            }
             int next = (dst->con_in_head + 1) % CONSOLE_RING;
             if (next == dst->con_in_tail) break; // full: stop
             dst->con_in[dst->con_in_head] = buf[i];
             dst->con_in_head = next;
             written++;
+            if (dst->getc_waiting) dst->state = READY;
         }
-        if (written > 0 && dst->getc_waiting) dst->state = READY;
         irq_restore(f);
         return written;
     }

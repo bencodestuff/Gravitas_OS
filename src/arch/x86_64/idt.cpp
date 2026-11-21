@@ -1023,6 +1023,14 @@ static void sys_kill(IDT::Registers* regs) {
     regs->rax = (uint64_t)Sched::kill_task((int)regs->rdi, regs->rsi);
 }
 
+// Arm the console's foreground job: 'fg <pid>' announces a background job and
+// then blocks on it, and an interrupt that arrives between the two must still
+// reach the job rather than being dropped because no wait is registered yet.
+static void sys_console_foreground(IDT::Registers* regs) {
+    long pid = (long)regs->rdi;
+    regs->rax = Sched::set_foreground_job(pid) ? 0 : (uint64_t)-1;
+}
+
 // Mirrors struct grv_msg in grv/syscall.h.
 static_assert(sizeof(Ipc::Msg) == 32 &&
               offsetof(Ipc::Msg, from) == 0 &&
@@ -1283,6 +1291,7 @@ static const SyscallFn syscall_table[] = {
     /* 66 EXEC            */ sys_exec,
     /* 67 POLL            */ sys_poll,
     /* 68 SPAWN_BG_KEEP   */ sys_spawn_bg_keep,
+    /* 69 CONSOLE FGRND   */ sys_console_foreground,
 };
 
 static constexpr uint64_t SYSCALL_COUNT =

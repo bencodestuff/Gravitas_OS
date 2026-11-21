@@ -222,6 +222,7 @@ namespace Sched {
         child->next = nullptr;
         copy_name(child->name, parent->name, (int)sizeof(child->name));
         child->waiting_on = -1;
+        child->fg_job = -1;                    // the child waits on nothing
         child->getc_waiting = false;
         child->event_input = parent->event_input;
         child->user_rip = parent_frame->rip;   // same continuation as the parent
@@ -353,6 +354,10 @@ namespace Sched {
         bool taken = false;
         Task* t = ready_queue;
         if (t != nullptr) do {
+            // A task that armed this child as its console's foreground job but
+            // has not reached the wait yet must not keep the id: task ids are
+            // never reused, but a stale arming would still name a dead job.
+            if (t->fg_job == id) t->fg_job = -1;
             if (t->waiting_on == id) {
                 // A status already sitting in the inbox unread (two foreground
                 // SPAWNs without a WAIT between them) is kept in the table so
@@ -517,6 +522,7 @@ namespace Sched {
         new_task->state = READY;
         new_task->wake_timestamp = 0;
         new_task->waiting_on = -1;
+        new_task->fg_job = -1;
         new_task->getc_waiting = false;
         new_task->event_input = false;
         new_task->console_owner = current_task->console_owner; // inherit stdio

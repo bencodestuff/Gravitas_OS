@@ -4,6 +4,7 @@
 Note the shell splits on spaces and has no quoting, so `-e` chunks must be
 space-free; anything larger comes from a script in the image (/lua/hello.lua).
 """
+
 import os
 import re
 import sys
@@ -77,9 +78,14 @@ def lua_repl(g):
     g.wait_for(r"Lua 5\.4\.\d+  Copyright")
     g.shell("print(7*6)")
     g.wait_for(r"^42$")
+    g.shell("print(8*7)")
+    g.wait_for(r"^56$")
     g.ctrl("c")
     g.wait_for(r"Task 'lua\.elf' (terminated \(killed\)|exited)")
     g.wait_count(r"\[shell\] program finished", finished + 1)
+    helped = g.count("commands are programs")
+    g.shell("help")
+    g.wait_count("commands are programs", helped + 1)
 
 
 if __name__ == "__main__":

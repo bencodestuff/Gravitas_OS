@@ -83,7 +83,7 @@ def foreground_job(g):
     # rather than bringing forward one task of several.
     piped = background("cat hello.txt | hang.elf &")
     g.shell("fg %d" % piped)
-    g.wait_for(r"fg: task %d is one stage of a pipeline$" % piped)
+    g.wait_for(r"fg: task %d is one stage of a pipeline; kill it instead$" % piped)
     g.shell("kill %d" % piped)
     g.wait_for(r"kill: terminated %d$" % piped)
 

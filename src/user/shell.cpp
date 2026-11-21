@@ -145,14 +145,22 @@ static void cmd_bg(char** words, int nwords) {
         printf("bg: started '%s' as task %d\n", prog, (int)pid);
 }
 
-/* jobs — list the pids we spawned in the background. */
+/* jobs — list the pids we spawned in the background. A job that has ended is
+   shed here rather than listed: the shell never reaps a background task, so
+   otherwise every finished job would sit in the table and be reported as if
+   it were still running, and eight of them would fill it. */
 static void cmd_jobs() {
     bool any = false;
     for (int i = 0; i < 8; i++) {
-        if (g_bg_pid[i] != 0) {
-            printf("  %d  %s\n", (int)g_bg_pid[i], g_bg_name[i]);
-            any = true;
+        if (g_bg_pid[i] == 0) continue;
+        if (!task_running(g_bg_pid[i])) {
+            g_bg_pid[i] = 0;
+            g_bg_name[i][0] = '\0';
+            g_bg_stages[i] = 0;
+            continue;
         }
+        printf("  %d  %s\n", (int)g_bg_pid[i], g_bg_name[i]);
+        any = true;
     }
     if (!any) printf("no background tasks\n");
 }
@@ -213,12 +221,15 @@ static long cmd_fg(const char* arg) {
     g_bg_name[slot][0] = '\0';
     g_bg_stages[slot] = 0;
 
-    printf("fg: task %d %s\n", (int)pid, name);
-
     // WAIT blocks until the job exits or Ctrl+C kills it (128 + SIGINT), and
     // the status lands either way. A wait that cannot collect means the task
     // has already gone and its status was dropped, which is not a hang.
+    // Arm before printing the banner, so an immediate interrupt cannot fall
+    // into the gap before WAIT. An already exited child can still be reaped.
+    grv_console_foreground(pid);
+    printf("fg: task %d %s\n", (int)pid, name);
     long status = grv_wait(pid);
+    grv_console_foreground(0);
     if (status < 0) {
         printf("fg: task %d has already ended\n", (int)pid);
         return 1;
